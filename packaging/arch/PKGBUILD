@@ -1,8 +1,8 @@
 # Maintainer: komaruworld <rtysus228@gmail.com>
 
 pkgname=mocktail
-pkgver=1.0.2
-pkgrel=1
+pkgver=1.0.3
+pkgrel=2
 pkgdesc='Android x86-64 Roblox compatibility runtime for Linux'
 arch=('x86_64')
 url='https://github.com/komaruworld/mocktail'

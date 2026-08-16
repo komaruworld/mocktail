@@ -1,0 +1,114 @@
+name: Publish AUR packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-packages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Publish AUR packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Prepare AUR metadata
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          package_dir="$GITHUB_WORKSPACE/packaging/aur/mocktail-git"
+          version="$(sed -n \
+            's/^[[:space:]]*VERSION[[:space:]]\+\([0-9][0-9.]*\).*/\1/p' \
+            CMakeLists.txt | head -n 1)"
+          [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]
+          pkgver="${version}.r$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+          sed -i "s/^pkgver=.*/pkgver=${pkgver}/" "$package_dir/PKGBUILD"
+
+          docker run --rm \
+            --volume "$package_dir:/pkg" \
+            archlinux:base-devel bash -Eeuo pipefail -c '
+              useradd --create-home builder
+              install -d -o builder -g builder /tmp/mocktail-git
+              install -o builder -g builder -m 0644 \
+                /pkg/PKGBUILD /tmp/mocktail-git/PKGBUILD
+              runuser -u builder -- bash -c \
+                "cd /tmp/mocktail-git && makepkg --printsrcinfo" \
+                > /pkg/.SRCINFO
+            '
+
+          grep -Fqx "pkgver=${pkgver}" "$package_dir/PKGBUILD"
+          grep -Fqx $'\tpkgver = '"${pkgver}" "$package_dir/.SRCINFO"
+          printf 'AUR_PKGVER=%s\n' "$pkgver" >> "$GITHUB_ENV"
+
+      - name: Publish to the AUR
+        shell: bash
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_SSH_KEY_PASSPHRASE: ${{ secrets.AUR_SSH_KEY_PASSPHRASE }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$AUR_SSH_PRIVATE_KEY" ]]
+          [[ -n "$AUR_SSH_KEY_PASSPHRASE" ]]
+
+          private_key="$RUNNER_TEMP/aur_ed25519"
+          askpass="$RUNNER_TEMP/aur_askpass"
+          known_hosts="$RUNNER_TEMP/aur_known_hosts"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$private_key"
+          unset AUR_SSH_PRIVATE_KEY
+          chmod 0600 "$private_key"
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'printf '\''%s\n'\'' "$AUR_SSH_KEY_PASSPHRASE"' \
+            > "$askpass"
+          chmod 0700 "$askpass"
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null; rm -f -- "$private_key" "$askpass"' EXIT
+          DISPLAY=:0 SSH_ASKPASS="$askpass" SSH_ASKPASS_REQUIRE=force \
+            ssh-add "$private_key" </dev/null
+          unset AUR_SSH_KEY_PASSPHRASE
+
+          ssh-keyscan -T 10 -t ed25519 aur.archlinux.org > "$known_hosts"
+          fingerprint="$(ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}')"
+          [[ "$fingerprint" == \
+            'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4' ]]
+
+          export GIT_SSH_COMMAND="ssh -F /dev/null -i $private_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=$known_hosts"
+          publish_aur_package() {
+            local package_name="$1"
+            local commit_message="$2"
+            local source_dir="packaging/aur/$package_name"
+            local aur_dir="$RUNNER_TEMP/${package_name}-aur"
+
+            git clone --branch master --single-branch \
+              "ssh://aur@aur.archlinux.org/${package_name}.git" "$aur_dir"
+            install -m 0644 "$source_dir/PKGBUILD" "$aur_dir/PKGBUILD"
+            install -m 0644 "$source_dir/.SRCINFO" "$aur_dir/.SRCINFO"
+
+            git -C "$aur_dir" config user.name komaruworld
+            git -C "$aur_dir" config user.email rtysus228@gmail.com
+            git -C "$aur_dir" add PKGBUILD .SRCINFO
+            if git -C "$aur_dir" diff --cached --quiet; then
+              printf '%s is already published\n' "$package_name"
+              return
+            fi
+            git -C "$aur_dir" commit -m "$commit_message"
+            git -C "$aur_dir" push origin HEAD:master
+          }
+
+          publish_aur_package mocktail-git "Update to ${AUR_PKGVER}"
+          publish_aur_package mocktail 'make builds stable'
+          publish_aur_package mocktail-bin 'make builds stable'

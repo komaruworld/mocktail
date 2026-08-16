@@ -8,7 +8,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(Mocktail
-  VERSION 1.0.2
+  VERSION 1.0.3
   DESCRIPTION "Android x86-64 Roblox compatibility runtime for Linux"
   LANGUAGES CXX
 )
@@ -525,6 +525,19 @@ target_include_directories(mocktail_bionic_abi_exports
   PRIVATE src
 )
 mocktail_apply_compile_options(mocktail_bionic_abi_exports)
+# These exported Bionic FORTIFY symbols intentionally overlap glibc's
+# __*_chk entry points.  When the bridge is visible to whole-program LTO,
+# GCC can fold a fortified host call back into its own compatibility wrapper
+# and turn the resulting tail recursion into an infinite loop.  Keep this
+# translation unit opaque to interprocedural optimization and make its calls
+# to the host C library explicit external calls.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_property(SOURCE src/compat/bionic_abi_exports.cc APPEND PROPERTY
+    COMPILE_OPTIONS
+      -fno-lto
+      -fno-builtin
+  )
+endif()
 target_link_libraries(mocktail_bionic_abi_exports PRIVATE
   mocktail_bionic_stdio_runtime
   mocktail_window
