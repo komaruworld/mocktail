@@ -5,13 +5,30 @@
 [![Downloads](https://img.shields.io/github/downloads/komaruworld/mocktail/total?logo=github)](https://github.com/komaruworld/mocktail/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Mocktail runs the Android `x86_64` Roblox client on Linux, including a Linux
-userspace hosted by FreeBSD's Linuxulator. It provides the Android ABI and JNI
-pieces the client expects, then connects them to SDL3 and Vulkan or OpenGL on
-the Linux side.
+Mocktail runs the Android `x86_64` Roblox client on Linux, including a Linux userspace hosted by FreeBSD's Linuxulator. It provides the Android ABI and JNI pieces the client expects, then connects them to SDL3 and Vulkan or OpenGL on the Linux side.
 
-Mocktail is an independent community project. It is not affiliated with Roblox
-Corporation or VinegarHQ and does not distribute the Roblox client.
+> Mocktail is an independent community project. It is **not** affiliated with Roblox Corporation or VinegarHQ, and it does not distribute the Roblox client.
+
+---
+
+## Table of contents
+
+- [How it works](#how-it-works)
+- [Installation](#installation)
+  - [Flatpak](#flatpak)
+  - [AUR (Arch Linux)](#aur-arch-linux)
+  - [DNF (Fedora)](#dnf-fedora)
+  - [APT (Ubuntu)](#apt-ubuntu)
+  - [Direct downloads](#direct-downloads)
+- [Screenshots](#screenshots)
+- [FFlag overrides](#fflag-overrides)
+- [Building from source](#building-from-source)
+  - [Dependencies](#dependencies)
+  - [Build steps](#build-steps)
+- [License](#license)
+- [Support](#support)
+
+---
 
 ## How it works
 
@@ -19,92 +36,93 @@ Corporation or VinegarHQ and does not distribute the Roblox client.
 Roblox APK -> signature and ABI checks -> Bionic + JNI -> SDL3 + Vulkan/OpenGL
 ```
 
-The APK is checked before any native code is loaded. It is downloaded on first
-launch and is not bundled with Mocktail. The last working copy is kept in case
-an update fails.
+The APK is checked before any native code is loaded. It's downloaded on first launch and is not bundled with Mocktail. The last working copy is kept in case an update fails.
 
-## Install with Flatpak
+---
 
-Install the stable release from Flathub:
+## Installation
+
+### Flatpak
+
+Stable release from Flathub:
 
 ```bash
 flatpak install flathub space.bigrat.mocktail
 flatpak run space.bigrat.mocktail
 ```
 
-Nightly builds are produced automatically from the latest `main` branch:
+Nightly build (built automatically from the latest `main` branch):
 
 ```bash
 flatpak install --user https://mocktail.bigrat.space/mocktail.flatpakref
 flatpak run space.bigrat.mocktail
 ```
 
-## Install from the AUR
+### AUR (Arch Linux)
 
-Arch Linux users can install either the pinned source release (`mocktail`) or
-the current development version (`mocktail-git`) with an AUR helper:
+| Package | Description |
+|---|---|
+| `mocktail-bin` | Stable, prebuilt |
+| `mocktail` | Stable, built from source |
+| `mocktail-git` | Development version, built from `main` |
 
 ```bash
-paru -S mocktail-git
-# or
-yay -S mocktail-git
+paru -S mocktail-git   # or: yay -S mocktail-git
 ```
 
-Use `mocktail` instead of `mocktail-git` to build the pinned release from
-source, or install the stable prebuilt package with `paru -S mocktail-bin` or
-`yay -S mocktail-bin`.
+### DNF (Fedora)
 
-## Install with DNF
-
-Fedora 44 users can install either the stable `mocktail` package or the
-`mocktail-nightly` package built from `main`:
+Fedora 44+:
 
 ```bash
 sudo curl -fsSL https://mocktail.bigrat.space/rpm/mocktail.repo \
   -o /etc/yum.repos.d/mocktail.repo
-sudo dnf install mocktail
+
+sudo dnf install mocktail            # stable
 # or
-sudo dnf install mocktail-nightly
+sudo dnf install mocktail-nightly    # built from main
 ```
 
-## Install with APT
+### APT (Ubuntu)
 
-Ubuntu 26.04 users can install either the stable `mocktail` package or the
-`mocktail-nightly` package built from `main`:
+Ubuntu 26.04+:
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
 sudo curl -fsSL https://mocktail.bigrat.space/mocktail-packages.gpg \
   -o /etc/apt/keyrings/mocktail.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/mocktail.gpg] https://mocktail.bigrat.space/apt mocktail main" | \
-  sudo tee /etc/apt/sources.list.d/mocktail.list >/dev/null
+
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/mocktail.gpg] https://mocktail.bigrat.space/apt mocktail main" \
+  | sudo tee /etc/apt/sources.list.d/mocktail.list >/dev/null
+
 sudo apt update
-sudo apt install mocktail
+sudo apt install mocktail            # stable
 # or
-sudo apt install mocktail-nightly
+sudo apt install mocktail-nightly    # built from main
 ```
 
-## Direct downloads
+### Direct downloads
 
-Direct AppImage, DEB, and RPM downloads are available from the
-[Website](https://mocktail.bigrat.space/) and
-[GitHub Releases](https://github.com/komaruworld/mocktail/releases).
+AppImage, DEB, and RPM builds are available from the [website](https://mocktail.bigrat.space/) and from [GitHub Releases](https://github.com/komaruworld/mocktail/releases).
+
+---
+
+## Screenshots
 
 <details>
-<summary>Screenshots</summary>
+<summary>Click to expand</summary>
 
-![Roblox home in Mocktail](assets/screenshots/flatpak-home.png)
-
-![Roblox gameplay in Mocktail](assets/screenshots/flatpak-gameplay-tower.png)
-
-![Roblox experience in Mocktail](assets/screenshots/flatpak-gameplay-lobby.png)
+| Home | Gameplay | Lobby |
+|---|---|---|
+| ![Roblox home in Mocktail](assets/screenshots/flatpak-home.png) | ![Roblox gameplay in Mocktail](assets/screenshots/flatpak-gameplay-tower.png) | ![Roblox experience in Mocktail](assets/screenshots/flatpak-gameplay-lobby.png) |
 
 </details>
 
+---
+
 ## FFlag overrides
 
-Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
-`~/.config/mocktail/fflags.json`). Mocktail applies it on the next launch.
+Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually `~/.config/mocktail/fflags.json`). Mocktail applies it on the next launch.
 
 ```json
 {
@@ -113,16 +131,15 @@ Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
 }
 ```
 
-## Building
+---
 
-Linux `x86_64` is supported. Experimental FreeBSD 15.1 Linuxulator support has
-been tested with an `x86_64` Fedora 44 userspace. On FreeBSD, Mocktail runs
-inside Linuxulator; it is not a native FreeBSD binary. Building requires CMake
-3.20+, Git, pkg-config, LLD, binutils, a C++17 compiler, SDL 3.4+, SDL3_ttf,
-Vulkan, EGL, libplacebo, fontconfig, libcurl, OpenSSL, libelf, libyaml, minizip,
-Capstone 5, utf8proc, nlohmann/json, GTK4, libadwaita 1.6+, and WebKitGTK 6.0.
+## Building from source
 
-See the [FreeBSD Guide](packaging/freebsd/README.md) for setup and launch instructions.
+**Supported platforms:** Linux `x86_64`. Experimental FreeBSD 15.1 support runs Mocktail inside Linuxulator (not as a native FreeBSD binary), tested with an `x86_64` Fedora 44 userspace — see the [FreeBSD guide](packaging/freebsd/README.md) for setup and launch instructions.
+
+### Dependencies
+
+CMake 3.20+, Git, pkg-config, LLD, binutils, a C++17 compiler, SDL 3.4+, SDL3_ttf, Vulkan, EGL, libplacebo, fontconfig, libcurl, OpenSSL, libelf, libyaml, minizip, Capstone 5, utf8proc, nlohmann/json, GTK4, libadwaita 1.6+, WebKitGTK 6.0.
 
 <details>
 <summary>Ubuntu 26.04+</summary>
@@ -162,6 +179,8 @@ sudo dnf install gcc-c++ cmake git ninja-build pkgconf-pkg-config lld \
 ```
 </details>
 
+### Build steps
+
 ```bash
 git clone --recurse-submodules https://github.com/komaruworld/mocktail.git
 cd mocktail
@@ -169,13 +188,17 @@ make build
 ./build/mocktail
 ```
 
+---
+
 ## License
 
 [Apache License 2.0](LICENSE). Third-party components keep their own licenses.
 
+---
+
 ## Support
 
-You can support the project by giving it a star or with cryptocurrency:
+Give the project a star, or support it with crypto:
 
-- USDT (TON): `UQCi6Yzcc9cOctoij6n_r1K90-OdVxAT0D_xo2UzGKkQaJDY`
-- USDT (TRC20): `TNPMG9Vig2xiuo2r1QqnXRChPH7Vu28Jmx`
+- **USDT (TON):** `UQCi6Yzcc9cOctoij6n_r1K90-OdVxAT0D_xo2UzGKkQaJDY`
+- **USDT (TRC20):** `TNPMG9Vig2xiuo2r1QqnXRChPH7Vu28Jmx`
