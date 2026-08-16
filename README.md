@@ -1,11 +1,21 @@
-# Mocktail
+<p align="center">
+  <img src="https://raw.githubusercontent.com/komaruworld/mocktail/refs/heads/main/packaging/icons/hicolor/192x192/apps/space.bigrat.mocktail.png" alt="Mocktail logo" width="128" height="128" />
+</p>
 
-[![CI](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml/badge.svg)](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml)
-[![Stars](https://img.shields.io/github/stars/komaruworld/mocktail?style=flat&logo=github)](https://github.com/komaruworld/mocktail/stargazers)
-[![Downloads](https://img.shields.io/github/downloads/komaruworld/mocktail/total?logo=github)](https://github.com/komaruworld/mocktail/releases/latest)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<h1 align="center">Mocktail</h1>
 
-Mocktail runs the Android `x86_64` Roblox client on Linux, including a Linux userspace hosted by FreeBSD's Linuxulator. It provides the Android ABI and JNI pieces the client expects, then connects them to SDL3 and Vulkan or OpenGL on the Linux side.
+<p align="center">
+  <a href="https://github.com/komaruworld/mocktail/actions/workflows/ci.yml"><img src="https://github.com/komaruworld/mocktail/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/komaruworld/mocktail/stargazers"><img src="https://img.shields.io/github/stars/komaruworld/mocktail?style=flat&logo=github" alt="Stars" /></a>
+  <a href="https://github.com/komaruworld/mocktail/releases/latest"><img src="https://img.shields.io/github/downloads/komaruworld/mocktail/total?logo=github" alt="Downloads" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License" /></a>
+</p>
+
+<p align="center">
+  Run the Android <code>x86_64</code> Roblox client on Linux.
+</p>
+
+Mocktail hosts a Linux userspace — via FreeBSD's Linuxulator when needed — and provides the Android ABI and JNI pieces the Roblox client expects, then connects them to SDL3 and Vulkan or OpenGL on the Linux side.
 
 > Mocktail is an independent community project. It is **not** affiliated with Roblox Corporation or VinegarHQ, and it does not distribute the Roblox client.
 
@@ -36,7 +46,7 @@ Mocktail runs the Android `x86_64` Roblox client on Linux, including a Linux use
 Roblox APK -> signature and ABI checks -> Bionic + JNI -> SDL3 + Vulkan/OpenGL
 ```
 
-The APK is checked before any native code is loaded. It's downloaded on first launch and is not bundled with Mocktail. The last working copy is kept in case an update fails.
+The APK is downloaded on first launch and is checked before any native code runs — it is not bundled with Mocktail. If an update fails, Mocktail falls back to the last known-good copy.
 
 ---
 
@@ -51,7 +61,7 @@ flatpak install flathub space.bigrat.mocktail
 flatpak run space.bigrat.mocktail
 ```
 
-Nightly build (built automatically from the latest `main` branch):
+Nightly build, produced automatically from the latest `main` branch:
 
 ```bash
 flatpak install --user https://mocktail.bigrat.space/mocktail.flatpakref
@@ -135,7 +145,9 @@ Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually `~/.config
 
 ## Building from source
 
-**Supported platforms:** Linux `x86_64`. Experimental FreeBSD 15.1 support runs Mocktail inside Linuxulator (not as a native FreeBSD binary), tested with an `x86_64` Fedora 44 userspace — see the [FreeBSD guide](packaging/freebsd/README.md) for setup and launch instructions.
+**Supported platforms:** Linux `x86_64`.
+
+Experimental FreeBSD 15.1 support runs Mocktail inside Linuxulator (not as a native FreeBSD binary), tested with an `x86_64` Fedora 44 userspace. See the [FreeBSD guide](packaging/freebsd/README.md) for setup and launch instructions.
 
 ### Dependencies
 
