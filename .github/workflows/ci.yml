@@ -52,6 +52,12 @@ jobs:
           find config packaging/flatpak -type f -name '*.json' -print0 \
             | xargs -0 -n1 python3 -m json.tool >/dev/null
 
+      - name: Run script unit tests
+        shell: bash
+        run: |
+          python3 -m pip install --disable-pip-version-check requests
+          python3 -m unittest discover -s tests -p '*_test.py' -v
+
       - name: Verify build and packaging contracts
         shell: bash
         run: |

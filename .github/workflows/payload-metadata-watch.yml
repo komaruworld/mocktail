@@ -1,0 +1,70 @@
+name: Payload metadata watch
+
+on:
+  schedule:
+    # Roblox retires client versions on its own cadence, so check daily rather
+    # than waiting for a user to report a failed first launch.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: payload-metadata-watch
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: Pinned payload metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install provider dependencies
+        run: python3 -m pip install --disable-pip-version-check requests
+
+      - name: Inspect pinned payload metadata
+        id: drift
+        shell: bash
+        run: |
+          set +e
+          report="$(python3 scripts/check_payload_source_drift.py --check-latest 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "${report}"
+          {
+            echo "status=${status}"
+            echo 'report<<REPORT_EOF'
+            printf '%s\n' "${report}"
+            echo 'REPORT_EOF'
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Open or refresh the tracking issue
+        if: steps.drift.outputs.status == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ steps.drift.outputs.report }}
+          TITLE: Pinned Roblox payload metadata has drifted
+        shell: bash
+        run: |
+          body="$(printf '%s\n\n%s\n' \
+            "${REPORT}" \
+            "Reported by \`scripts/check_payload_source_drift.py\` in [this run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}).")"
+          existing="$(gh issue list --state open --search "in:title \"${TITLE}\"" \
+            --json number,title --jq \
+            ".[] | select(.title == \"${TITLE}\") | .number" | head -n1)"
+          if [[ -n "${existing}" ]]; then
+            # Refresh in place: a daily comment on an unchanged condition is
+            # noise, and the body always shows the current state.
+            gh issue edit "${existing}" --body "${body}"
+          else
+            gh issue create --title "${TITLE}" --body "${body}"
+          fi
+
+      - name: Fail the run when the provider cannot be inspected
+        if: steps.drift.outputs.status == '2'
+        run: exit 1
