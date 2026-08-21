@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0.
-
 #include "update/http_download.h"
 
 #include <curl/curl.h>

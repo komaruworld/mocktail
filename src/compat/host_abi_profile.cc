@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "compat/host_abi_profile.h"
 
 #include "compat/host_abi_profile_loader.h"
@@ -20,6 +6,31 @@ namespace mocktail::compat {
 namespace {
 
 constexpr HostAbiProfile kProfiles[] = {
+    // Roblox 2.734.917. This exact Build-ID profile was machine-derived from
+    // the verified 2.727.1199 reference and passed an isolated Tier C Vulkan
+    // probation canary with native constructors, JNI startup, presentation,
+    // and controlled lifecycle teardown.
+    {"63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
+     {{{0x1cf69e2, HostBridgeKind::kAllocate, "small-allocate"},
+       {0x1cf9c3a, HostBridgeKind::kUsableSize, "usable-size"},
+       {0x21af33f, HostBridgeKind::kReallocate, "reallocate"},
+       {0x1cf677e, HostBridgeKind::kAllocate, "allocate"},
+       {0x1d12197, HostBridgeKind::kAlignedAllocate,
+        "aligned-allocate-direct"},
+       {0x1cfa1d9, HostBridgeKind::kFree, "free"}}},
+     6,
+     {0x7571570, 0x767e428, 0x7ad47e8, 0x400, 0x1cf6df8, 0x1d82be7,
+      0x7a10730, 0x7a107c0, 0x400000},
+     {0x1cf677e, 0x1cfa1d9},
+     0x6f78a18,
+     3556,
+     {{{2, 3}, {5, 3556}}},
+     2,
+     {{{2, 3556}}},
+     1,
+     2,
+     {0x21b1889, 0x7a14898},
+     HostAllocatorStrategy::kNativeMimalloc},
     // Roblox 2.727.1199. Every function and state slot below was matched
     // independently against the previous supported payload by normalized
     // instruction signatures and RIP-relative references. The payload keeps

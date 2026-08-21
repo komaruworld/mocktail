@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0.
-
 #ifndef MOCKTAIL_RUNTIME_SESSION_LOG_H_
 #define MOCKTAIL_RUNTIME_SESSION_LOG_H_
 

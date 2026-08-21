@@ -1,28 +1,18 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "services/client_settings_service.h"
 
 #define JSON_NOEXCEPTION 1
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include <array>
 #include <cerrno>
+#include <cstdint>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #include "runtime/runtime_paths.h"
 
@@ -31,6 +21,39 @@ namespace services {
 namespace {
 
 constexpr const char kEmptyDefaults[] = "{\"applicationSettings\":{}}";
+constexpr std::uintmax_t kMaximumFflagsFileBytes = 64U * 1024U;
+
+class ScopedFileDescriptor final {
+ public:
+  explicit ScopedFileDescriptor(int descriptor) : descriptor_(descriptor) {}
+  ~ScopedFileDescriptor() { close(descriptor_); }
+
+  ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
+  ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
+
+  int get() const { return descriptor_; }
+
+ private:
+  int descriptor_;
+};
+
+bool IsSupportedFflagValue(const nlohmann::json& value) {
+  return value.is_string() || value.is_boolean() ||
+         value.is_number_integer() || value.is_number_unsigned();
+}
+
+std::string FflagValueString(const nlohmann::json& value) {
+  if (value.is_string()) {
+    return value.get<std::string>();
+  }
+  if (value.is_boolean()) {
+    return value.get<bool>() ? "True" : "False";
+  }
+  if (value.is_number_unsigned()) {
+    return std::to_string(value.get<std::uint64_t>());
+  }
+  return std::to_string(value.get<std::int64_t>());
+}
 
 std::string ReadFile(const std::filesystem::path& path) {
   if (path.empty()) {
@@ -118,6 +141,101 @@ ClientSettingsResult FileResult(const std::filesystem::path& path,
 }
 
 }  // namespace
+
+FflagsMergeResult LoadAndMergeFflagsFile(const std::filesystem::path& path,
+                                         std::string_view base_json) {
+  FflagsMergeResult result;
+  nlohmann::json merged = nlohmann::json::parse(
+      base_json.empty() ? std::string_view("{}") : base_json, nullptr, false,
+      true);
+  if (merged.is_discarded() || !merged.is_object()) {
+    result.json = std::string(base_json);
+    result.error = "base client-settings overrides must be a JSON object";
+    return result;
+  }
+  result.json = merged.dump();
+
+  if (path.empty()) {
+    return result;
+  }
+  const int descriptor =
+      open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (descriptor < 0) {
+    if (errno != ENOENT) {
+      result.error = "cannot safely open fflags file";
+    }
+    return result;
+  }
+  const ScopedFileDescriptor file(descriptor);
+
+  struct stat metadata = {};
+  if (fstat(file.get(), &metadata) != 0) {
+    result.error = "cannot inspect fflags file";
+    return result;
+  }
+  if (!S_ISREG(metadata.st_mode)) {
+    result.error = "fflags file is not a regular file";
+    return result;
+  }
+  if (metadata.st_size < 0 ||
+      static_cast<std::uintmax_t>(metadata.st_size) >
+          kMaximumFflagsFileBytes) {
+    result.error = "fflags file exceeds the 64 KiB read limit";
+    return result;
+  }
+
+  std::string bytes;
+  bytes.reserve(static_cast<std::size_t>(metadata.st_size));
+  std::array<char, 4096> buffer = {};
+  while (true) {
+    const ssize_t read_count = read(file.get(), buffer.data(), buffer.size());
+    if (read_count == 0) {
+      break;
+    }
+    if (read_count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      result.error = "cannot read fflags file";
+      return result;
+    }
+    const std::size_t count = static_cast<std::size_t>(read_count);
+    if (bytes.size() >
+        static_cast<std::size_t>(kMaximumFflagsFileBytes) - count) {
+      result.error = "fflags file exceeds the 64 KiB read limit";
+      return result;
+    }
+    bytes.append(buffer.data(), count);
+  }
+
+  nlohmann::json file_values =
+      nlohmann::json::parse(bytes, nullptr, false, true);
+  if (file_values.is_discarded() || !file_values.is_object()) {
+    result.error = "fflags file must contain a JSON object";
+    return result;
+  }
+  for (const auto& [key, value] : file_values.items()) {
+    if (key.empty()) {
+      result.error = "fflags file contains an invalid key";
+      return result;
+    }
+    if (!IsSupportedFflagValue(value)) {
+      result.error =
+          "fflags file values must be strings, booleans, or integers";
+      return result;
+    }
+  }
+
+  for (const auto& [key, value] : file_values.items()) {
+    if (!merged.contains(key)) {
+      merged[key] = FflagValueString(value);
+      ++result.count;
+    }
+  }
+  result.json = merged.dump();
+  result.loaded = true;
+  return result;
+}
 
 ClientSettingsResult ClientSettingsService::Resolve(
     const ClientSettingsOptions& options) {

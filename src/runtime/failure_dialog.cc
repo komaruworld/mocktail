@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/failure_dialog.h"
 
 #include <spawn.h>
@@ -113,11 +99,12 @@ void WaitForHelper(int helper_pid) {
 }
 
 bool SpawnOneShot(const std::filesystem::path& helper,
+                  std::string_view option,
                   std::string_view message) {
   std::string helper_string = helper.string();
+  std::string option_string(option);
   std::string message_string(message.substr(0, kMaximumMessageBytes));
-  char message_option[] = "--message";
-  char* arguments[] = {helper_string.data(), message_option,
+  char* arguments[] = {helper_string.data(), option_string.data(),
                        message_string.data(), nullptr};
   pid_t child = -1;
   const int spawn_status =
@@ -199,7 +186,16 @@ bool ShowFailureDialog(const Environment& environment,
     return false;
   }
   const std::filesystem::path helper = DialogHelper(environment);
-  return !helper.empty() && SpawnOneShot(helper, message);
+  return !helper.empty() && SpawnOneShot(helper, "--message", message);
+}
+
+bool ShowWarningDialog(const Environment& environment,
+                       std::string_view message) {
+  if (!FailureDialogsEnabled(environment)) {
+    return false;
+  }
+  const std::filesystem::path helper = DialogHelper(environment);
+  return !helper.empty() && SpawnOneShot(helper, "--warning", message);
 }
 
 FailureDialogMonitor::FailureDialogMonitor(int socket, int helper_pid)

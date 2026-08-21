@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0.
-
 #include "compat/bionic_signal_runtime.h"
 
 #include <gtest/gtest.h>

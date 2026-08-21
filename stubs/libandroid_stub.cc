@@ -1,11 +1,10 @@
-// Copyright 2026 Mocktail Project Authors
-// Apache 2.0 License
-//
 // Android NDK compatibility symbols used by libroblox.so on Linux. Asset calls
 // can read from an extracted directory or directly from an APK.
 //
 // Symbols sourced from Android NDK r28 android/native_activity.h,
 // android/asset_manager.h, android/looper.h, android/configuration.h.
+
+#include "libc_shim/vulkan_etc1_sky_transcoder.h"
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -271,6 +270,9 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
   if (!LoadFile(path, &asset->data)) {
     delete asset;
     return nullptr;
+  }
+  if (MocktailUsesDirectVulkan()) {
+    libc_shim::TranscodeEtc1SkyTextureForVulkan(path.c_str(), &asset->data);
   }
   if (AssetTraceEnabled()) {
     std::fprintf(stderr, "[asset] open %s -> %s (%zu bytes)\n", filename,

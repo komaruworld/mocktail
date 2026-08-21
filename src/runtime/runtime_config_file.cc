@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/runtime_config_file.h"
 
 #include <fcntl.h>
@@ -195,6 +181,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "window.title",
       "input.touch_enabled",
       "compatibility.desktop_playability",
+      "network.use_system_proxy",
       "network.proxy_host",
       "network.proxy_port",
       "integrations.discord_rpc.enabled",
@@ -424,9 +411,23 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
   }
   const auto proxy_host = value("network.proxy_host");
   const auto proxy_port = value("network.proxy_port");
+  bool use_system_proxy = false;
+  if (const auto system_proxy = value("network.use_system_proxy");
+      system_proxy.has_value()) {
+    if (!ParseBoolean(*system_proxy, &use_system_proxy)) {
+      *error = "network.use_system_proxy must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_USE_SYSTEM_PROXY"] =
+        use_system_proxy ? "1" : "0";
+  }
   if (proxy_host.has_value() != proxy_port.has_value()) {
     *error =
         "network.proxy_host and network.proxy_port must be configured together";
+    return false;
+  }
+  if (use_system_proxy && proxy_host.has_value()) {
+    *error = "network.use_system_proxy cannot be combined with a fixed proxy";
     return false;
   }
   if (proxy_host.has_value()) {
@@ -808,6 +809,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                           error) &&
       SetEnvironmentValue("MOCKTAIL_AUDIO_OUTPUT_DEVICE",
                           config.audio_output_device(), error) &&
+      SetEnvironmentValue("MOCKTAIL_USE_SYSTEM_PROXY",
+                          config.use_system_proxy() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_ENABLED",
                           config.discord_rpc().enabled ? "1" : "0", error) &&
       SetEnvironmentValue(
@@ -856,6 +859,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
          SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_PORT",
                              std::to_string(config.network_proxy()->port),
                              error) &&
+         SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_SCHEME",
+                             config.network_proxy()->scheme, error) &&
          SetEnvironmentValue("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY", "1",
                              error);
 }

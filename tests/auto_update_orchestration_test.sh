@@ -285,7 +285,6 @@ fi
 if [[ "${MOCKTAIL_ISOLATED_CANARY:-0}" == 1 ]]; then
   [[ -z "${MOCKTAIL_COOKIE_FILE+x}" &&
      "${MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP:-0}" == 1 &&
-     "${MOCKTAIL_USE_SOBER_COOKIES:-1}" == 0 &&
      "${MOCKTAIL_IGNORE_WINDOW_CLOSE:-0}" == 1 ]] || exit 1
 fi
 [[ "${VK_DRIVER_FILES:-}" == /test/mocktail-vk.json &&

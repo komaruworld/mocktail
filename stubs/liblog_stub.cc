@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Apache 2.0 License
-//
 // Redirects Android logging calls to stderr on the host.
 
 #include <atomic>

@@ -55,6 +55,15 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="1.0.3" date="2026-08-16">
+      <description>
+        <ul>
+          <li>Fixed issues with downloading Roblox on first launch</li>
+          <li>Added fflags.json for custom FFlags</li>
+          <li>Added a message if your cookies have expired</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.2" date="2026-08-14">
       <description>
         <ul>

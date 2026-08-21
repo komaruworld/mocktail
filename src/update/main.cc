@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0.
-
 #include <unistd.h>
 
 #include <array>
@@ -321,6 +318,9 @@ int main(int argc, char** argv) {
   }
   const mocktail::update::UpdateResult updated =
       mocktail::update::RunUpdate(paths, request);
+  for (const std::string& warning : updated.warnings) {
+    std::cerr << "[native-updater] warning: " << warning << '\n';
+  }
   if (!updated) {
     std::cerr << "[native-updater] " << updated.error << '\n';
     return 1;

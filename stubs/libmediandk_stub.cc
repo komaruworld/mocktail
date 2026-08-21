@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Apache 2.0 License
-//
 // Minimal libmediandk shim for video APIs imported by Roblox.
 
 #include <cstdint>

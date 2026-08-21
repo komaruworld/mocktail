@@ -79,7 +79,6 @@ run_with_override() {
     PATH="${PATH}" \
     HOME="${HOME}" \
     MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP=1 \
-    MOCKTAIL_USE_SOBER_COOKIES=0 \
     MOCKTAIL_CONFIG_ROOT="${temporary_root}/config" \
     MOCKTAIL_DATA_ROOT="${temporary_root}/data" \
     MOCKTAIL_CACHE_ROOT="${temporary_root}/cache" \

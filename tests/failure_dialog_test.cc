@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0.
-
 #include "runtime/failure_dialog.h"
 
 #include <gtest/gtest.h>
@@ -53,9 +50,11 @@ class FakeDialogHelper final {
               "capture = '"
            << capture_.string()
            << "'\n"
-              "if len(sys.argv) == 3 and sys.argv[1] == '--message':\n"
+              "if len(sys.argv) == 3 and sys.argv[1] in "
+              "('--message', '--warning'):\n"
               "    with open(capture, 'a', encoding='utf-8') as stream:\n"
-              "        stream.write('one-shot:' + sys.argv[2] + '\\n')\n"
+              "        stream.write(sys.argv[1] + ':' + sys.argv[2] + "
+              "'\\n')\n"
               "    raise SystemExit(0)\n"
               "channel = socket.socket(fileno=0)\n"
               "while True:\n"
@@ -134,8 +133,10 @@ TEST(FailureDialogTest, OneShotPassesAUserFacingMessage) {
   const MapEnvironment environment = DialogEnvironment(helper);
 
   ASSERT_TRUE(ShowFailureDialog(environment, "Already running."));
+  ASSERT_TRUE(ShowWarningDialog(environment, "Sign in again."));
   EXPECT_EQ(ReadLines(helper.capture()),
-            std::vector<std::string>({"one-shot:Already running."}));
+            std::vector<std::string>({"--message:Already running.",
+                                      "--warning:Sign in again."}));
 }
 
 TEST(FailureDialogTest, MonitorDismissesAfterSuccessfulShutdown) {

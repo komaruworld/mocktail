@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0.
-
 #include <gtest/gtest.h>
 #include <minizip/zip.h>
 #include <unistd.h>
@@ -106,6 +103,7 @@ TEST(NativeUpdateConfigTest, ReadsOnlyTypedUpdaterSection) {
         "updates:\n"
         "  automatic: false\n"
         "  source: apk-pure\n"
+        "  version: 2.734.917\n"
         "  launch_after_update: true\n");
   const UpdateConfigResult result = LoadUpdateConfig(config);
   ASSERT_TRUE(result) << result.error;
@@ -113,6 +111,20 @@ TEST(NativeUpdateConfigTest, ReadsOnlyTypedUpdaterSection) {
   EXPECT_FALSE(result.config.automatic);
   EXPECT_TRUE(result.config.launch_after_update);
   EXPECT_EQ(result.config.source, "apk-pure");
+  EXPECT_EQ(result.config.version, "2.734.917");
+  EXPECT_TRUE(result.warnings.empty());
+}
+
+TEST(NativeUpdateConfigTest, IgnoresDeprecatedTestingLatestOnlyWithWarning) {
+  TemporaryDirectory temporary;
+  const auto config = temporary.root() / "config.yaml";
+  Write(config,
+        "version: 1\nupdates:\n  testing_latest_only: true\n");
+  const UpdateConfigResult result = LoadUpdateConfig(config);
+  ASSERT_TRUE(result) << result.error;
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_NE(result.warnings.front().find("no longer supported"),
+            std::string::npos);
 }
 
 TEST(NativeUpdateConfigTest, MissingFileUsesSafeDefaults) {

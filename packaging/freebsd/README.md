@@ -47,5 +47,36 @@ You can simply run the Mocktail AppImage from the
 [nightly build](https://github.com/komaruworld/mocktail/releases/tag/continuous)
 inside the Fedora userspace.
 
+## Audio
+
+Install the ALSA OSS plugin inside the Fedora userspace.
+
+```sh
+dnf install -y alsa-lib alsa-plugins-oss
+```
+
+On the FreeBSD host, use `cat /dev/sndstat` to find the correct audio device.
+The number is system-specific: it may be `/dev/dsp0`, `/dev/dsp1`,
+`/dev/dsp2`, or another device. Replace `/dev/dsp3` below with yours.
+
+```sh
+cat << 'EOF' > /etc/asound.conf
+pcm.!default {
+    type oss
+    device /dev/dsp3
+}
+ctl.!default {
+    type oss
+    device /dev/dsp3
+}
+EOF
+```
+
+Launch Mocktail with the ALSA audio driver.
+
+```sh
+SDL_AUDIO_DRIVER=alsa ./Mocktail-x86_64.AppImage
+```
+
 Mocktail cannot override this check because Roblox reads `/proc` directly. The
 Linuxulator patch fixes the value before Roblox sees it.

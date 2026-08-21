@@ -16,8 +16,8 @@
       "version_name": "2.725.1142",
       "version_code": 2546,
       "elf_build_id": "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21",
-      "status": "supported",
-      "default_allowed": true,
+      "status": "experimental",
+      "default_allowed": false,
       "allow_legacy_binary_patches": false,
       "allow_host_abi_bridges": true,
       "allow_host_constructor_replay": true,
@@ -36,12 +36,23 @@
       "version_name": "2.727.1199",
       "version_code": 2628,
       "elf_build_id": "1686400865ae0e408cd7bd67de7a439625c6fd13",
+      "status": "experimental",
+      "default_allowed": false,
+      "allow_legacy_binary_patches": false,
+      "allow_host_abi_bridges": true,
+      "allow_host_constructor_replay": true,
+      "reason": "Verified 2026-07-16 on the current host: independently signature-matched native allocator and pre-JNI state, 3479 constructors replayed without recovery, JNI_OnLoad and ASMA/V2 startup, 2988 Vulkan shaders, a real vkQueuePresentKHR, and explicit lifecycle teardown to Stopped; legacy executable patches and signal recovery remain disabled."
+    },
+    {
+      "version_name": "2.734.917",
+      "version_code": 2908,
+      "elf_build_id": "63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
       "status": "supported",
       "default_allowed": true,
       "allow_legacy_binary_patches": false,
       "allow_host_abi_bridges": true,
       "allow_host_constructor_replay": true,
-      "reason": "Verified 2026-07-16 on the current host: independently signature-matched native allocator and pre-JNI state, 3479 constructors replayed without recovery, JNI_OnLoad and ASMA/V2 startup, 2988 Vulkan shaders, a real vkQueuePresentKHR, and explicit lifecycle teardown to Stopped; legacy executable patches and signal recovery remain disabled."
+      "reason": "APKPure x86_64 artifact identity is known, but this build must derive an exact ABI profile from the verified reference and pass probation before activation."
     }
   ]
 }

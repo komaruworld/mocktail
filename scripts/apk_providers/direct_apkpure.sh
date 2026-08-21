@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PACKAGE=""
-VERSION=""
+VERSION="2.734.917"
 OUTPUT=""
 CHECK=false
 while (( $# > 0 )); do

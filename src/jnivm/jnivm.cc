@@ -1,17 +1,3 @@
-// Copyright 2026 Sober Test Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "jnivm/jnivm.h"
 
 #include <algorithm>
@@ -1103,14 +1089,6 @@ std::string MocktailConfigRoot() {
   return HomePath("/.config/mocktail");
 }
 
-std::string SoberDataRoot() {
-  const char* root = std::getenv("MOCKTAIL_SOBER_DATA_ROOT");
-  if (root && root[0] != '\0') {
-    return root;
-  }
-  return HomePath("/.var/app/org.vinegarhq.Sober/data/sober");
-}
-
 void EnsureCookieStoreLoadedLocked() {
   if (g_cookie_store_loaded) {
     return;
@@ -1128,10 +1106,6 @@ void EnsureCookieStoreLoadedLocked() {
   if (g_cookie_header.empty()) {
     g_cookie_header =
         NormalizeCookieHeader(ReadTextFile(MocktailConfigRoot() + "/cookie"));
-  }
-  if (g_cookie_header.empty()) {
-    g_cookie_header =
-        NormalizeCookieHeader(ReadTextFile(SoberDataRoot() + "/cookies"));
   }
   if (TraceEnabled()) {
     std::cout << "  [JNI] cookie store loaded bytes="

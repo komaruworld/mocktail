@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0.
-
 #include "update/update_coordinator.h"
 
 #include <fcntl.h>
@@ -235,8 +232,7 @@ ReferenceProfile ResolveReference(const UpdatePaths& paths,
                                   ApkPureProvider* provider,
                                   PayloadStore* store,
                                   const std::filesystem::path& workspace,
-                                  int progress_fd,
-                                  bool allow_reference_download) {
+                                  int progress_fd) {
   ReferenceProfile result;
   if (installed && !installed.host_abi_profile.empty()) {
     std::error_code filesystem_error;
@@ -261,12 +257,6 @@ ReferenceProfile ResolveReference(const UpdatePaths& paths,
                                        filesystem_error)) {
     result.library = preferred_directory / "libroblox.so";
     result.profile = paths.host_abi_reference_profile;
-    return result;
-  }
-  if (!allow_reference_download) {
-    result.error =
-        "updates.testing_latest_only requires an installed HostAbi reference; "
-        "downloading an older reference payload is disabled";
     return result;
   }
   Candidate downloaded =
@@ -358,6 +348,7 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   if (!update_lock) return result;
 
   const UpdateConfigResult configured = LoadUpdateConfig(paths.config_file);
+  result.warnings = configured.warnings;
   if (!configured) {
     result.error = configured.error;
     return result;
@@ -403,10 +394,18 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     return result;
   }
   ApkPureProvider provider;
+  std::optional<SupportedPayloadProfile> configured_profile;
+  if (!configured.config.version.empty()) {
+    configured_profile =
+        FindSupportedProfile(catalog.profiles, configured.config.version);
+    if (!configured_profile.has_value()) {
+      result.error = "configured Roblox version " + configured.config.version +
+                     " is not present in the compatibility catalog";
+      return result;
+    }
+  }
   std::optional<ProviderVersion> latest_version;
-  const bool check_latest =
-      request.check_latest || configured.config.testing_latest_only;
-  if (check_latest) {
+  if (request.check_latest && !configured_profile.has_value()) {
     Progress(request.progress_fd, "Checking Roblox...");
     const ProviderVersion latest = provider.CheckLatest();
     if (latest) {
@@ -430,13 +429,6 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
             "update metadata is temporarily unavailable: " + latest.error;
         return result;
       }
-      if (configured.config.testing_latest_only) {
-        result.error =
-            "updates.testing_latest_only requires available provider latest "
-            "metadata: " +
-            latest.error;
-        return result;
-      }
     }
   }
   const std::filesystem::path workspace = UniqueDirectory(
@@ -447,7 +439,18 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     std::filesystem::remove_all(workspace, filesystem_error);
   };
   Candidate candidate;
-  if (latest_version.has_value() && installed &&
+  if (configured_profile.has_value() && installed &&
+      installed.version_name == configured_profile->version_name &&
+      installed.version_code == configured_profile->version_code &&
+      !installed.host_abi_profile.empty() &&
+      !installed.compatibility_manifest.empty()) {
+    candidate.staged = installed;
+    candidate.identity = {installed.version_name, installed.version_code,
+                          installed.build_id};
+    candidate.exact_supported = true;
+    candidate.profile = installed.host_abi_profile;
+    candidate.compatibility = installed.compatibility_manifest;
+  } else if (latest_version.has_value() && installed &&
       SameVersion(installed, *latest_version) &&
       !installed.host_abi_profile.empty() &&
       !installed.compatibility_manifest.empty()) {
@@ -459,7 +462,10 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   } else {
     ExpectedPayloadIdentity identity;
     std::optional<SupportedPayloadProfile> exact;
-    if (latest_version.has_value()) {
+    if (configured_profile.has_value()) {
+      exact = configured_profile;
+      identity = ExactPayloadIdentity(*configured_profile);
+    } else if (latest_version.has_value()) {
       identity.version_name = latest_version->version_name;
       identity.version_code = latest_version->version_code;
       exact = FindSupportedProfile(catalog.profiles, identity.version_name,
@@ -490,11 +496,11 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   }
 
   std::string candidate_error = candidate.error;
+  bool candidate_rejected = false;
   if (candidate && !candidate.exact_supported && candidate.profile.empty()) {
     const ReferenceProfile reference =
         ResolveReference(paths, installed, *preferred, &provider, &store,
-                         workspace, request.progress_fd,
-                         !configured.config.testing_latest_only);
+                         workspace, request.progress_fd);
     if (!reference) {
       candidate_error = reference.error;
     } else {
@@ -508,6 +514,7 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
       const HostAbiDerivationResult derived = DeriveHostAbiProfile(derivation);
       if (!derived) {
         candidate_error = derived.error;
+        candidate_rejected = true;
       } else {
         candidate.profile = derived.profile;
         candidate.compatibility = derived.compatibility_manifest;
@@ -518,6 +525,7 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   if (candidate_error.empty()) {
     promoted =
         PromoteCandidate(paths, request, candidate, &store, &candidate_error);
+    candidate_rejected = !candidate_error.empty();
   }
   if (candidate_error.empty() && promoted) {
     result.changed = !current || current.payload_id != promoted.payload_id;
@@ -536,23 +544,22 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     return result;
   }
 
-  if (candidate && !candidate_error.empty()) {
+  if (candidate && candidate_rejected) {
     RecordRejection(paths, candidate, request.canary_graphics_backend,
                     candidate_error);
+  }
+
+  if (configured_profile.has_value()) {
+    result.error = "configured Roblox " + configured_profile->version_name +
+                   " could not be installed: " + candidate_error;
+    cleanup();
+    return result;
   }
 
   if (current) {
     result.payload_id = current.payload_id;
     result.message = "latest Roblox candidate was rejected; kept " +
                      current.version_name + ": " + candidate_error;
-    cleanup();
-    return result;
-  }
-
-  if (configured.config.testing_latest_only) {
-    result.error = "latest Roblox failed probation (" + candidate_error +
-                   "); updates.testing_latest_only forbids activating an "
-                   "older supported fallback";
     cleanup();
     return result;
   }

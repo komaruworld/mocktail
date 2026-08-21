@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// SPDX-License-Identifier: Apache-2.0
-
 #include <dlfcn.h>
 
 #include <cstring>

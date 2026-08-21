@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/webview_helper_launcher.h"
 
 #include <gtest/gtest.h>
@@ -394,7 +380,7 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
                                   ready.string() +
                                   "'\n"
                                   "index=0\n"
-                                  "while [ \"$index\" -lt 9 ]; do\n"
+                                  "while [ \"$index\" -lt 10 ]; do\n"
                                   "  dd bs=65548 count=1 status=none <&198 >'" +
                                   packet_prefix +
                                   "'\"$index\" || exit 21\n"
@@ -420,6 +406,7 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
   EXPECT_TRUE(result.process->SetShowDomainAsTitle(true));
   EXPECT_TRUE(result.process->SetRobloxCookie("_|signed-token"));
   EXPECT_TRUE(result.process->SetRobloxCookie({}));
+  EXPECT_TRUE(result.process->ClearRobloxCookie());
   EXPECT_TRUE(result.process->RequestClose());
   ASSERT_TRUE(
       WaitForProcessToBeReaped(result.process_id, std::chrono::seconds(2)));
@@ -433,6 +420,7 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
       WebViewHelperControlOperation::kSetShowDomainAsTitle,
       WebViewHelperControlOperation::kSetRobloxCookie,
       WebViewHelperControlOperation::kRetainPersistentRobloxCookie,
+      WebViewHelperControlOperation::kClearRobloxCookie,
       WebViewHelperControlOperation::kClose,
   };
   const std::vector<std::string> expected_payloads = {
@@ -443,6 +431,7 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
       std::string(1, '\1'),
       std::string(1, '\1'),
       "_|signed-token",
+      "",
       "",
       "",
   };

@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0 (the "License").
-
 #ifndef MOCKTAIL_AUDIO_ROBLOX_OUTPUT_DEVICE_BRIDGE_INTERNAL_H_
 #define MOCKTAIL_AUDIO_ROBLOX_OUTPUT_DEVICE_BRIDGE_INTERNAL_H_
 

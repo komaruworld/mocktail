@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/runtime_paths.h"
 
 #define JSON_NOEXCEPTION 1
@@ -358,13 +344,6 @@ RuntimePaths RuntimePaths::FromEnvironment(
   paths.active_payload_manifest_ = paths.data_root_ / "current.json";
 
   paths.cookie_file_ = paths.auth_root_ / "roblox.cookie";
-  paths.default_sober_rejection_file_ =
-      paths.auth_root_ / "default-sober-rejection";
-  paths.sober_cookie_file_ =
-      environment.HasNonEmpty("MOCKTAIL_SOBER_COOKIE_FILE")
-          ? std::filesystem::path(
-                environment.GetOr("MOCKTAIL_SOBER_COOKIE_FILE", ""))
-          : paths.sober_data_root_ / "cookies";
   paths.use_real_sober_paths_ =
       LegacyEnabled(environment, "MOCKTAIL_USE_REAL_SOBER_PATHS");
   return paths;

@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/roblox_experience_composition.h"
 
 #include <cerrno>
@@ -275,7 +261,8 @@ RobloxExperienceComposition::RobloxExperienceComposition(
     RobloxGameSurfaceJniConfig surface_config,
     const SecureRobloxCredential* initial_web_view_credential,
     RobloxExperienceSurfaceProvider surface_provider,
-    RobloxExperiencePresenceObserver presence_observer)
+    RobloxExperiencePresenceObserver presence_observer,
+    bool clear_persisted_web_view_cookie)
     : environment_(environment),
       message_bus_symbols_(message_bus_symbols),
       web_view_symbols_(web_view_symbols),
@@ -292,7 +279,8 @@ RobloxExperienceComposition::RobloxExperienceComposition(
                                                 &SnapshotProductionSurface}),
       presence_observer_(presence_observer),
       web_surface_exit_target_(std::make_shared<WebSurfaceExitTarget>()),
-      lifecycle_target_(std::make_shared<LifecycleTarget>()) {
+      lifecycle_target_(std::make_shared<LifecycleTarget>()),
+      clear_persisted_web_view_cookie_(clear_persisted_web_view_cookie) {
   web_surface_exit_target_->composition = this;
   lifecycle_target_->composition = this;
   if (initial_web_view_credential != nullptr) {
@@ -471,6 +459,7 @@ Status RobloxExperienceComposition::OpenWebSurface(
   SecureWebViewRobloxCookie cookie;
   uint64_t process_generation = 0;
   uint64_t logical_generation = 0;
+  bool clear_persisted_cookie = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!web_view_cookie_synchronized_) {
@@ -478,6 +467,7 @@ Status RobloxExperienceComposition::OpenWebSurface(
     }
     current = web_surface_process_;
     cookie = web_view_cookie_.Clone();
+    clear_persisted_cookie = clear_persisted_web_view_cookie_;
     process_generation = web_surface_process_generation_;
     logical_generation = next_web_surface_logical_generation_++;
     if (logical_generation == 0 || next_web_surface_logical_generation_ == 0) {
@@ -510,12 +500,15 @@ Status RobloxExperienceComposition::OpenWebSurface(
   }
 
   // Serialize setup so presentation state cannot leak between routes.
+  const bool cookie_synchronized =
+      clear_persisted_cookie ? current->ClearRobloxCookie()
+                             : current->SetRobloxCookie(cookie.value());
   if (!current->SetTitle(presentation.title) ||
       !current->SetVisible(presentation.visible) ||
       !current->SetBackNavigationDisabled(
           presentation.back_navigation_disabled) ||
       !current->SetShowDomainAsTitle(presentation.show_domain_as_title) ||
-      !current->SetRobloxCookie(cookie.value()) ||
+      !cookie_synchronized ||
       (!spawn && !current->LoadUrl(url))) {
     (void)current->RequestClose();
     return Unavailable("could not configure reusable Roblox web surface");
@@ -692,6 +685,7 @@ Status RobloxExperienceComposition::DispatchWebViewCookie(
     std::lock_guard<std::mutex> lock(composition->mutex_);
     composition->web_view_cookie_ = std::move(prepared.cookie);
     composition->web_view_cookie_synchronized_ = true;
+    composition->clear_persisted_web_view_cookie_ = false;
     cookie = composition->web_view_cookie_.Clone();
     process = composition->web_surface_process_;
   }

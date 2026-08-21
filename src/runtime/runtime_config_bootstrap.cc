@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/runtime_config_bootstrap.h"
 
 #include <fcntl.h>
@@ -130,13 +116,16 @@ window:
   # String (default: Roblox): window title.
   title: Roblox
 
-# Optional host HTTP proxy. Uncomment both values together. The host must not
-# contain a scheme such as http://.
-# network:
-#   # String (optional, default: disabled): proxy host name or IP address.
-#   proxy_host: 127.0.0.1
-#   # Integer (optional, default: disabled): proxy TCP port from 1 to 65535.
-#   proxy_port: 8080
+network:
+  # Boolean (default: false): follow the host HTTP/SOCKS5 proxy and
+  # automatically use its current port. Do not combine with a fixed proxy.
+  use_system_proxy: false
+  # Optional fixed HTTP proxy. Uncomment both values together. The host must
+  # not contain a scheme such as http://.
+  # String (optional, default: disabled): proxy host name or IP address.
+  # proxy_host: 127.0.0.1
+  # Integer (optional, default: disabled): proxy TCP port from 1 to 65535.
+  # proxy_port: 8080
 
 updates:
   # Boolean (default: true): check the latest Roblox version, derive an exact
@@ -144,11 +133,6 @@ updates:
   # backend, and promote only on success. An existing current payload is
   # preserved when probation fails.
   automatic: true
-  # Boolean (default: true): testing track. Always try provider latest, even
-  # when it has no verified payload profile, and do not download or activate
-  # an older supported payload in its place. Exact HostAbi derivation and two
-  # canaries are still required before latest can become current.
-  testing_latest_only: true
   # String (default: apk-pure): direct x86_64 APK provider.
   source: apk-pure
   # Reserved for desktop update integrations. `mocktail_updater` itself never

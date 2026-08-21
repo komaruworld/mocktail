@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #ifndef MOCKTAIL_RUNTIME_AUTH_RUNTIME_COMPOSITION_H_
 #define MOCKTAIL_RUNTIME_AUTH_RUNTIME_COMPOSITION_H_
 
@@ -94,14 +80,14 @@ struct AuthRuntimeComposition {
   jnivm::RobloxAuthIdentity account_identity;
   SecureRobloxCredential credential;
   long http_status = 0;
+  bool rejected_credential_retired = false;
   std::string error;
 
   explicit operator bool() const { return jni_vm != nullptr; }
 };
 
-// A VM requires authentication or explicit guest mode. HTTP 401 clears only a
-// managed credential; rejected Sober credentials are suppressed without
-// changing Sober's file.
+// A VM requires authentication or explicit guest mode. HTTP 401/403 clears
+// only Mocktail's managed credential.
 AuthRuntimeComposition ComposeAuthRuntime(const Environment& environment,
                                           const RuntimePaths& paths,
                                           services::AuthService& auth_service);

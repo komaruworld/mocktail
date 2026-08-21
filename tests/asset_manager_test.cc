@@ -1,11 +1,6 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
+#include "libc_shim/vulkan_etc1_sky_transcoder.h"
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -67,6 +62,17 @@ class AssetManagerTest : public ::testing::Test {
 
 TEST_F(AssetManagerTest, FromJavaReturnsSingletonManager) {
   EXPECT_NE(AAssetManager_fromJava(nullptr, nullptr), nullptr);
+}
+
+TEST_F(AssetManagerTest, ConvertsSolidEtc1RgbBlockToOpaqueBc1) {
+  const std::array<uint8_t, 8> etc1 = {0x55, 0x77, 0x99, 0, 0, 0, 0, 0};
+  std::array<uint8_t, 8> bc1{};
+
+  libc_shim::ConvertEtc1RgbBlockToBc1(etc1.data(), bc1.data());
+
+  const uint16_t endpoint0 = static_cast<uint16_t>(bc1[0] | (bc1[1] << 8));
+  const uint16_t endpoint1 = static_cast<uint16_t>(bc1[2] | (bc1[3] << 8));
+  EXPECT_GT(endpoint0, endpoint1);
 }
 
 TEST_F(AssetManagerTest, OpenReadSeekAndBufferUseConfiguredAssetRoot) {

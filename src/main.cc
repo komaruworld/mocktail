@@ -1,11 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -49,8 +41,10 @@
 #include "runtime/single_instance_lock.h"
 #include "runtime/support_bundle.h"
 #include "runtime/supported_launch_policy.h"
+#include "runtime/system_proxy.h"
 #include "services/auth_service.h"
 #include "services/browser_tracker_service.h"
+#include "services/client_settings_service.h"
 #include "services/http_client.h"
 #include "window/window.h"
 
@@ -236,6 +230,38 @@ int main(int argc, char* argv[]) {
     }
     return EXIT_FAILURE;
   }
+  if (runtime_config.config.use_system_proxy()) {
+    const mocktail::runtime::SystemProxyResult system_proxy =
+        mocktail::runtime::ResolveSystemProxy();
+    const std::string proxy_host = system_proxy.proxy.has_value()
+                                       ? system_proxy.proxy->host
+                                       : std::string();
+    const std::string proxy_port =
+        system_proxy.proxy.has_value()
+            ? std::to_string(system_proxy.proxy->port)
+            : std::string();
+    const std::string proxy_scheme = system_proxy.proxy.has_value()
+                                         ? system_proxy.proxy->scheme
+                                         : std::string();
+    if (!system_proxy ||
+        setenv("MOCKTAIL_HTTP_PROXY_HOST", proxy_host.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_HTTP_PROXY_PORT", proxy_port.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_HTTP_PROXY_SCHEME", proxy_scheme.c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot resolve host system proxy";
+      if (!system_proxy.error.empty()) {
+        std::cerr << ": " << system_proxy.error;
+      }
+      std::cerr << '\n';
+      return EXIT_FAILURE;
+    }
+    runtime_config = mocktail::runtime::LoadRuntimeConfig(
+        environment, paths.config_file());
+    if (!runtime_config) {
+      std::cerr << "[FATAL] Cannot apply host system proxy: "
+                << runtime_config.error << '\n';
+      return EXIT_FAILURE;
+    }
+  }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       runtime_config.config.has_unsafe_detached_thread_overrides()) {
     std::cerr << "[FATAL] Unsupported detached legacy thread overrides:\n";
@@ -287,6 +313,17 @@ int main(int argc, char* argv[]) {
   if (config_bootstrap.created()) {
     std::cout << "  [runtime] created first-run configuration: "
               << paths.config_file() << '\n';
+  }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
+      runtime_config.config.use_system_proxy()) {
+    if (runtime_config.config.network_proxy().has_value()) {
+      std::cout << "  [network] system proxy="
+                << mocktail::runtime::BuildNetworkProxyUrl(
+                       *runtime_config.config.network_proxy())
+                << '\n';
+    } else {
+      std::cout << "  [network] system proxy=direct\n";
+    }
   }
   if (use_memory_limit) {
     if (cgroup_limit.active()) {
@@ -519,11 +556,24 @@ int main(int argc, char* argv[]) {
               << runtime_config.config.device_profile().display_name << "\"\n";
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    const std::filesystem::path fflags_path =
+        paths.config_root() / "fflags.json";
+    const auto fflags = mocktail::services::LoadAndMergeFflagsFile(
+        fflags_path,
+        environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON", "{}"));
+    if (!fflags.error.empty()) {
+      std::cerr << "[FATAL] Cannot load FFlag overrides from " << fflags_path
+                << ": " << fflags.error << '\n';
+      return EXIT_FAILURE;
+    }
+    if (fflags.loaded) {
+      std::cout << "  [runtime] loaded " << fflags.count
+                << " FFlag overrides from " << fflags_path << '\n';
+    }
     std::string client_settings_overrides;
     if (!mocktail::runtime::MergeRuntimeClientSettingsOverrides(
             runtime_config.config.frame_rate(),
-            runtime_config.config.performance(),
-            environment.GetOr("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON", "{}"),
+            runtime_config.config.performance(), fflags.json,
             &client_settings_overrides, &command_line_error)) {
       std::cerr << "[FATAL] Cannot apply runtime client-settings policy: "
                 << command_line_error << '\n';
@@ -643,10 +693,6 @@ int main(int argc, char* argv[]) {
       tracker_cookie_owned = false;
     } else if (mocktail::runtime::RuntimePaths::Exists(paths.cookie_file())) {
       tracker_cookie_file = paths.cookie_file();
-    } else if (mocktail::runtime::RuntimePaths::Exists(
-                   paths.sober_cookie_file())) {
-      tracker_cookie_file = paths.sober_cookie_file();
-      tracker_cookie_owned = false;
     }
     const mocktail::services::BrowserTrackerResult browser_tracker_result =
         browser_tracker.EnsureInitialized(app_storage_file, tracker_cookie_file,
@@ -693,10 +739,14 @@ int main(int argc, char* argv[]) {
         std::string(runtime_config.config.device_profile().device_sku),
         std::string(runtime_config.config.device_profile().soc_model),
     });
-    if (composition.status == mocktail::runtime::AuthRuntimeStatus::kGuest &&
-        composition.http_status == 401) {
-      std::cout << "  [auth] rejected saved Roblox credential retired; "
-                   "continuing with native sign-in\n";
+    if (composition.rejected_credential_retired) {
+      constexpr std::string_view kSignedOutMessage =
+          "Your saved Roblox session is no longer valid. Sign in again to "
+          "continue.";
+      std::cout << "  [auth] saved Roblox session expired; continuing with "
+                   "native sign-in\n";
+      (void)mocktail::runtime::ShowWarningDialog(environment,
+                                                 kSignedOutMessage);
     }
     if (composition.status ==
         mocktail::runtime::AuthRuntimeStatus::kAuthenticated) {

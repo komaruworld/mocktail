@@ -1,18 +1,5 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/runtime_config.h"
+#include "runtime/system_proxy.h"
 
 #include <gtest/gtest.h>
 
@@ -77,6 +64,7 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_TRUE(config.performance().physics_worker_mode_valid);
   EXPECT_EQ(config.audio_output_device(), "default");
   EXPECT_TRUE(config.audio_output_device_valid());
+  EXPECT_FALSE(config.use_system_proxy());
   EXPECT_FALSE(config.network_proxy().has_value());
   EXPECT_FALSE(config.discord_rpc().enabled);
   EXPECT_TRUE(config.discord_rpc().show_place_name);
@@ -165,6 +153,20 @@ TEST(RuntimeConfigTest, BuildsBracketedIpv6ProxyUrl) {
       ParseNetworkProxyConfig("::1", "8080");
   ASSERT_TRUE(proxy.has_value());
   EXPECT_EQ(BuildNetworkProxyUrl(*proxy), "http://[::1]:8080");
+}
+
+TEST(SystemProxyTest, SelectsHttpAndSocksProxies) {
+  const SystemProxyResult https =
+      SelectSystemProxy({"https://127.0.0.1:7890"});
+  ASSERT_TRUE(https) << https.error;
+  ASSERT_TRUE(https.proxy.has_value());
+  EXPECT_EQ(BuildNetworkProxyUrl(*https.proxy), "http://127.0.0.1:7890");
+
+  const SystemProxyResult socks =
+      SelectSystemProxy({"socks://127.0.0.1:1080"});
+  ASSERT_TRUE(socks) << socks.error;
+  ASSERT_TRUE(socks.proxy.has_value());
+  EXPECT_EQ(BuildNetworkProxyUrl(*socks.proxy), "socks5h://127.0.0.1:1080");
 }
 
 TEST(RuntimeConfigTest, RejectsMalformedDiscordApplicationId) {

@@ -101,6 +101,18 @@ Direct AppImage, DEB, and RPM downloads are available from the
 
 </details>
 
+## FFlag overrides
+
+Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
+`~/.config/mocktail/fflags.json`). Mocktail applies it on the next launch.
+
+```json
+{
+  "FFlagExample": "True",
+  "DFIntExample": "120"
+}
+```
+
 ## Building
 
 Linux `x86_64` is supported. Experimental FreeBSD 15.1 Linuxulator support has

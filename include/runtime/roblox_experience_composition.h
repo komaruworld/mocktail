@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #ifndef MOCKTAIL_RUNTIME_ROBLOX_EXPERIENCE_COMPOSITION_H_
 #define MOCKTAIL_RUNTIME_ROBLOX_EXPERIENCE_COMPOSITION_H_
 
@@ -123,7 +109,8 @@ class RobloxExperienceComposition final {
       RobloxGameSurfaceJniConfig surface_config = {},
       const SecureRobloxCredential* initial_web_view_credential = nullptr,
       RobloxExperienceSurfaceProvider surface_provider = {},
-      RobloxExperiencePresenceObserver presence_observer = {});
+      RobloxExperiencePresenceObserver presence_observer = {},
+      bool clear_persisted_web_view_cookie = false);
   ~RobloxExperienceComposition();
 
   RobloxExperienceComposition(const RobloxExperienceComposition&) = delete;
@@ -259,6 +246,7 @@ class RobloxExperienceComposition final {
   SecureWebViewRobloxCookie web_view_cookie_;
   std::string web_view_cookie_initialization_error_;
   bool web_view_cookie_synchronized_ = false;
+  bool clear_persisted_web_view_cookie_ = false;
   std::deque<RobloxExperienceLaunchRequest> pending_launch_requests_;
   std::unique_ptr<LaunchTask> active_launch_;
   std::optional<RobloxExperienceLaunchRequest> presence_request_;

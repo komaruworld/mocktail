@@ -8,7 +8,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(Mocktail
-  VERSION 1.0.2
+  VERSION 1.0.3
   DESCRIPTION "Android x86-64 Roblox compatibility runtime for Linux"
   LANGUAGES CXX
 )
@@ -207,6 +207,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
 pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET minizip)
 pkg_check_modules(CAPSTONE REQUIRED IMPORTED_TARGET capstone)
+pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
 pkg_check_modules(LIBADWAITA REQUIRED IMPORTED_TARGET "libadwaita-1>=1.6")
 pkg_check_modules(WEBKITGTK6 REQUIRED IMPORTED_TARGET webkitgtk-6.0)
@@ -298,6 +299,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/startup_state_machine.cc
   src/runtime/supported_launch_policy.cc
   src/runtime/support_bundle.cc
+  src/runtime/system_proxy.cc
 )
 add_library(Mocktail::Runtime ALIAS mocktail_runtime)
 target_include_directories(mocktail_runtime PUBLIC include)
@@ -331,6 +333,7 @@ target_link_libraries(mocktail_runtime PRIVATE
   Mocktail::CryptoFoundation
   CURL::libcurl
   nlohmann_json::nlohmann_json
+  PkgConfig::GIO
   PkgConfig::LIBYAML
   ${CMAKE_DL_LIBS}
 )
@@ -409,9 +412,6 @@ target_link_libraries(mocktail_auth_runtime_composition PUBLIC
   mocktail_legacy_jnivm
   mocktail_runtime
   mocktail_services
-)
-target_link_libraries(mocktail_auth_runtime_composition PRIVATE
-  Mocktail::CryptoFoundation
 )
 mocktail_apply_compile_options(mocktail_auth_runtime_composition)
 
@@ -528,6 +528,19 @@ target_include_directories(mocktail_bionic_abi_exports
   PRIVATE src
 )
 mocktail_apply_compile_options(mocktail_bionic_abi_exports)
+# These exported Bionic FORTIFY symbols intentionally overlap glibc's
+# __*_chk entry points.  When the bridge is visible to whole-program LTO,
+# GCC can fold a fortified host call back into its own compatibility wrapper
+# and turn the resulting tail recursion into an infinite loop.  Keep this
+# translation unit opaque to interprocedural optimization and make its calls
+# to the host C library explicit external calls.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_property(SOURCE src/compat/bionic_abi_exports.cc APPEND PROPERTY
+    COMPILE_OPTIONS
+      -fno-lto
+      -fno-builtin
+  )
+endif()
 target_link_libraries(mocktail_bionic_abi_exports PRIVATE
   mocktail_bionic_stdio_runtime
   mocktail_window

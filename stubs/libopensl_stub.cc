@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Apache 2.0 License
-//
 // Test fixture for libOpenSLES.so and libOpenMAXAL.so. Engine creation requires
 // MOCKTAIL_ENABLE_TEST_AUDIO_STUBS=1; audio capture is not implemented.
 

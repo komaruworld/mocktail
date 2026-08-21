@@ -98,13 +98,16 @@ window:
   # String (default: Roblox): window title.
   title: Roblox
 
-# Optional host HTTP proxy. Uncomment both values together. The host must not
-# contain a scheme such as http://.
-# network:
-#   # String (optional, default: disabled): proxy host name or IP address.
-#   proxy_host: 127.0.0.1
-#   # Integer (optional, default: disabled): proxy TCP port from 1 to 65535.
-#   proxy_port: 8080
+network:
+  # Boolean (default: false): follow the host HTTP/SOCKS5 proxy and
+  # automatically use its current port. Do not combine with a fixed proxy.
+  use_system_proxy: false
+  # Optional fixed HTTP proxy. Uncomment both values together. The host must
+  # not contain a scheme such as http://.
+  # String (optional, default: disabled): proxy host name or IP address.
+  # proxy_host: 127.0.0.1
+  # Integer (optional, default: disabled): proxy TCP port from 1 to 65535.
+  # proxy_port: 8080
 
 updates:
   # Boolean (default: true): check the latest Roblox version, derive an exact
@@ -112,13 +115,11 @@ updates:
   # backend, and promote only on success. An existing current payload is
   # preserved when probation fails.
   automatic: true
-  # Boolean (default: true): testing track. Always try provider latest, even
-  # when it has no verified payload profile, and do not download or activate
-  # an older supported payload in its place. Exact HostAbi derivation and two
-  # canaries are still required before latest can become current.
-  testing_latest_only: true
   # String (default: apk-pure): direct x86_64 APK provider.
   source: apk-pure
+  # String (optional): pin the direct provider to an exact Roblox version name
+  # (for example, 2.734.917). Remove this line to resume latest-version updates.
+  # version: 2.734.917
   # Reserved for desktop update integrations. `mocktail_updater` itself never
   # launches another process after changing the active payload.
   launch_after_update: false

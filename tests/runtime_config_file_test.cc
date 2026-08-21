@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/runtime_config_file.h"
 
 #include <gtest/gtest.h>
@@ -193,6 +179,7 @@ TEST(RuntimeConfigBootstrapTest,
     EXPECT_NE(defaults.find(documented_setting), std::string::npos)
         << documented_setting;
   }
+  EXPECT_EQ(defaults.find("testing_latest_only"), std::string::npos);
 }
 
 TEST(RuntimeConfigBootstrapTest, PreservesExistingRegularFile) {
@@ -494,9 +481,24 @@ network:
   EXPECT_NE(loaded.error.find("1 to 65535"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, LoadsSystemProxyFlagWithoutFixedEndpoint) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path path = temporary.Write(R"yaml(
+version: 1
+network:
+  use_system_proxy: true
+)yaml");
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), path);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.use_system_proxy());
+  EXPECT_FALSE(loaded.config.network_proxy().has_value());
+}
+
 TEST(RuntimeConfigFileTest, ExportsProxyVariablesOnlyWhenConfigured) {
   unsetenv("MOCKTAIL_HTTP_PROXY_HOST");
   unsetenv("MOCKTAIL_HTTP_PROXY_PORT");
+  unsetenv("MOCKTAIL_HTTP_PROXY_SCHEME");
   unsetenv("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY");
   std::string error;
   ASSERT_TRUE(ExportRuntimeConfigEnvironment(
@@ -512,12 +514,15 @@ TEST(RuntimeConfigFileTest, ExportsProxyVariablesOnlyWhenConfigured) {
   ASSERT_TRUE(ExportRuntimeConfigEnvironment(configured, &error)) << error;
   ASSERT_NE(getenv("MOCKTAIL_HTTP_PROXY_HOST"), nullptr);
   ASSERT_NE(getenv("MOCKTAIL_HTTP_PROXY_PORT"), nullptr);
+  ASSERT_NE(getenv("MOCKTAIL_HTTP_PROXY_SCHEME"), nullptr);
   ASSERT_NE(getenv("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY"), nullptr);
   EXPECT_STREQ(getenv("MOCKTAIL_HTTP_PROXY_HOST"), "127.0.0.1");
   EXPECT_STREQ(getenv("MOCKTAIL_HTTP_PROXY_PORT"), "7890");
+  EXPECT_STREQ(getenv("MOCKTAIL_HTTP_PROXY_SCHEME"), "http");
   EXPECT_STREQ(getenv("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY"), "1");
   unsetenv("MOCKTAIL_HTTP_PROXY_HOST");
   unsetenv("MOCKTAIL_HTTP_PROXY_PORT");
+  unsetenv("MOCKTAIL_HTTP_PROXY_SCHEME");
   unsetenv("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY");
 }
 

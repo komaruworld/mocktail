@@ -1,11 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-
 // When Mocktail has an SDL window, this transitional shim exposes that
 // window's EGL display/surface/context to Android-side code. Deterministic
 // fake handles require MOCKTAIL_ENABLE_TEST_GRAPHICS_STUBS=1.

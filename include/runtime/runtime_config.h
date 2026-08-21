@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #ifndef MOCKTAIL_RUNTIME_RUNTIME_CONFIG_H_
 #define MOCKTAIL_RUNTIME_RUNTIME_CONFIG_H_
 
@@ -51,6 +37,7 @@ struct InputCapabilityConfig {
 };
 
 struct NetworkProxyConfig {
+  std::string scheme = "http";
   std::string host;
   int port = 0;
 };
@@ -75,7 +62,8 @@ struct DiscordRpcConfig {
 };
 
 std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
-    std::string_view host, std::string_view port);
+    std::string_view host, std::string_view port,
+    std::string_view scheme = "http");
 std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy);
 
 // Immutable, supported runtime options. Advanced MOCKTAIL_PATCH_* controls
@@ -114,6 +102,7 @@ class RuntimeConfig {
   const std::optional<NetworkProxyConfig>& network_proxy() const {
     return network_proxy_;
   }
+  bool use_system_proxy() const { return use_system_proxy_; }
   const DiscordRpcConfig& discord_rpc() const { return discord_rpc_; }
   bool discord_rpc_valid() const { return discord_rpc_valid_; }
 
@@ -143,6 +132,7 @@ class RuntimeConfig {
   PerformancePolicy performance_;
   std::string audio_output_device_ = "default";
   bool audio_output_device_valid_ = true;
+  bool use_system_proxy_ = false;
   std::optional<NetworkProxyConfig> network_proxy_;
   DiscordRpcConfig discord_rpc_;
   bool discord_rpc_valid_ = true;

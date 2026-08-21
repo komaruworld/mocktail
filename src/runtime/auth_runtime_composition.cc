@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/auth_runtime_composition.h"
 
 #include <fcntl.h>
@@ -35,7 +21,6 @@
 #include <vector>
 
 #include "jnivm/jnivm.h"
-#include "mocktail/sha256.h"
 #include "runtime/environment.h"
 #include "runtime/runtime_paths.h"
 #include "services/auth_service.h"
@@ -45,8 +30,6 @@ namespace runtime {
 namespace {
 
 constexpr uintmax_t kMaximumCookieFileBytes = 1024 * 1024;
-constexpr std::string_view kSoberRejectionMarkerPrefix = "v1:";
-constexpr char kSoberRejectionDomain[] = "mocktail-default-sober-rejection-v1";
 
 enum class CookieLoadStatus {
   kFound,
@@ -59,7 +42,6 @@ enum class CookieSource {
   kEnvironment,
   kExplicitFile,
   kManagedFile,
-  kSoberFile,
 };
 
 struct CookieLoadResult {
@@ -315,34 +297,6 @@ bool WritePrivateFileAtomically(const std::filesystem::path& path,
          FsyncDirectoryChain(first_created_parent, existing_ancestor);
 }
 
-std::string BuildSoberRejectionMarker(std::string_view rejected_value) {
-  foundation::Sha256 sha256;
-  sha256.Update(reinterpret_cast<const unsigned char*>(kSoberRejectionDomain),
-                sizeof(kSoberRejectionDomain));
-  sha256.Update(rejected_value);
-  std::string marker(kSoberRejectionMarkerPrefix);
-  marker += sha256.FinalHex();
-  marker.push_back('\n');
-  return marker;
-}
-
-bool IsValidSoberRejectionMarker(std::string_view marker) {
-  constexpr size_t kSha256HexBytes = 64;
-  if (marker.size() !=
-          kSoberRejectionMarkerPrefix.size() + kSha256HexBytes + 1 ||
-      marker.compare(0, kSoberRejectionMarkerPrefix.size(),
-                     kSoberRejectionMarkerPrefix) != 0 ||
-      marker.back() != '\n') {
-    return false;
-  }
-  const std::string_view digest =
-      marker.substr(kSoberRejectionMarkerPrefix.size(), kSha256HexBytes);
-  return std::all_of(digest.begin(), digest.end(), [](char character) {
-    return (character >= '0' && character <= '9') ||
-           (character >= 'a' && character <= 'f');
-  });
-}
-
 bool PersistRobloxCredential(void* opaque, const char* data, size_t size) {
   auto* context = static_cast<CookiePersistenceContext*>(opaque);
   if (context == nullptr || context->path.empty() || data == nullptr ||
@@ -517,90 +471,6 @@ CookieLoadResult ReadCookieSource(const std::filesystem::path& path,
   return result;
 }
 
-enum class SoberRejectionStatus {
-  kNoMatch,
-  kMatch,
-  kUnavailable,
-};
-
-struct SoberRejectionResult {
-  SoberRejectionStatus status = SoberRejectionStatus::kNoMatch;
-  std::string error;
-};
-
-SoberRejectionResult CheckSoberRejection(const RuntimePaths& paths,
-                                         std::string_view cookie_contents) {
-  std::string cookie_value =
-      services::AuthService::ExtractRoblosecurityValue(cookie_contents);
-  if (cookie_value.empty()) {
-    return {};
-  }
-
-  struct stat auth_root_status = {};
-  if (lstat(paths.auth_root().c_str(), &auth_root_status) != 0) {
-    ClearSensitiveString(&cookie_value);
-    if (errno == ENOENT) {
-      return {};
-    }
-    return {SoberRejectionStatus::kUnavailable,
-            "saved Sober rejection marker storage is unavailable"};
-  }
-  if (!S_ISDIR(auth_root_status.st_mode) || S_ISLNK(auth_root_status.st_mode) ||
-      auth_root_status.st_uid != geteuid() ||
-      (auth_root_status.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
-    ClearSensitiveString(&cookie_value);
-    return {SoberRejectionStatus::kUnavailable,
-            "saved Sober rejection marker storage is unsafe"};
-  }
-  const std::filesystem::path& marker_path =
-      paths.default_sober_rejection_file();
-  struct stat marker_status = {};
-  if (lstat(marker_path.c_str(), &marker_status) != 0) {
-    ClearSensitiveString(&cookie_value);
-    if (errno == ENOENT) {
-      return {};
-    }
-    return {SoberRejectionStatus::kUnavailable,
-            "saved Sober rejection marker is unavailable"};
-  }
-  CookieLoadResult marker = ReadCookieFile(marker_path, true);
-  if (marker.status != CookieLoadStatus::kFound ||
-      !IsValidSoberRejectionMarker(marker.value)) {
-    ClearSensitiveString(&cookie_value);
-    ClearSensitiveString(&marker.value);
-    return {SoberRejectionStatus::kUnavailable,
-            "saved Sober rejection marker is invalid"};
-  }
-
-  const std::string expected = BuildSoberRejectionMarker(cookie_value);
-  ClearSensitiveString(&cookie_value);
-  const bool matches = marker.value == expected;
-  ClearSensitiveString(&marker.value);
-  return {
-      matches ? SoberRejectionStatus::kMatch : SoberRejectionStatus::kNoMatch,
-      {}};
-}
-
-bool PersistSoberRejection(const RuntimePaths& paths,
-                           std::string_view rejected_value,
-                           std::string* error) {
-  if (rejected_value.empty()) {
-    if (error != nullptr) {
-      *error = "rejected Sober credential could not be identified safely";
-    }
-    return false;
-  }
-  const std::string marker = BuildSoberRejectionMarker(rejected_value);
-  if (!WritePrivateFileAtomically(paths.default_sober_rejection_file(),
-                                  marker)) {
-    if (error != nullptr) {
-      *error = "rejected Sober credential could not be retired safely";
-    }
-    return false;
-  }
-  return true;
-}
-
 bool ReadDescriptorContents(int descriptor, std::string* contents) {
   if (contents == nullptr || lseek(descriptor, 0, SEEK_SET) < 0) {
     return false;
@@ -633,8 +503,7 @@ bool ReadDescriptorContents(int descriptor, std::string* contents) {
 }
 
 bool IsAutomaticallyRecoverableSource(CookieSource source) {
-  return source == CookieSource::kManagedFile ||
-         source == CookieSource::kSoberFile;
+  return source == CookieSource::kManagedFile;
 }
 
 bool IsCookieFileDelimiter(char character) {
@@ -680,7 +549,6 @@ std::vector<CookieRedactionRange> FindCookieRedactionRanges(
 
 bool ClearRejectedCookieFile(const std::filesystem::path& path,
                              std::string_view loaded_contents,
-                             const std::filesystem::path& protected_cookie_path,
                              std::string* error) {
   const std::filesystem::path parent = path.parent_path().empty()
                                            ? std::filesystem::path(".")
@@ -741,13 +609,6 @@ bool ClearRejectedCookieFile(const std::filesystem::path& path,
     return fail("rejected Roblox cookie could not be identified safely");
   }
 
-  struct stat protected_metadata = {};
-  bool protected_exists = false;
-  if (stat(protected_cookie_path.c_str(), &protected_metadata) == 0) {
-    protected_exists = true;
-  } else if (errno != ENOENT) {
-    return fail("protected Sober cookie identity could not be checked");
-  }
   const auto source_metadata_error = [&](const struct stat& metadata) {
     if (!S_ISREG(metadata.st_mode) || metadata.st_uid != geteuid() ||
         (metadata.st_mode & (S_IRWXG | S_IRWXO)) != 0 || metadata.st_size < 0 ||
@@ -755,10 +616,6 @@ bool ClearRejectedCookieFile(const std::filesystem::path& path,
       return std::string(
           "Roblox cookie changed while authentication was "
           "checked");
-    }
-    if (protected_exists && SameFile(protected_metadata, metadata)) {
-      return std::string(
-          "managed Roblox cookie aliases the protected Sober file");
     }
     if (metadata.st_nlink != 1) {
       return std::string("managed Roblox cookie has unexpected hard links");
@@ -820,14 +677,6 @@ bool ClearRejectedCookieFile(const std::filesystem::path& path,
               AT_SYMLINK_NOFOLLOW) != 0 ||
       !SameFile(path_metadata, source_metadata)) {
     return fail("Roblox cookie changed while authentication was checked");
-  }
-  struct stat current_protected_metadata = {};
-  if (stat(protected_cookie_path.c_str(), &current_protected_metadata) == 0) {
-    if (SameFile(current_protected_metadata, source_metadata)) {
-      return fail("managed Roblox cookie aliases the protected Sober file");
-    }
-  } else if (errno != ENOENT) {
-    return fail("protected Sober cookie identity could not be checked");
   }
   struct stat prewrite_metadata = {};
   if (fstat(source.get(), &prewrite_metadata) != 0 ||
@@ -900,26 +749,6 @@ CookieLoadResult LoadSavedCookie(const Environment& environment,
     result = {};
   } else if (result.status != CookieLoadStatus::kMissing) {
     return result;
-  }
-  if (Enabled(environment, "MOCKTAIL_USE_SOBER_COOKIES", true)) {
-    const CookieSource sober_source =
-        environment.HasNonEmpty("MOCKTAIL_SOBER_COOKIE_FILE")
-            ? CookieSource::kExplicitFile
-            : CookieSource::kSoberFile;
-    result = ReadCookieSource(paths.sober_cookie_file(), false, sober_source);
-    if (result.status == CookieLoadStatus::kFound &&
-        sober_source == CookieSource::kSoberFile) {
-      const SoberRejectionResult rejection =
-          CheckSoberRejection(paths, result.value);
-      if (rejection.status == SoberRejectionStatus::kUnavailable) {
-        ClearSensitiveString(&result.value);
-        result.status = CookieLoadStatus::kUnavailable;
-        result.error = rejection.error;
-      } else if (rejection.status == SoberRejectionStatus::kMatch) {
-        ClearSensitiveString(&result.value);
-        result = {};
-      }
-    }
   }
   return result;
 }
@@ -1029,31 +858,13 @@ AuthRuntimeComposition ComposeAuthRuntime(
       allow_guest);
 
   if (session.status == services::AuthSessionStatus::kInvalid &&
-      session.http_status == 401 &&
+      (session.http_status == 401 || session.http_status == 403) &&
       IsAutomaticallyRecoverableSource(cookie.source)) {
-    std::string rejected_value =
-        services::AuthService::ExtractRoblosecurityValue(cookie.value);
     std::string reset_error;
-    const bool default_sober_fallback =
-        Enabled(environment, "MOCKTAIL_USE_SOBER_COOKIES", true) &&
-        !environment.HasNonEmpty("MOCKTAIL_SOBER_COOKIE_FILE");
-    if ((cookie.source == CookieSource::kSoberFile ||
-         (cookie.source == CookieSource::kManagedFile &&
-          default_sober_fallback)) &&
-        !PersistSoberRejection(paths, rejected_value, &reset_error)) {
-      ClearSensitiveString(&cookie.value);
-      ClearSensitiveString(&rejected_value);
-      credential.Clear();
-      composition.status = AuthRuntimeStatus::kUnavailable;
-      composition.http_status = session.http_status;
-      composition.error = std::move(reset_error);
-      return composition;
-    }
     if (cookie.source == CookieSource::kManagedFile &&
         !ClearRejectedCookieFile(cookie.source_path, cookie.value,
-                                 paths.sober_cookie_file(), &reset_error)) {
+                                 &reset_error)) {
       ClearSensitiveString(&cookie.value);
-      ClearSensitiveString(&rejected_value);
       credential.Clear();
       composition.status = AuthRuntimeStatus::kUnavailable;
       composition.http_status = session.http_status;
@@ -1061,8 +872,8 @@ AuthRuntimeComposition ComposeAuthRuntime(
       return composition;
     }
     ClearSensitiveString(&cookie.value);
-    ClearSensitiveString(&rejected_value);
     credential.Clear();
+    composition.rejected_credential_retired = true;
     if (!allow_guest) {
       composition.status = AuthRuntimeStatus::kInvalidCredentials;
       composition.http_status = session.http_status;

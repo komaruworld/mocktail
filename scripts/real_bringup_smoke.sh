@@ -115,9 +115,6 @@ if [[ "${MOCKTAIL_ISOLATED_CANARY:-0}" == 1 ]]; then
   # rendering, and controlled lifecycle/audio shutdown.
   unset MOCKTAIL_COOKIE_FILE MOCKTAIL_ROBLOX_COOKIES
   export MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP=1
-  export MOCKTAIL_USE_SOBER_COOKIES=0
-else
-  export MOCKTAIL_COOKIE_FILE="${MOCKTAIL_COOKIE_FILE:-$HOME/.var/app/org.vinegarhq.Sober/data/sober/cookies}"
 fi
 export MOCKTAIL_ENGINE_DETACH="${MOCKTAIL_ENGINE_DETACH:-0}"
 export MOCKTAIL_CALL_REAL_APP_BRIDGE_INIT="${MOCKTAIL_CALL_REAL_APP_BRIDGE_INIT:-1}"

@@ -1,6 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-// Licensed under the Apache License, Version 2.0 (the "License").
-
 #include "mocktail/audio/roblox_output_device_bridge.h"
 
 #include <gtest/gtest.h>

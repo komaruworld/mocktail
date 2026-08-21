@@ -1,17 +1,3 @@
-// Copyright 2026 Sober Test Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -28793,11 +28779,6 @@ std::string MocktailCookiePath() {
   return MocktailConfigRoot() + "/cookie";
 }
 
-std::string SoberCookiePath() {
-  return GetEnvString("MOCKTAIL_SOBER_COOKIE_FILE",
-                      (SoberDataRoot() + "/cookies").c_str());
-}
-
 bool CookieHasAttribute(const std::string& cookie, const char* attribute) {
   std::string lower_cookie = cookie;
   std::string lower_attribute = attribute ? attribute : "";
@@ -29583,9 +29564,8 @@ void ConfigureNativeSettings(JNIEnv* env, jclass settings_class,
     std::cout << "  [engine] no Roblox cookie found; proceeding without login\n"
               << std::flush;
   } else {
-    std::cout << "  [engine] WARNING: no Roblox cookie found; checked "
-              << MocktailCookiePath() << " and " << SoberCookiePath()
-              << '\n'
+    std::cout << "  [engine] WARNING: no Roblox cookie found at "
+              << MocktailCookiePath() << '\n'
               << std::flush;
   }
   std::string android_id =
@@ -33984,7 +33964,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               jni_factory, present_boundary, std::move(surface_config),
               &dependencies.roblox_credential(),
               mocktail::runtime::RobloxExperienceSurfaceProvider{},
-              discord_rpc.observer());
+              discord_rpc.observer(),
+              dependencies.clear_persisted_web_view_cookie());
       const mocktail::Status platform_protocol_status =
           experience_composition->InitializePlatformProtocols();
       if (!platform_protocol_status.ok()) {

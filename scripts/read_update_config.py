@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import stat
 import sys
 
@@ -17,6 +18,7 @@ import yaml
 
 MAX_CONFIG_BYTES = 1024 * 1024
 SUPPORTED_SOURCES = {"apk-pure"}
+VERSION_PATTERN = re.compile(r"^[0-9][0-9A-Za-z._-]{0,127}$")
 
 
 def fail(message: str) -> None:
@@ -107,6 +109,7 @@ def main() -> None:
         "automatic",
         "testing_latest_only",
         "source",
+        "version",
         "launch_after_update",
     }
     unknown = set(updates) - allowed
@@ -117,6 +120,19 @@ def main() -> None:
             fail(f"updates.{key} must be true or false")
     if "source" in updates and updates["source"] not in SUPPORTED_SOURCES:
         fail("updates.source must be apk-pure")
+    if "version" in updates and (
+        not isinstance(updates["version"], str)
+        or VERSION_PATTERN.fullmatch(updates["version"]) is None
+    ):
+        fail("updates.version must be a Roblox version name")
+    updates = dict(updates)
+    if "testing_latest_only" in updates:
+        print(
+            "update config: warning: updates.testing_latest_only is no longer "
+            "supported and is ignored",
+            file=sys.stderr,
+        )
+        del updates["testing_latest_only"]
     print(json.dumps(updates, separators=(",", ":")))
 
 

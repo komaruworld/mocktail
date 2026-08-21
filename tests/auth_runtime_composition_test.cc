@@ -1,17 +1,3 @@
-// Copyright 2026 Mocktail Project Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "runtime/auth_runtime_composition.h"
 
 #include <fcntl.h>
@@ -35,7 +21,6 @@
 
 #include "jnivm/jnivm.h"
 #include "legacy/legacy_runtime.h"
-#include "mocktail/sha256.h"
 #include "runtime/environment.h"
 #include "runtime/runtime_paths.h"
 #include "services/auth_service.h"
@@ -138,17 +123,6 @@ RuntimePaths PathsFor(const MapEnvironment& environment,
   return RuntimePaths::FromEnvironment(environment, directory.path());
 }
 
-std::filesystem::path SoberRejectionPathFor(const RuntimePaths& paths) {
-  return paths.default_sober_rejection_file();
-}
-
-std::string SoberRejectionMarkerFor(std::string_view credential) {
-  constexpr char kDomain[] = "mocktail-default-sober-rejection-v1";
-  std::string fingerprint_input(kDomain, sizeof(kDomain));
-  fingerprint_input.append(credential);
-  return "v1:" + foundation::ComputeSha256Hex(fingerprint_input) + "\n";
-}
-
 std::string ReadJavaString(JNIEnv* env, jstring value) {
   if (env == nullptr || value == nullptr) {
     return {};
@@ -219,11 +193,14 @@ TEST(AuthRuntimeCompositionTest,
   EXPECT_EQ(identity.display_name.find(kCredential), std::string::npos);
 }
 
-TEST(AuthRuntimeCompositionTest, MissingCookieRequiresExplicitGuestPolicy) {
+TEST(AuthRuntimeCompositionTest, SoberCookieIsIgnoredAndGuestPolicyRequired) {
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
+  ASSERT_TRUE(WriteFile(
+      directory.path() /
+          ".var/app/org.vinegarhq.Sober/data/sober/cookies",
+      std::string(".ROBLOSECURITY=") + kCredential + "\n"));
   FakeHttpClient http;
   services::AuthService auth_service(http);
 
@@ -254,7 +231,6 @@ TEST(AuthRuntimeCompositionTest,
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   FakeHttpClient http;
@@ -315,7 +291,6 @@ TEST(AuthRuntimeCompositionTest,
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   auto http = std::make_shared<FakeHttpClient>();
@@ -360,7 +335,6 @@ TEST(AuthRuntimeCompositionTest,
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   FakeHttpClient initial_http;
@@ -408,7 +382,6 @@ TEST(AuthRuntimeCompositionTest,
 
   MapEnvironment restart_environment;
   restart_environment.Set("HOME", directory.path().string());
-  restart_environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   FakeHttpClient restart_http;
   restart_http.response = {
       true,
@@ -457,7 +430,6 @@ TEST(AuthRuntimeCompositionTest,
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   const std::string remaining_cookies =
@@ -499,405 +471,10 @@ TEST(AuthRuntimeCompositionTest,
 }
 
 TEST(AuthRuntimeCompositionTest,
-     Http401ClearsManagedAndSuppressesMatchingDefaultSoberCredential) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string rejected_cookie =
-      std::string(".ROBLOSECURITY=") + kCredential;
-  const std::string managed_other = "ManagedCookie=keep\n";
-  const std::string sober_other = "SoberCookie=keep\n";
-  ASSERT_TRUE(
-      WriteFile(paths.cookie_file(), rejected_cookie + "\n" + managed_other));
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(),
-                        rejected_cookie + "\n" + sober_other));
-  FakeHttpClient http;
-  http.response = {true, 401, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  ASSERT_TRUE(composition) << composition.error;
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
-  EXPECT_EQ(http.request_count, 1);
-  const std::string redacted_prefix(rejected_cookie.size(), ' ');
-  EXPECT_EQ(ReadFile(paths.cookie_file()),
-            redacted_prefix + "\n" + managed_other);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()),
-            rejected_cookie + "\n" + sober_other);
-  const std::filesystem::path rejection_path = SoberRejectionPathFor(paths);
-  const std::string marker = ReadFile(rejection_path);
-  EXPECT_EQ(marker.size(), 68U);
-  EXPECT_EQ(marker.rfind("v1:", 0), 0U);
-  EXPECT_EQ(marker.find(kCredential), std::string::npos);
-  struct stat marker_metadata = {};
-  ASSERT_EQ(lstat(rejection_path.c_str(), &marker_metadata), 0);
-  EXPECT_TRUE(S_ISREG(marker_metadata.st_mode));
-  EXPECT_EQ(marker_metadata.st_mode & (S_IRWXG | S_IRWXO), 0U);
-
-  FakeHttpClient restart_http;
-  services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted =
-      ComposeAuthRuntime(environment, paths, restart_auth_service);
-  ASSERT_TRUE(restarted) << restarted.error;
-  EXPECT_EQ(restarted.status, AuthRuntimeStatus::kGuest);
-  EXPECT_EQ(restart_http.request_count, 0);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     Http401SuppressesDefaultSoberCredentialWithoutMutatingItsFile) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string remaining_cookies =
-      "RBXEventTrackerV2=browserid=654321&browserid_insert_timestamp=1\n"
-      "OtherCookie=keep\n";
-  const std::string rejected_cookie =
-      std::string(".ROBLOSECURITY=") + kCredential;
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(),
-                        rejected_cookie + "\n" + remaining_cookies));
-  FakeHttpClient http;
-  http.response = {true, 401, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  ASSERT_TRUE(composition) << composition.error;
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
-  EXPECT_EQ(composition.http_status, 401);
-  EXPECT_EQ(http.request_count, 1);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()),
-            rejected_cookie + "\n" + remaining_cookies);
-  EXPECT_FALSE(std::filesystem::exists(paths.cookie_file()));
-  const std::filesystem::path rejection_path = SoberRejectionPathFor(paths);
-  EXPECT_EQ(ReadFile(rejection_path).find(kCredential), std::string::npos);
-
-  const std::string changed_tracker_cookies =
-      rejected_cookie +
-      "\nRBXEventTrackerV2=browserid=999999&browserid_insert_timestamp=2\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), changed_tracker_cookies));
-  FakeHttpClient restart_http;
-  services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted =
-      ComposeAuthRuntime(environment, paths, restart_auth_service);
-  ASSERT_TRUE(restarted) << restarted.error;
-  EXPECT_EQ(restarted.status, AuthRuntimeStatus::kGuest);
-  EXPECT_EQ(restart_http.request_count, 0);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), changed_tracker_cookies);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     RelativeNestedAuthRootPersistsDefaultSoberRejection) {
-  TempDirectory directory;
-  std::error_code error;
-  const std::filesystem::path current_directory =
-      std::filesystem::current_path(error);
-  ASSERT_FALSE(error);
-  const std::filesystem::path relative_auth_root = std::filesystem::relative(
-      directory.path() / "relative/auth/root", current_directory, error);
-  ASSERT_FALSE(error);
-  ASSERT_FALSE(relative_auth_root.empty());
-  ASSERT_FALSE(relative_auth_root.is_absolute());
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_AUTH_ROOT", relative_auth_root.string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), cookies));
-  FakeHttpClient http;
-  http.response = {true, 401, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  ASSERT_TRUE(composition) << composition.error;
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
-  EXPECT_EQ(http.request_count, 1);
-  EXPECT_EQ(ReadFile(paths.default_sober_rejection_file()),
-            SoberRejectionMarkerFor(kCredential));
-
-  FakeHttpClient restart_http;
-  services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted =
-      ComposeAuthRuntime(environment, paths, restart_auth_service);
-  ASSERT_TRUE(restarted) << restarted.error;
-  EXPECT_EQ(restarted.status, AuthRuntimeStatus::kGuest);
-  EXPECT_EQ(restart_http.request_count, 0);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     ChangedDefaultSoberCredentialIsCheckedAndReplacesOldMarker) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string first_cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\nOther=keep\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), first_cookies));
-  FakeHttpClient first_http;
-  first_http.response = {true, 401, {}, {}};
-  services::AuthService first_auth_service(first_http);
-  ASSERT_TRUE(ComposeAuthRuntime(environment, paths, first_auth_service));
-
-  const std::filesystem::path rejection_path = SoberRejectionPathFor(paths);
-  const std::string first_marker = ReadFile(rejection_path);
-  struct stat first_metadata = {};
-  ASSERT_EQ(lstat(rejection_path.c_str(), &first_metadata), 0);
-
-  const std::string changed_value = "_|changed-default-sober-credential";
-  const std::string changed_cookies =
-      ".ROBLOSECURITY=" + changed_value + "\nOther=still-keep\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), changed_cookies));
-  FakeHttpClient changed_http;
-  changed_http.response = {true, 401, {}, {}};
-  services::AuthService changed_auth_service(changed_http);
-
-  const AuthRuntimeComposition changed =
-      ComposeAuthRuntime(environment, paths, changed_auth_service);
-
-  ASSERT_TRUE(changed) << changed.error;
-  EXPECT_EQ(changed.status, AuthRuntimeStatus::kGuest);
-  ASSERT_EQ(changed_http.request_count, 1);
-  ASSERT_EQ(changed_http.last_request.headers.size(), 2U);
-  EXPECT_EQ(changed_http.last_request.headers[1],
-            "Cookie: .ROBLOSECURITY=" + changed_value);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), changed_cookies);
-  const std::string changed_marker = ReadFile(rejection_path);
-  EXPECT_NE(changed_marker, first_marker);
-  EXPECT_EQ(changed_marker.find(changed_value), std::string::npos);
-  struct stat changed_metadata = {};
-  ASSERT_EQ(lstat(rejection_path.c_str(), &changed_metadata), 0);
-  EXPECT_NE(changed_metadata.st_ino, first_metadata.st_ino);
-
-  FakeHttpClient restart_http;
-  services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted =
-      ComposeAuthRuntime(environment, paths, restart_auth_service);
-  ASSERT_TRUE(restarted) << restarted.error;
-  EXPECT_EQ(restarted.status, AuthRuntimeStatus::kGuest);
-  EXPECT_EQ(restart_http.request_count, 0);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     DefaultSoberRefreshDuringHttp401RecoveryIsNeverModified) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(),
-                        std::string(".ROBLOSECURITY=") + kCredential + "\n"));
-  const std::string refreshed_value = "_|refreshed-during-http";
-  const std::string refreshed_cookies =
-      ".ROBLOSECURITY=" + refreshed_value + "\nOther=keep\n";
-  FakeHttpClient http;
-  http.response = {true, 401, {}, {}};
-  http.before_response = [&]() {
-    EXPECT_TRUE(WriteFile(paths.sober_cookie_file(), refreshed_cookies));
-  };
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  ASSERT_TRUE(composition) << composition.error;
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), refreshed_cookies);
-
-  FakeHttpClient restart_http;
-  restart_http.response = {
-      true,
-      200,
-      R"({"id":654,"name":"Refreshed","displayName":"Refreshed User"})",
-      {}};
-  services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted =
-      ComposeAuthRuntime(environment, paths, restart_auth_service);
-  ASSERT_TRUE(restarted) << restarted.error;
-  EXPECT_EQ(restarted.status, AuthRuntimeStatus::kAuthenticated);
-  EXPECT_EQ(restart_http.request_count, 1);
-  ASSERT_EQ(restart_http.last_request.headers.size(), 2U);
-  EXPECT_EQ(restart_http.last_request.headers[1],
-            "Cookie: .ROBLOSECURITY=" + refreshed_value);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), refreshed_cookies);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     MalformedDefaultSoberRejectionMarkerFailsClosedBeforeHttp) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string sober_cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), sober_cookies));
-  ASSERT_TRUE(WriteFile(SoberRejectionPathFor(paths), "not-a-valid-marker\n"));
-  ASSERT_EQ(chmod(paths.auth_root().c_str(), S_IRWXU), 0);
-  FakeHttpClient http;
-  http.response = {true, 200, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
-  EXPECT_EQ(composition.error, "saved Sober rejection marker is invalid");
-  EXPECT_EQ(http.request_count, 0);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), sober_cookies);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     UnsafeAuthRootWithoutMarkerFailsClosedBeforeHttp) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string sober_cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), sober_cookies));
-  std::error_code error;
-  std::filesystem::create_directories(paths.auth_root(), error);
-  ASSERT_FALSE(error);
-  ASSERT_EQ(chmod(paths.auth_root().c_str(),
-                  S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH),
-            0);
-  FakeHttpClient http;
-  http.response = {true, 200, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
-  EXPECT_EQ(composition.error,
-            "saved Sober rejection marker storage is unsafe");
-  EXPECT_EQ(http.request_count, 0);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), sober_cookies);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     SymlinkDefaultSoberRejectionMarkerFailsClosedWithoutTouchingTarget) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string sober_cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), sober_cookies));
-  const std::filesystem::path protected_target =
-      directory.path() / "protected-marker-target";
-  const std::string protected_contents = "must remain untouched\n";
-  ASSERT_TRUE(WriteFile(protected_target, protected_contents));
-  std::error_code error;
-  std::filesystem::create_directories(paths.auth_root(), error);
-  ASSERT_FALSE(error);
-  ASSERT_EQ(chmod(paths.auth_root().c_str(), S_IRWXU), 0);
-  std::filesystem::create_symlink(protected_target,
-                                  SoberRejectionPathFor(paths), error);
-  ASSERT_FALSE(error);
-  FakeHttpClient http;
-  http.response = {true, 200, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
-  EXPECT_EQ(http.request_count, 0);
-  EXPECT_EQ(ReadFile(protected_target), protected_contents);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), sober_cookies);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     FifoDefaultSoberRejectionMarkerFailsClosedWithoutBlocking) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string sober_cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), sober_cookies));
-  std::error_code error;
-  std::filesystem::create_directories(paths.auth_root(), error);
-  ASSERT_FALSE(error);
-  ASSERT_EQ(chmod(paths.auth_root().c_str(), S_IRWXU), 0);
-  ASSERT_EQ(mkfifo(SoberRejectionPathFor(paths).c_str(), S_IRUSR | S_IWUSR), 0);
-  FakeHttpClient http;
-  http.response = {true, 200, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
-  EXPECT_EQ(http.request_count, 0);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), sober_cookies);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     RejectionWriterLockHardlinkCannotChangeDefaultSoberFile) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string sober_cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), sober_cookies));
-  ASSERT_EQ(chmod(paths.sober_cookie_file().c_str(), S_IRWXU), 0);
-  std::error_code error;
-  std::filesystem::create_directories(paths.auth_root(), error);
-  ASSERT_FALSE(error);
-  ASSERT_EQ(chmod(paths.auth_root().c_str(), S_IRWXU), 0);
-  const std::filesystem::path lock_path =
-      paths.auth_root() / ".default-sober-rejection.mocktail-writer.lock";
-  std::filesystem::create_hard_link(paths.sober_cookie_file(), lock_path,
-                                    error);
-  ASSERT_FALSE(error);
-  FakeHttpClient http;
-  http.response = {true, 401, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
-  EXPECT_EQ(composition.http_status, 401);
-  EXPECT_EQ(composition.error,
-            "rejected Sober credential could not be retired safely");
-  EXPECT_EQ(http.request_count, 1);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), sober_cookies);
-  struct stat sober_metadata = {};
-  ASSERT_EQ(lstat(paths.sober_cookie_file().c_str(), &sober_metadata), 0);
-  EXPECT_EQ(sober_metadata.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO), S_IRWXU);
-  EXPECT_FALSE(std::filesystem::exists(paths.default_sober_rejection_file()));
-}
-
-TEST(AuthRuntimeCompositionTest,
      Http401ClearsPrivateReadOnlyManagedCredential) {
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   const std::string remaining_cookies = "OtherCookie=keep\n";
@@ -929,7 +506,6 @@ TEST(AuthRuntimeCompositionTest,
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   const std::string raw_cookie = kCredential;
@@ -961,11 +537,10 @@ TEST(AuthRuntimeCompositionTest,
   EXPECT_EQ(restart_http.request_count, 0);
 }
 
-TEST(AuthRuntimeCompositionTest, Http403DoesNotClearOrStartGuest) {
+TEST(AuthRuntimeCompositionTest, Http403ClearsManagedCookieAndStartsGuest) {
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   const std::string cookies = std::string(".ROBLOSECURITY=") + kCredential +
@@ -978,93 +553,15 @@ TEST(AuthRuntimeCompositionTest, Http403DoesNotClearOrStartGuest) {
   const AuthRuntimeComposition composition =
       ComposeAuthRuntime(environment, paths, auth_service);
 
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kInvalidCredentials);
+  ASSERT_TRUE(composition) << composition.error;
+  EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
   EXPECT_EQ(composition.http_status, 403);
-  EXPECT_EQ(ReadFile(paths.cookie_file()), cookies);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     DefaultSoberHttp403DoesNotCreateRejectionMarker) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\nOther=keep\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), cookies));
-  FakeHttpClient http;
-  http.response = {true, 403, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kInvalidCredentials);
-  EXPECT_EQ(composition.http_status, 403);
-  EXPECT_EQ(http.request_count, 1);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), cookies);
-  EXPECT_FALSE(std::filesystem::exists(SoberRejectionPathFor(paths)));
-}
-
-TEST(AuthRuntimeCompositionTest,
-     DefaultSoberTransportFailureDoesNotCreateRejectionMarker) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), cookies));
-  FakeHttpClient http;
-  http.response = {false, 0, {}, "request contained sensitive details"};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
-  EXPECT_EQ(composition.error, "authentication service unavailable");
-  EXPECT_EQ(http.request_count, 1);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), cookies);
-  EXPECT_FALSE(std::filesystem::exists(SoberRejectionPathFor(paths)));
-}
-
-TEST(AuthRuntimeCompositionTest,
-     DefaultSoberHttp401PersistsRejectionWhenGuestIsDisabled) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), cookies));
-  FakeHttpClient http;
-  http.response = {true, 401, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kInvalidCredentials);
-  EXPECT_EQ(composition.http_status, 401);
-  EXPECT_EQ(http.request_count, 1);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), cookies);
-  EXPECT_EQ(ReadFile(SoberRejectionPathFor(paths)),
-            SoberRejectionMarkerFor(kCredential));
-
-  FakeHttpClient restart_http;
-  services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted =
-      ComposeAuthRuntime(environment, paths, restart_auth_service);
-  EXPECT_FALSE(restarted);
-  EXPECT_EQ(restarted.status, AuthRuntimeStatus::kInvalidCredentials);
-  EXPECT_EQ(restart_http.request_count, 0);
+  EXPECT_TRUE(composition.rejected_credential_retired);
+  const std::string rejected_cookie =
+      std::string(".ROBLOSECURITY=") + kCredential;
+  EXPECT_EQ(ReadFile(paths.cookie_file()),
+            std::string(rejected_cookie.size(), ' ') +
+                "\nRBXEventTrackerV2=browserid=123456\n");
 }
 
 TEST(AuthRuntimeCompositionTest,
@@ -1072,7 +569,6 @@ TEST(AuthRuntimeCompositionTest,
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   const RuntimePaths paths = PathsFor(environment, directory);
   const std::string remaining_cookies = "RBXEventTrackerV2=browserid=123456\n";
   const std::string rejected_cookie =
@@ -1120,41 +616,10 @@ TEST(AuthRuntimeCompositionTest,
 }
 
 TEST(AuthRuntimeCompositionTest,
-     Http401DoesNotClearExplicitSoberCredentialOverride) {
-  TempDirectory directory;
-  const std::filesystem::path explicit_sober_cookie =
-      directory.path() / "explicit-sober-cookie";
-  const std::string cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\n";
-  ASSERT_TRUE(WriteFile(explicit_sober_cookie, cookies));
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_SOBER_COOKIE_FILE", explicit_sober_cookie.string());
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string marker = SoberRejectionMarkerFor(kCredential);
-  ASSERT_TRUE(WriteFile(SoberRejectionPathFor(paths), marker));
-  ASSERT_EQ(chmod(paths.auth_root().c_str(), S_IRWXU), 0);
-  FakeHttpClient http;
-  http.response = {true, 401, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kInvalidCredentials);
-  EXPECT_EQ(composition.http_status, 401);
-  EXPECT_EQ(ReadFile(explicit_sober_cookie), cookies);
-  EXPECT_EQ(ReadFile(SoberRejectionPathFor(paths)), marker);
-}
-
-TEST(AuthRuntimeCompositionTest,
      Http401FailsClosedWhileCookieWriterLockIsHeld) {
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   const std::string cookies =
@@ -1188,7 +653,6 @@ TEST(AuthRuntimeCompositionTest,
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   ASSERT_TRUE(WriteFile(paths.cookie_file(),
@@ -1225,7 +689,6 @@ TEST(AuthRuntimeCompositionTest,
   TempDirectory directory;
   MapEnvironment environment;
   environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
   const RuntimePaths paths = PathsFor(environment, directory);
   ASSERT_TRUE(WriteFile(paths.cookie_file(),
@@ -1257,43 +720,6 @@ TEST(AuthRuntimeCompositionTest,
             "rejected Roblox cookie could not be cleared safely");
   EXPECT_TRUE(std::filesystem::is_symlink(paths.cookie_file()));
   EXPECT_EQ(ReadFile(protected_target), protected_contents);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     ManagedHardlinkToDefaultSoberCookieFailsClosedWithoutRedaction) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
-  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  const RuntimePaths paths = PathsFor(environment, directory);
-  const std::string cookies =
-      std::string(".ROBLOSECURITY=") + kCredential + "\nOther=keep\n";
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(), cookies));
-  ASSERT_EQ(chmod(paths.sober_cookie_file().c_str(), S_IRUSR), 0);
-  std::error_code error;
-  std::filesystem::create_directories(paths.auth_root(), error);
-  ASSERT_FALSE(error);
-  std::filesystem::create_hard_link(paths.sober_cookie_file(),
-                                    paths.cookie_file(), error);
-  ASSERT_FALSE(error);
-  FakeHttpClient http;
-  http.response = {true, 401, {}, {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  EXPECT_FALSE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
-  EXPECT_EQ(composition.http_status, 401);
-  EXPECT_EQ(composition.error,
-            "managed Roblox cookie aliases the protected Sober file");
-  EXPECT_EQ(ReadFile(paths.cookie_file()), cookies);
-  EXPECT_EQ(ReadFile(paths.sober_cookie_file()), cookies);
-  struct stat sober_metadata = {};
-  ASSERT_EQ(lstat(paths.sober_cookie_file().c_str(), &sober_metadata), 0);
-  EXPECT_EQ(sober_metadata.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO), S_IRUSR);
 }
 
 TEST(AuthRuntimeCompositionTest, UnavailableAuthFailsClosedAndRedactsErrors) {
@@ -1381,89 +807,6 @@ TEST(AuthRuntimeCompositionTest, RejectsSymlinkCookieSource) {
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
   EXPECT_EQ(composition.error, "configured Roblox cookie file is unavailable");
   EXPECT_EQ(http.request_count, 0);
-}
-
-TEST(AuthRuntimeCompositionTest, FallsBackToConfiguredSoberCookieFile) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_CONFIG_ROOT",
-                  (directory.path() / "config").string());
-  environment.Set("MOCKTAIL_SOBER_COOKIE_FILE",
-                  (directory.path() / "sober-cookies").string());
-  const RuntimePaths paths = PathsFor(environment, directory);
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(),
-                        std::string(".ROBLOSECURITY=") + kCredential + "\n"));
-  FakeHttpClient http;
-  http.response = {
-      true, 200, R"({"id":654,"name":"SoberUser","displayName":"Sober"})", {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  ASSERT_TRUE(composition);
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kAuthenticated);
-  EXPECT_EQ(composition.jni_vm->GetRobloxAuthIdentitySnapshot().user_id, 654);
-  EXPECT_EQ(http.request_count, 1);
-
-  std::ifstream migrated(paths.cookie_file(), std::ios::binary);
-  ASSERT_TRUE(migrated.good());
-  const std::string migrated_value(
-      (std::istreambuf_iterator<char>(migrated)),
-      std::istreambuf_iterator<char>());
-  EXPECT_EQ(migrated_value,
-            std::string(".ROBLOSECURITY=") + kCredential + "\n");
-  struct stat migrated_status = {};
-  ASSERT_EQ(lstat(paths.cookie_file().c_str(), &migrated_status), 0);
-  EXPECT_EQ(migrated_status.st_mode & (S_IRWXG | S_IRWXO), 0U);
-
-  MapEnvironment restart_environment;
-  restart_environment.Set("HOME", directory.path().string());
-  restart_environment.Set("MOCKTAIL_USE_SOBER_COOKIES", "0");
-  FakeHttpClient restart_http;
-  restart_http.response = {
-      true, 200, R"({"id":654,"name":"SoberUser","displayName":"Sober"})", {}};
-  services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted = ComposeAuthRuntime(
-      restart_environment, PathsFor(restart_environment, directory),
-      restart_auth_service);
-  ASSERT_TRUE(restarted);
-  EXPECT_EQ(restarted.status, AuthRuntimeStatus::kAuthenticated);
-  ASSERT_EQ(restart_http.request_count, 1);
-  EXPECT_EQ(restart_http.last_request.headers[1],
-            std::string("Cookie: .ROBLOSECURITY=") + kCredential);
-}
-
-TEST(AuthRuntimeCompositionTest,
-     TrackerOnlyLocalCookieFallsBackToSoberCredential) {
-  TempDirectory directory;
-  MapEnvironment environment;
-  environment.Set("HOME", directory.path().string());
-  environment.Set("MOCKTAIL_CONFIG_ROOT",
-                  (directory.path() / "config").string());
-  environment.Set("MOCKTAIL_SOBER_COOKIE_FILE",
-                  (directory.path() / "sober-cookies").string());
-  const RuntimePaths paths = PathsFor(environment, directory);
-  ASSERT_TRUE(WriteFile(
-      paths.cookie_file(),
-      "RBXEventTrackerV2=browserid=123456&browserid_insert_timestamp=1\n"));
-  ASSERT_TRUE(WriteFile(paths.sober_cookie_file(),
-                        std::string(".ROBLOSECURITY=") + kCredential + "\n"));
-  FakeHttpClient http;
-  http.response = {
-      true, 200, R"({"id":654,"name":"SoberUser","displayName":"Sober"})", {}};
-  services::AuthService auth_service(http);
-
-  const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
-
-  ASSERT_TRUE(composition) << composition.error;
-  EXPECT_EQ(composition.status, AuthRuntimeStatus::kAuthenticated);
-  ASSERT_EQ(http.request_count, 1);
-  ASSERT_GE(http.last_request.headers.size(), 2U);
-  EXPECT_EQ(http.last_request.headers[1],
-            std::string("Cookie: .ROBLOSECURITY=") + kCredential);
 }
 
 TEST(AuthRuntimeCompositionTest,

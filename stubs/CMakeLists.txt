@@ -38,8 +38,12 @@ add_library(stub_sys_c SHARED empty.cc)
 configure_stub(stub_sys_c "libc.so")
 target_link_options(stub_sys_c PRIVATE "LINKER:--no-as-needed")
 
-add_library(stub_android SHARED libandroid_stub.cc)
+add_library(stub_android SHARED
+  libandroid_stub.cc
+  ${CMAKE_SOURCE_DIR}/src/libc_shim/vulkan_etc1_sky_transcoder.cc
+)
 configure_stub(stub_android "libandroid.so")
+target_include_directories(stub_android PUBLIC ${CMAKE_SOURCE_DIR}/include)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET minizip)
 target_link_libraries(stub_android PRIVATE PkgConfig::MINIZIP)
