@@ -171,15 +171,32 @@ make build
 
 ## Known limitations
 
-Mocktail does not currently work with `hardened_malloc`. Using
-`hardened_malloc` may cause Mocktail to fail to start or crash during runtime.
-Run Mocktail without `hardened_malloc` enabled.
+There is currently no FPS selector in the Roblox Escape menu. To change the
+frame rate limit, edit `config.yaml` at the appropriate location:
+
+- Flatpak: `~/.var/app/space.bigrat.mocktail/config/mocktail/config.yaml`
+- Native installations: `~/.config/mocktail/config.yaml`
+
+Change the `frame_rate_limit:` value to your desired limit, for example:
+
+```yaml
+frame_rate_limit: 240
+````
+
+Mocktail does not currently work with `hardened_malloc`. Other custom memory
+allocators may also cause compatibility issues. If Mocktail is behaving
+unexpectedly and you use a custom allocator through `LD_PRELOAD`, the first
+troubleshooting step should be to remove that allocator from `LD_PRELOAD` for
+Mocktail and test again.
 
 ## License
 
 [Apache License 2.0](LICENSE). Third-party components keep their own licenses.
 
 ## Support
+
+Found something missing or stumbled across a bug? Send PRs and open issues!
+Don't leave stuff unnoticed.
 
 You can support the project by giving it a star or with cryptocurrency:
 
