@@ -1957,8 +1957,10 @@ bool PumpEvents() {
       g_text_input_owner->OnFocusGained();
     }
     if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED &&
-        g_pointer_capture_owner != nullptr) {
-      g_pointer_capture_owner->OnFocusGained();
+        g_pointer_capture_owner != nullptr &&
+        !g_pointer_capture_owner->OnFocusGained(
+            g_text_input_owner != nullptr && g_text_input_owner->active())) {
+      fprintf(stderr, "  [input] failed to restore pointer after focus gain\n");
     }
 
     const bool geometry_changed = event.type == SDL_EVENT_WINDOW_MOVED ||
