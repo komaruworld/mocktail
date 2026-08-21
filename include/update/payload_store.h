@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
+
+#include "update/payload_integrity.h"
 
 namespace mocktail::update {
 
@@ -44,9 +47,16 @@ class PayloadStore final {
   std::string StatusJson(std::string* error = nullptr) const;
 
  private:
+  // Full content hash, unless this instance already hashed these exact bytes
+  // into the store during Stage().
+  PayloadIntegrityResult VerifyStoredPayload(
+      const std::filesystem::path& directory,
+      std::string_view payload_id) const;
+
   std::filesystem::path root_;
   std::filesystem::path compatibility_manifest_;
   std::filesystem::path runtime_binary_;
+  std::string staged_verified_payload_id_;
 };
 
 }  // namespace mocktail::update

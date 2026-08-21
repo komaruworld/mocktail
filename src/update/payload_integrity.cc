@@ -2,16 +2,20 @@
 
 #define JSON_NOEXCEPTION 1
 #include <fcntl.h>
+#include <openssl/evp.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <filesystem>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "mocktail/sha256.h"
@@ -59,6 +63,56 @@ std::string ReadMetadata(const std::filesystem::path& path,
   return contents;
 }
 
+// foundation::Sha256 is a portable implementation and runs at roughly 180 MB/s
+// here; OpenSSL reaches the CPU's SHA extensions and measures 8x faster on the
+// same bytes. A payload is several hundred MiB, so file hashing uses OpenSSL.
+// The digests are identical, and foundation::Sha256 stays in use for the small
+// inputs elsewhere in the updater.
+class FileDigest final {
+ public:
+  FileDigest() : context_(EVP_MD_CTX_new()) {
+    if (context_ != nullptr &&
+        EVP_DigestInit_ex(context_, EVP_sha256(), nullptr) != 1) {
+      EVP_MD_CTX_free(context_);
+      context_ = nullptr;
+    }
+  }
+
+  ~FileDigest() {
+    if (context_ != nullptr) EVP_MD_CTX_free(context_);
+  }
+
+  FileDigest(const FileDigest&) = delete;
+  FileDigest& operator=(const FileDigest&) = delete;
+
+  bool valid() const { return context_ != nullptr; }
+
+  bool Update(const unsigned char* bytes, std::size_t size) {
+    return context_ != nullptr &&
+           EVP_DigestUpdate(context_, bytes, size) == 1;
+  }
+
+  std::string FinalHex() {
+    unsigned char digest[EVP_MAX_MD_SIZE] = {};
+    unsigned int size = 0;
+    if (context_ == nullptr ||
+        EVP_DigestFinal_ex(context_, digest, &size) != 1 || size != 32U) {
+      return {};
+    }
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(size * 2U);
+    for (unsigned int index = 0; index < size; ++index) {
+      hex.push_back(kHex[digest[index] >> 4]);
+      hex.push_back(kHex[digest[index] & 0x0FU]);
+    }
+    return hex;
+  }
+
+ private:
+  EVP_MD_CTX* context_ = nullptr;
+};
+
 }  // namespace
 
 std::string HashRegularFile(const std::filesystem::path& path,
@@ -76,8 +130,13 @@ std::string HashRegularFile(const std::filesystem::path& path,
     *error = "hash input is not a regular file: " + path.string();
     return {};
   }
-  foundation::Sha256 sha256;
-  std::array<unsigned char, 128U * 1024U> buffer{};
+  FileDigest digest;
+  if (!digest.valid()) {
+    close(descriptor);
+    *error = "cannot initialise the file digest";
+    return {};
+  }
+  std::vector<unsigned char> buffer(256U * 1024U);
   while (true) {
     const ssize_t bytes = read(descriptor, buffer.data(), buffer.size());
     if (bytes == 0) break;
@@ -87,10 +146,16 @@ std::string HashRegularFile(const std::filesystem::path& path,
       *error = "cannot hash regular file: " + path.string();
       return {};
     }
-    sha256.Update(buffer.data(), static_cast<std::size_t>(bytes));
+    if (!digest.Update(buffer.data(), static_cast<std::size_t>(bytes))) {
+      close(descriptor);
+      *error = "cannot hash regular file: " + path.string();
+      return {};
+    }
   }
   close(descriptor);
-  return sha256.FinalHex();
+  const std::string hex = digest.FinalHex();
+  if (hex.empty()) *error = "cannot finalise the hash of " + path.string();
+  return hex;
 }
 
 std::string HashAssetTree(const std::filesystem::path& root,
@@ -132,13 +197,53 @@ std::string HashAssetTree(const std::filesystem::path& root,
             [](const auto& left, const auto& right) {
               return left.generic_string() < right.generic_string();
             });
+  // Each file digest is independent; only the fold below depends on the sorted
+  // order, so the per-file work spreads across cores without changing the
+  // result. An asset tree holds a few thousand files.
+  std::vector<std::string> digests(relative_files.size());
+  std::atomic<std::size_t> next_index{0};
+  std::mutex error_mutex;
+  std::string first_error;
+  const auto hash_range = [&]() {
+    while (true) {
+      const std::size_t index = next_index.fetch_add(1);
+      if (index >= relative_files.size()) return;
+      {
+        const std::lock_guard<std::mutex> lock(error_mutex);
+        if (!first_error.empty()) return;
+      }
+      std::string local_failure;
+      std::string digest =
+          HashRegularFile(root / relative_files[index], &local_failure);
+      if (!local_failure.empty()) {
+        const std::lock_guard<std::mutex> lock(error_mutex);
+        if (first_error.empty()) first_error = std::move(local_failure);
+        return;
+      }
+      digests[index] = std::move(digest);
+    }
+  };
+  unsigned int workers = std::thread::hardware_concurrency();
+  if (workers == 0U) workers = 1U;
+  workers = std::min<unsigned int>(workers, 8U);
+  workers = std::min<unsigned int>(
+      workers, static_cast<unsigned int>(relative_files.size()));
+  std::vector<std::thread> pool;
+  pool.reserve(workers > 0U ? workers - 1U : 0U);
+  for (unsigned int index = 1; index < workers; ++index) {
+    pool.emplace_back(hash_range);
+  }
+  if (workers > 0U) hash_range();
+  for (std::thread& worker : pool) worker.join();
+  if (!first_error.empty()) {
+    *error = first_error;
+    return {};
+  }
   foundation::Sha256 tree;
-  for (const auto& relative : relative_files) {
-    const std::string digest = HashRegularFile(root / relative, error);
-    if (!error->empty()) return {};
-    tree.Update(digest);
+  for (std::size_t index = 0; index < relative_files.size(); ++index) {
+    tree.Update(digests[index]);
     tree.Update("  ");
-    tree.Update(relative.generic_string());
+    tree.Update(relative_files[index].generic_string());
     const unsigned char terminator = 0;
     tree.Update(&terminator, 1);
   }
