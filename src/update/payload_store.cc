@@ -5,6 +5,10 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#endif
 
 #include <array>
 #include <cctype>
@@ -227,6 +231,98 @@ bool QuarantinePayloadCollision(const std::filesystem::path& root,
   return true;
 }
 
+// A payload tree is several hundred MiB. On a copy-on-write filesystem a
+// reflink shares the extents instead of duplicating them, and copy_file_range
+// keeps the bytes inside the kernel; both fall back to an ordinary copy.
+// A hard link is deliberately not used: CopyTree makes the result read-only
+// while the source stays writable, and a shared inode would break that.
+bool CloneOrCopyFile(const std::filesystem::path& source,
+                     const std::filesystem::path& destination) {
+  const int input = open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (input < 0) return false;
+  struct stat metadata = {};
+  if (fstat(input, &metadata) != 0 || !S_ISREG(metadata.st_mode)) {
+    close(input);
+    return false;
+  }
+  const int output =
+      open(destination.c_str(),
+           O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (output < 0) {
+    close(input);
+    return false;
+  }
+  bool copied = false;
+#if defined(__linux__) && defined(FICLONE)
+  copied = ioctl(output, FICLONE, input) == 0;
+#endif
+#if defined(__linux__)
+  if (!copied) {
+    off_t remaining = metadata.st_size;
+    copied = true;
+    while (remaining > 0) {
+      const ssize_t moved = copy_file_range(
+          input, nullptr, output, nullptr, static_cast<size_t>(remaining), 0);
+      if (moved < 0 && errno == EINTR) continue;
+      if (moved <= 0) {
+        copied = false;
+        break;
+      }
+      remaining -= moved;
+    }
+    // copy_file_range advances both file offsets, so a partial move must be
+    // undone completely before the portable fallback can start from zero.
+    if (!copied && (ftruncate(output, 0) != 0 ||
+                    lseek(input, 0, SEEK_SET) != 0 ||
+                    lseek(output, 0, SEEK_SET) != 0)) {
+      close(input);
+      close(output);
+      std::error_code ignored;
+      std::filesystem::remove(destination, ignored);
+      return false;
+    }
+  }
+#endif
+  if (!copied) {
+    std::array<char, 256U * 1024U> buffer{};
+    while (true) {
+      const ssize_t bytes = read(input, buffer.data(), buffer.size());
+      if (bytes == 0) break;
+      if (bytes < 0) {
+        if (errno == EINTR) continue;
+        close(input);
+        close(output);
+        std::error_code ignored;
+        std::filesystem::remove(destination, ignored);
+        return false;
+      }
+      std::size_t offset = 0;
+      while (offset < static_cast<std::size_t>(bytes)) {
+        const ssize_t written =
+            write(output, buffer.data() + offset,
+                  static_cast<std::size_t>(bytes) - offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) {
+          close(input);
+          close(output);
+          std::error_code ignored;
+          std::filesystem::remove(destination, ignored);
+          return false;
+        }
+        offset += static_cast<std::size_t>(written);
+      }
+    }
+  }
+  close(input);
+  const bool closed = close(output) == 0;
+  if (!closed) {
+    std::error_code ignored;
+    std::filesystem::remove(destination, ignored);
+    return false;
+  }
+  return true;
+}
+
 bool CopyTree(const std::filesystem::path& source,
               const std::filesystem::path& destination, std::string* error) {
   std::error_code filesystem_error;
@@ -251,7 +347,7 @@ bool CopyTree(const std::filesystem::path& source,
     }
     if (std::filesystem::is_directory(status)) {
       std::filesystem::create_directory(output, filesystem_error);
-    } else {
+    } else if (!CloneOrCopyFile(iterator->path(), output)) {
       std::filesystem::copy_file(iterator->path(), output,
                                  std::filesystem::copy_options::none,
                                  filesystem_error);
@@ -466,8 +562,11 @@ PayloadStoreResult PayloadStore::Stage(
   PayloadStoreResult result;
   StoreLock lock(root_, &result.error);
   if (!lock) return result;
+  // Preparation produced these bytes and recorded their hashes. Hashing the
+  // workspace again proves nothing that the post-copy verify below does not
+  // prove about the bytes that actually become the immutable store entry.
   const PayloadIntegrityResult verified =
-      VerifyPreparedPayload(prepared_payload);
+      InspectPreparedPayload(prepared_payload);
   if (!verified) {
     result.error = verified.error;
     return result;

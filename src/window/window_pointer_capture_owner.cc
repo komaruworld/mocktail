@@ -121,9 +121,9 @@ bool WindowPointerCaptureOwner::ShouldDispatchMouseMotion() {
   return !discard_motion && !wait_for_native_unlock_after_right_drag_;
 }
 
-bool WindowPointerCaptureOwner::OnFocusGained() {
+bool WindowPointerCaptureOwner::OnFocusGained(bool text_input_active) {
   focused_ = true;
-  return true;
+  return Pump(text_input_active);
 }
 
 bool WindowPointerCaptureOwner::OnFocusLost() {

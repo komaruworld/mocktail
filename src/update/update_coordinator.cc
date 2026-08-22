@@ -6,6 +6,9 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -63,6 +66,47 @@ void Progress(int descriptor, std::string_view message) {
   const std::string packet = "P" + std::string(message);
   (void)send(descriptor, packet.data(), packet.size(), MSG_NOSIGNAL);
 }
+
+bool TraceFlagEnabled(const char* name) {
+  const char* value = std::getenv(name);
+  return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+bool UpdateTraceEnabled() {
+  static const bool enabled = TraceFlagEnabled("MOCKTAIL_UPDATE_TRACE") ||
+                              TraceFlagEnabled("MOCKTAIL_TRACE_ALL") ||
+                              TraceFlagEnabled("MOCKTAIL_FULL_TRACE");
+  return enabled;
+}
+
+// A first install downloads, verifies, canaries, and promotes several hundred
+// MiB. Without a per-stage breakdown there is no way to tell which stage owns
+// the wall-clock time, so the timer reports one line per stage on request.
+class StageTimer final {
+ public:
+  explicit StageTimer(std::string name)
+      : name_(std::move(name)), start_(std::chrono::steady_clock::now()) {}
+
+  ~StageTimer() { Report(); }
+
+  StageTimer(const StageTimer&) = delete;
+  StageTimer& operator=(const StageTimer&) = delete;
+
+  void Report() {
+    if (name_.empty()) return;
+    if (UpdateTraceEnabled()) {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start_);
+      std::fprintf(stderr, "  [update] %s %lld ms\n", name_.c_str(),
+                   static_cast<long long>(elapsed.count()));
+    }
+    name_.clear();
+  }
+
+ private:
+  std::string name_;
+  std::chrono::steady_clock::time_point start_;
+};
 
 std::filesystem::path UniqueDirectory(const std::filesystem::path& parent,
                                       std::string* error) {
@@ -208,13 +252,16 @@ Candidate DownloadCandidate(const ApkProvider* provider, PayloadStore* store,
   result.identity = identity;
   result.exact_supported = exact_supported;
   Progress(progress_fd, "Downloading Roblox...");
+  StageTimer download_timer("download");
   const ProviderDownloadResult downloaded = provider->DownloadExact(
       identity.version_name, workspace / "provider", progress_fd);
   if (!downloaded) {
     result.error = downloaded.error;
     return result;
   }
+  download_timer.Report();
   Progress(progress_fd, "Verifying Roblox...");
+  StageTimer prepare_timer("prepare");
   const PreparedPayload prepared = PreparePayloadFromArchives(
       downloaded.archives, identity, paths.signing_trust_manifest,
       workspace / "prepare", downloaded.source + "-native");
@@ -222,6 +269,8 @@ Candidate DownloadCandidate(const ApkProvider* provider, PayloadStore* store,
     result.error = prepared.error;
     return result;
   }
+  prepare_timer.Report();
+  StageTimer stage_timer("stage");
   result.staged = store->Stage(prepared.directory);
   if (!result.staged) result.error = result.staged.error;
   return result;
@@ -302,7 +351,10 @@ UpdateResult RunUnsafeLatest(
 
   const ProviderChain provider = BuildProviderChain();
   Progress(request.progress_fd, "Checking latest Roblox...");
-  const ProviderVersion latest = provider.CheckLatest();
+  const ProviderVersion latest = [&] {
+    StageTimer timer("check-latest");
+    return provider.CheckLatest();
+  }();
   if (!latest) {
     result.error = "cannot check latest Roblox for unsafe launch: " +
                    latest.error;
@@ -356,7 +408,10 @@ UpdateResult RunUnsafeLatest(
     derivation.candidate_payload_directory = candidate.staged.payload_directory;
     derivation.output_directory = workspace / "derived";
     Progress(request.progress_fd, "Deriving latest Roblox compatibility...");
-    const HostAbiDerivationResult derived = DeriveHostAbiProfile(derivation);
+    const HostAbiDerivationResult derived = [&] {
+      StageTimer timer("derive-host-abi");
+      return DeriveHostAbiProfile(derivation);
+    }();
     if (!derived) {
       result.error = "cannot derive latest Roblox HostAbi profile: " +
                      derived.error;
@@ -420,7 +475,11 @@ bool RunCandidateCanaries(const UpdatePaths& paths, const Candidate& candidate,
     canary.cache_root = paths.cache_root;
     canary.state_root = paths.state_root;
     canary.graphics_backend = graphics_backend;
-    const CanaryResult canary_result = RunReadinessCanary(canary);
+    const CanaryResult canary_result = [&] {
+      StageTimer timer("canary[" + std::to_string(index + 1) + "/" +
+                       std::to_string(runs) + "]");
+      return RunReadinessCanary(canary);
+    }();
     if (!canary_result) {
       *error = canary_result.error;
       if (!canary_result.log_path.empty()) {
@@ -444,6 +503,7 @@ PayloadStoreResult PromoteCandidate(const UpdatePaths& paths,
     return {};
   }
   Progress(request.progress_fd, "Installing Roblox...");
+  StageTimer promote_timer("promote");
   PayloadStoreResult promoted =
       candidate.exact_supported
           ? store->Promote(candidate.staged.payload_id)
@@ -458,6 +518,7 @@ PayloadStoreResult PromoteCandidate(const UpdatePaths& paths,
 
 UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   UpdateResult result;
+  StageTimer total_timer("total");
   UpdateLock update_lock(paths.data_root, &result.error);
   if (!update_lock) return result;
 
@@ -518,7 +579,10 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   std::optional<ProviderVersion> latest_version;
   if (request.check_latest) {
     Progress(request.progress_fd, "Checking Roblox...");
-    const ProviderVersion latest = provider.CheckLatest();
+    const ProviderVersion latest = [&] {
+    StageTimer timer("check-latest");
+    return provider.CheckLatest();
+  }();
     if (latest) {
       latest_version = latest;
       if (current && SameVersion(current, latest)) {
@@ -608,7 +672,10 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
           candidate.staged.payload_directory;
       derivation.output_directory = workspace / "derived";
       Progress(request.progress_fd, "Checking latest Roblox compatibility...");
-      const HostAbiDerivationResult derived = DeriveHostAbiProfile(derivation);
+      const HostAbiDerivationResult derived = [&] {
+        StageTimer timer("derive-host-abi");
+        return DeriveHostAbiProfile(derivation);
+      }();
       if (!derived) {
         candidate_error = derived.error;
         candidate_rejected = true;

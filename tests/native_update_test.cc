@@ -451,6 +451,126 @@ TEST(PayloadStoreTest, RestagesReadOnlyCorruptPayloadCollision) {
   EXPECT_EQ(iterator, std::filesystem::directory_iterator());
 }
 
+// Promotion is separated from staging by the readiness canaries, which run the
+// real client against the staged directory in a child process. A candidate
+// modified in that window must never become current, so promotion rehashes the
+// immutable bytes even though the very same instance staged them.
+TEST(PayloadStoreTest, PromoteRehashesBytesTamperedAfterStaging) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path prepared = temporary.root() / "prepared";
+  Write(prepared / "libroblox.so", "native-library");
+  Write(prepared / "sober_apk/base.apk", "base-apk");
+  Write(prepared / "sober_apk/split_config.x86_64.apk", "split-apk");
+  Write(prepared / "assets/content/fixture", "asset");
+  std::string error;
+  std::size_t asset_count = 0;
+  const std::string asset_hash =
+      HashAssetTree(prepared / "assets", &asset_count, &error);
+  ASSERT_TRUE(error.empty()) << error;
+  const nlohmann::json metadata = {
+      {"schema_version", 1},
+      {"package", "com.roblox.client"},
+      {"version_name", "2.727.1199"},
+      {"version_code", 2628},
+      {"elf_build_id", "1686400865ae0e408cd7bd67de7a439625c6fd13"},
+      {"sha256",
+       {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
+        {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
+        {"x86_64_split_apk",
+         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+      {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
+  };
+  Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");
+  const std::filesystem::path compatibility =
+      temporary.root() / "compatibility.json";
+  Write(compatibility,
+        "{\"schema_version\":1,\"profiles\":[{"
+        "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
+        "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
+        "\"status\":\"supported\",\"default_allowed\":true,"
+        "\"allow_legacy_binary_patches\":false}]}\n");
+
+  const std::filesystem::path store_root = temporary.root() / "store";
+  PayloadStore store(store_root, compatibility);
+  const PayloadStoreResult staged = store.Stage(prepared);
+  ASSERT_TRUE(staged) << staged.error;
+
+  // Stands in for the canary interval. Content bytes only: the metadata still
+  // describes the original payload, so nothing short of hashing the contents
+  // can detect this.
+  const std::filesystem::path asset =
+      staged.payload_directory / "assets/content/fixture";
+  std::error_code filesystem_error;
+  std::filesystem::permissions(asset, std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::add,
+                               filesystem_error);
+  ASSERT_FALSE(filesystem_error);
+  Write(asset, "tampered");
+
+  const PayloadStoreResult promoted = store.Promote(staged.payload_id);
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(promoted.error, "payload asset tree does not match metadata");
+  EXPECT_FALSE(std::filesystem::exists(store_root / "current.json",
+                                       filesystem_error));
+}
+
+// The same guarantee holds for a library modified in that window.
+TEST(PayloadStoreTest, PromoteRejectsALibraryTamperedAfterStaging) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path prepared = temporary.root() / "prepared";
+  Write(prepared / "libroblox.so", "native-library");
+  Write(prepared / "sober_apk/base.apk", "base-apk");
+  Write(prepared / "sober_apk/split_config.x86_64.apk", "split-apk");
+  Write(prepared / "assets/content/fixture", "asset");
+  std::string error;
+  std::size_t asset_count = 0;
+  const std::string asset_hash =
+      HashAssetTree(prepared / "assets", &asset_count, &error);
+  ASSERT_TRUE(error.empty()) << error;
+  const nlohmann::json metadata = {
+      {"schema_version", 1},
+      {"package", "com.roblox.client"},
+      {"version_name", "2.727.1199"},
+      {"version_code", 2628},
+      {"elf_build_id", "1686400865ae0e408cd7bd67de7a439625c6fd13"},
+      {"sha256",
+       {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
+        {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
+        {"x86_64_split_apk",
+         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+      {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
+  };
+  Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");
+  const std::filesystem::path compatibility =
+      temporary.root() / "compatibility.json";
+  Write(compatibility,
+        "{\"schema_version\":1,\"profiles\":[{"
+        "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
+        "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
+        "\"status\":\"supported\",\"default_allowed\":true,"
+        "\"allow_legacy_binary_patches\":false}]}\n");
+
+  const std::filesystem::path store_root = temporary.root() / "store";
+  PayloadStore store(store_root, compatibility);
+  const PayloadStoreResult staged = store.Stage(prepared);
+  ASSERT_TRUE(staged) << staged.error;
+
+  const std::filesystem::path library =
+      staged.payload_directory / "libroblox.so";
+  std::error_code filesystem_error;
+  std::filesystem::permissions(library, std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::add,
+                               filesystem_error);
+  ASSERT_FALSE(filesystem_error);
+  Write(library, "backdoored");
+
+  const PayloadStoreResult promoted = store.Promote(staged.payload_id);
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(promoted.error, "payload hash mismatch: libroblox.so");
+  EXPECT_FALSE(std::filesystem::exists(store_root / "current.json",
+                                       filesystem_error));
+}
+
 TEST(PayloadStoreTest, EmptyResultCannotReportFalsePromotion) {
   const PayloadStoreResult result;
   EXPECT_FALSE(result);

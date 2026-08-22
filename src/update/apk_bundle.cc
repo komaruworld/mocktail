@@ -558,7 +558,11 @@ PreparedPayload PreparePayloadFromArchives(
                         metadata.dump(2) + "\n", &result.error)) {
     return result;
   }
-  const PayloadIntegrityResult verified = VerifyPreparedPayload(prepared);
+  // The hashes above were computed from these exact bytes and written into
+  // roblox_payload.json, so re-hashing the tree here would only re-derive them.
+  // The shape, schema, and identity guard still runs; the bytes that reach the
+  // immutable store are hashed in full by PayloadStore::Stage after the copy.
+  const PayloadIntegrityResult verified = InspectPreparedPayload(prepared);
   if (!verified || verified.payload_id !=
                        std::to_string(expected.version_code) + "-" + build_id) {
     result.error =

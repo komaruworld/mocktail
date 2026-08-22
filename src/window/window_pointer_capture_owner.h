@@ -39,7 +39,11 @@ class WindowPointerCaptureOwner final {
   // Mirrors Android's captured-pointer listener: the motion that releases a
   // transient capture is consumed instead of leaking one final camera delta.
   bool ShouldDispatchMouseMotion();
-  bool OnFocusGained();
+  // Focus loss reveals the system cursor. Regaining focus must re-apply the
+  // pointer state immediately: Pump() runs at the top of the frame, before
+  // SDL_PollEvent delivers the focus event, so deferring the re-apply leaves
+  // the desktop arrow on screen for at least one whole frame.
+  bool OnFocusGained(bool text_input_active);
   bool OnFocusLost();
   bool Shutdown();
 
