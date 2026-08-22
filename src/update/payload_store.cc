@@ -583,7 +583,6 @@ PayloadStoreResult PayloadStore::Stage(
     if (existing && existing.payload_id == result.payload_id &&
         HashRegularFile(prepared_payload / "roblox_payload.json") ==
             HashRegularFile(result.payload_directory / "roblox_payload.json")) {
-      staged_verified_payload_id_ = result.payload_id;
       return result;
     }
     if (!QuarantinePayloadCollision(root_, result.payload_directory,
@@ -610,24 +609,8 @@ PayloadStoreResult PayloadStore::Stage(
   std::filesystem::rename(staging, result.payload_directory, filesystem_error);
   if (filesystem_error) {
     result.error = "cannot publish immutable payload";
-    return result;
   }
-  staged_verified_payload_id_ = result.payload_id;
   return result;
-}
-
-// Stage() hashes every byte it writes into the immutable store, under this same
-// lock, in this same process. Repeating that pass during promotion would only
-// re-prove what this instance just proved. Any payload this instance did not
-// stage - an operator-supplied ID, a directory left by an earlier run, a fresh
-// process - still gets the full hash of its contents.
-PayloadIntegrityResult PayloadStore::VerifyStoredPayload(
-    const std::filesystem::path& directory, std::string_view payload_id) const {
-  if (!staged_verified_payload_id_.empty() &&
-      staged_verified_payload_id_ == payload_id) {
-    return InspectPreparedPayload(directory);
-  }
-  return VerifyPreparedPayload(directory);
 }
 
 PayloadStoreResult PayloadStore::Promote(std::string_view payload_id) {
@@ -641,7 +624,7 @@ PayloadStoreResult PayloadStore::Promote(std::string_view payload_id) {
   result.payload_id = std::string(payload_id);
   result.payload_directory = root_ / "payloads" / result.payload_id;
   const PayloadIntegrityResult payload =
-      VerifyStoredPayload(result.payload_directory, result.payload_id);
+      VerifyPreparedPayload(result.payload_directory);
   if (!payload || payload.payload_id != result.payload_id) {
     result.error =
         payload ? "payload directory identity mismatch" : payload.error;
@@ -685,7 +668,7 @@ PayloadStoreResult PayloadStore::PromoteProbation(
   result.payload_id = std::string(payload_id);
   result.payload_directory = root_ / "payloads" / result.payload_id;
   const PayloadIntegrityResult payload =
-      VerifyStoredPayload(result.payload_directory, result.payload_id);
+      VerifyPreparedPayload(result.payload_directory);
   if (!payload || payload.payload_id != result.payload_id) {
     result.error =
         payload ? "payload directory identity mismatch" : payload.error;
