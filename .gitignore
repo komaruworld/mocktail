@@ -20,6 +20,12 @@ Testing/
 CMakeUserPresets.json
 *.cmake.user
 
+# local direnv development shell cache
+.direnv/
+
+# clangd cache
+.cache
+
 *.o
 *.obj
 *.a
