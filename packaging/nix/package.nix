@@ -15,6 +15,7 @@
   curl,
   fontconfig,
   glib,
+  glib-networking,
   gtk4,
   hicolor-icon-theme,
   libadwaita,
@@ -80,6 +81,7 @@ stdenv.mkDerivation (finalAttrs: {
     curl
     fontconfig
     glib
+    glib-networking
     gtk4
     hicolor-icon-theme
     libadwaita
@@ -118,7 +120,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   postInstall = ''
     for binary in $out/bin/*; do
-    	wrapProgram "$binary" --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath finalAttrs.buildInputs}
+    	wrapProgram "$binary" --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath finalAttrs.buildInputs} --prefix GIO_EXTRA_MODULES : "${glib-networking}/lib/gio/modules"
     done
   '';
 
