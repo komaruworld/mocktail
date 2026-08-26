@@ -1,6 +1,12 @@
 # Frequently asked questions
 
-[How do I change my FPS?](/FAQ.md#how-do-i-change-my-fps)
+------
+
+[How do I change my FPS?](#how-do-i-change-my-fps)
+[How do I submit an issue?](#how-do-i-submit-an-issue)
+
+
+-----
 
 ### How do I change my FPS?
 
@@ -18,3 +24,7 @@ with your text editor of preference search for "graphics"
 
 
 change the display value to your desired fps, also turn off vsync if you want more fps than your display supports
+
+### How do I submit an issue?
+
+To make a more standard way so this don't becomes a mess you should follow this to make an issue:
