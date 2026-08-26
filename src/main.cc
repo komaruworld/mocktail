@@ -1,3 +1,5 @@
+#include <unistd.h>
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -215,6 +217,39 @@ void PromptFirstLaunchSignIn(
   }
 }
 
+// Locates the settings window next to the runtime, mirroring how the failure
+// dialog helper is resolved so packaged and in-tree builds both work.
+std::filesystem::path ResolveSettingsHelper(
+    const mocktail::runtime::Environment& environment) {
+  const std::optional<std::string> override_path =
+      environment.Get("MOCKTAIL_SETTINGS_HELPER");
+  if (override_path.has_value()) {
+    const std::filesystem::path helper(*override_path);
+    return helper.is_absolute() ? helper : std::filesystem::path{};
+  }
+  std::error_code error;
+  const std::filesystem::path executable =
+      std::filesystem::read_symlink("/proc/self/exe", error);
+  if (error || executable.empty()) {
+    return {};
+  }
+  const std::filesystem::path directory = executable.parent_path();
+  const std::vector<std::filesystem::path> candidates = {
+      directory / "mocktail_settings",
+      directory.parent_path() / MOCKTAIL_INSTALL_LIBDIR / "mocktail" /
+          "mocktail_settings",
+      directory.parent_path() / "libexec" / "mocktail" / "mocktail_settings",
+  };
+  for (const std::filesystem::path& candidate : candidates) {
+    std::error_code status_error;
+    if (std::filesystem::is_regular_file(candidate, status_error) &&
+        access(candidate.c_str(), X_OK) == 0) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -231,6 +266,19 @@ int main(int argc, char* argv[]) {
     std::cout << mocktail::runtime::CommandLineUsage(
         command_line.options.program_name);
     return EXIT_SUCCESS;
+  }
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kSettings) {
+    const mocktail::runtime::ProcessEnvironment settings_environment;
+    const std::filesystem::path helper =
+        ResolveSettingsHelper(settings_environment);
+    if (helper.empty()) {
+      std::cerr << "[FATAL] Cannot locate the Mocktail settings window\n";
+      return EXIT_FAILURE;
+    }
+    char* const arguments[] = {const_cast<char*>(helper.c_str()), nullptr};
+    execv(helper.c_str(), arguments);
+    std::cerr << "[FATAL] Cannot start the Mocktail settings window\n";
+    return EXIT_FAILURE;
   }
   std::string command_line_error;
   if (!mocktail::runtime::ApplySupportedLaunchPolicy(

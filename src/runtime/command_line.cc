@@ -59,6 +59,10 @@ CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]) {
       result.options.mode = CommandMode::kHelp;
       return result;
     }
+    if (argument == "--settings") {
+      result.options.mode = CommandMode::kSettings;
+      return result;
+    }
     if (argument == "--roblox-lib") {
       if (!ReadOptionValue(argc, argv, &index, argument,
                            &result.options.roblox_library_path,
@@ -256,6 +260,7 @@ std::string CommandLineUsage(const std::string& program_name) {
          "without approval; it is not activated\n"
       << "  --launch-uri <uri>       Join from a roblox: or roblox-player: "
          "website link\n"
+      << "  --settings               Open the settings window and exit\n"
       << "  --help, -h               Show this help\n\n"
       << "Auth:\n"
       << "  When no saved Roblox cookie is found, Roblox starts in guest mode "

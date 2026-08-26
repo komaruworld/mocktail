@@ -9,4 +9,10 @@ StartupWMClass=space.bigrat.mocktail
 Categories=Game;
 Terminal=false
 MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;
+Actions=settings;
 X-Mocktail-Managed=true
+
+[Desktop Action settings]
+Name=Settings
+Exec=mocktail --settings
+Icon=space.bigrat.mocktail

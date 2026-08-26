@@ -358,6 +358,15 @@ add_executable(mocktail_failure_dialog
 target_link_libraries(mocktail_failure_dialog PRIVATE PkgConfig::LIBADWAITA)
 mocktail_apply_compile_options(mocktail_failure_dialog)
 
+add_executable(mocktail_settings
+  src/ui/mocktail_settings_window.cc
+)
+target_link_libraries(mocktail_settings PRIVATE
+  Mocktail::Runtime
+  PkgConfig::LIBADWAITA
+)
+mocktail_apply_compile_options(mocktail_settings)
+
 add_library(mocktail_services STATIC
   src/services/http_client.cc
   src/services/auth_service.cc
@@ -629,6 +638,7 @@ target_include_directories(mocktail PRIVATE include src)
 mocktail_apply_compile_options(mocktail)
 target_compile_definitions(mocktail PRIVATE
   "MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=\"${MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST}\""
+  "MOCKTAIL_INSTALL_LIBDIR=\"${CMAKE_INSTALL_LIBDIR}\""
 )
 target_link_libraries(mocktail PRIVATE
   mocktail_legacy_runtime

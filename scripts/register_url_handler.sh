@@ -137,14 +137,18 @@ fi
   Die "cannot find the Mocktail desktop template; pass --desktop-file PATH"
 desktop_source="$(ResolveRegularFile "${desktop_source}" "desktop template")"
 
-[[ "$(grep -Fxc '[Desktop Entry]' "${desktop_source}")" == 1 &&
-   "$(grep -Fxc 'Type=Application' "${desktop_source}")" == 1 &&
-   "$(grep -Fxc 'Icon=space.bigrat.mocktail' "${desktop_source}")" == 1 &&
-   "$(grep -Fxc 'Exec=mocktail %u' "${desktop_source}")" == 1 &&
+# Desktop actions carry their own Exec and Icon keys, so the contract is
+# checked against the [Desktop Entry] section alone.
+entry_section="$(awk '/^\[/ { inside = ($0 == "[Desktop Entry]") } inside' \
+  "${desktop_source}")"
+[[ "$(grep -Fxc '[Desktop Entry]' <<<"${entry_section}")" == 1 &&
+   "$(grep -Fxc 'Type=Application' <<<"${entry_section}")" == 1 &&
+   "$(grep -Fxc 'Icon=space.bigrat.mocktail' <<<"${entry_section}")" == 1 &&
+   "$(grep -Fxc 'Exec=mocktail %u' <<<"${entry_section}")" == 1 &&
    "$(grep -Fxc 'MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;' \
-       "${desktop_source}")" == 1 &&
-   "$(grep -Fxc 'X-Mocktail-Managed=true' "${desktop_source}")" == 1 &&
-   "$(grep -c '^Exec=' "${desktop_source}")" == 1 ]] ||
+       <<<"${entry_section}")" == 1 &&
+   "$(grep -Fxc 'X-Mocktail-Managed=true' <<<"${entry_section}")" == 1 &&
+   "$(grep -c '^Exec=' <<<"${entry_section}")" == 1 ]] ||
   Die "desktop template does not match the Mocktail URL-handler contract"
 
 [[ -n "${HOME:-}" && "${HOME}" == /* ]] ||
@@ -171,15 +175,28 @@ fi
 
 temporary="$(mktemp "${applications_dir}/.${DESKTOP_ID}.XXXXXX.desktop")"
 trap 'rm -f -- "${temporary}"' EXIT
+section=""
 while IFS= read -r line || [[ -n "${line}" ]]; do
-  if [[ "${line}" == Exec=* ]]; then
-    printf 'Exec=%s %%u\n' "${mocktail_executable}"
-    if [[ -n "${launch_working_directory}" ]]; then
-      printf 'Path=%s\n' "${launch_working_directory}"
-    fi
-  else
+  if [[ "${line}" == '['*']' ]]; then
+    section="${line}"
     printf '%s\n' "${line}"
+    continue
   fi
+  if [[ "${line}" == Exec=* ]]; then
+    if [[ "${section}" == '[Desktop Entry]' ]]; then
+      printf 'Exec=%s %%u\n' "${mocktail_executable}"
+      if [[ -n "${launch_working_directory}" ]]; then
+        printf 'Path=%s\n' "${launch_working_directory}"
+      fi
+      continue
+    fi
+    # An action keeps its own arguments; only the program becomes absolute.
+    if [[ "${line}" == 'Exec=mocktail'* ]]; then
+      printf 'Exec=%s%s\n' "${mocktail_executable}" "${line#Exec=mocktail}"
+      continue
+    fi
+  fi
+  printf '%s\n' "${line}"
 done <"${desktop_source}" >"${temporary}"
 chmod 0644 "${temporary}"
 if command -v desktop-file-validate >/dev/null 2>&1; then

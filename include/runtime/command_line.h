@@ -10,6 +10,7 @@ namespace runtime {
 enum class CommandMode {
   kRun,
   kHelp,
+  kSettings,
 };
 
 enum class WindowMode {

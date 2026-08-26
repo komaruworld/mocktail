@@ -262,13 +262,29 @@ TEST(CommandLineTest, HelpIsATypedAuxiliaryMode) {
   EXPECT_EQ(help_result.options.mode, CommandMode::kHelp);
 }
 
+TEST(CommandLineTest, SettingsIsATypedAuxiliaryMode) {
+  const std::array<const char*, 2> settings = {"mocktail", "--settings"};
+  const CommandLineParseResult result =
+      ParseCommandLine(settings.size(), settings.data());
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result.options.mode, CommandMode::kSettings);
+
+  // The mode wins immediately, so a later launch argument cannot start Roblox.
+  const std::array<const char*, 3> with_uri = {"mocktail", "--settings",
+                                               "roblox://placeId=1"};
+  const CommandLineParseResult guarded =
+      ParseCommandLine(with_uri.size(), with_uri.data());
+  ASSERT_TRUE(guarded);
+  EXPECT_EQ(guarded.options.mode, CommandMode::kSettings);
+}
+
 TEST(CommandLineTest, UsageContainsEverySupportedOption) {
   const std::string usage = CommandLineUsage("mocktail-test");
   EXPECT_NE(usage.find("mocktail-test"), std::string::npos);
   for (const char* option :
        {"--roblox-lib", "--headless", "--windowed", "--graphics",
         "--allow-unverified-build", "--force-run-latest", "--launch-uri",
-        "--help"}) {
+        "--settings", "--help"}) {
     EXPECT_NE(usage.find(option), std::string::npos) << option;
   }
   EXPECT_EQ(usage.find("--login"), std::string::npos);
