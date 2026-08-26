@@ -92,6 +92,15 @@ target_link_libraries(performance_policy_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(runtime_config_writer_test runtime_config_writer_test.cc)
+target_link_libraries(runtime_config_writer_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+target_compile_definitions(runtime_config_writer_test PRIVATE
+  MOCKTAIL_EXAMPLE_CONFIG_PATH="${PROJECT_SOURCE_DIR}/config/mocktail.example.yaml"
+)
+
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
   Mocktail::Runtime
@@ -810,6 +819,7 @@ gtest_discover_tests(session_log_test)
 gtest_discover_tests(failure_dialog_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)
+gtest_discover_tests(runtime_config_writer_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)
