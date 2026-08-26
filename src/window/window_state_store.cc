@@ -21,8 +21,6 @@ namespace {
 
 constexpr int kSchemaVersion = 1;
 constexpr std::uintmax_t kMaximumStateBytes = 32U * 1024U;
-constexpr int kMinimumWidth = 160;
-constexpr int kMinimumHeight = 120;
 constexpr int kMaximumExtent = 16384;
 constexpr int kMaximumCoordinateMagnitude = 131072;
 std::atomic<std::uint64_t> g_temporary_sequence{0};
@@ -74,8 +72,10 @@ bool WriteAll(int descriptor, std::string_view bytes) {
 }
 
 bool IsValidState(const PersistedWindowState& state) {
-  return state.width >= kMinimumWidth && state.width <= kMaximumExtent &&
-         state.height >= kMinimumHeight && state.height <= kMaximumExtent &&
+  return state.width >= kMinimumWindowWidth &&
+         state.width <= kMaximumExtent &&
+         state.height >= kMinimumWindowHeight &&
+         state.height <= kMaximumExtent &&
          (!state.has_position || (state.x >= -kMaximumCoordinateMagnitude &&
                                   state.x <= kMaximumCoordinateMagnitude &&
                                   state.y >= -kMaximumCoordinateMagnitude &&

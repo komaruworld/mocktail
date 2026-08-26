@@ -8,6 +8,11 @@
 namespace mocktail {
 namespace window {
 
+// Smallest window the renderer is expected to cope with. A restored geometry
+// below this is rejected, and the live window is floored at the same size.
+inline constexpr int kMinimumWindowWidth = 160;
+inline constexpr int kMinimumWindowHeight = 120;
+
 // Windowed geometry remains separate from fullscreen/maximized state so a
 // compositor transition cannot replace the useful restore rectangle with the
 // monitor-sized surface extent.

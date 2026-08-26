@@ -88,6 +88,16 @@ TEST(WindowStateStoreTest, RejectsMalformedAndOutOfRangeState) {
   invalid.width = 100000;
   EXPECT_FALSE(StoreWindowState(path, invalid).ok());
 
+  // The same floor the live window is clamped to.
+  PersistedWindowState too_small;
+  too_small.width = kMinimumWindowWidth - 1;
+  EXPECT_FALSE(StoreWindowState(path, too_small).ok());
+  too_small.width = kMinimumWindowWidth;
+  too_small.height = kMinimumWindowHeight - 1;
+  EXPECT_FALSE(StoreWindowState(path, too_small).ok());
+  too_small.height = kMinimumWindowHeight;
+  EXPECT_TRUE(StoreWindowState(path, too_small).ok());
+
   {
     std::ofstream output(path);
     output << R"({"schema_version":1,"fullscreen":false,)"

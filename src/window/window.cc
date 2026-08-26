@@ -150,6 +150,18 @@ static char g_preferred_gles_library[4096];
 static bool g_auto_angle_retry_attempted = false;
 static std::filesystem::path g_window_state_path;
 
+// Floors the live window at the size a restored geometry already has to clear.
+void ApplyMinimumWindowSize(SDL_Window* window) {
+  if (window == nullptr) {
+    return;
+  }
+  if (!SDL_SetWindowMinimumSize(window, kMinimumWindowWidth,
+                                kMinimumWindowHeight)) {
+    std::fprintf(stderr, "  [window] SDL minimum size rejected: %s\n",
+                 SDL_GetError());
+  }
+}
+
 void ApplyWindowIcon(SDL_Window* window) {
   const Status status = platform::ApplySdlWindowIcon(window);
   if (!status.ok()) {
@@ -791,6 +803,7 @@ bool CreateSoftwareWaitingWindow(int width, int height, const char* title) {
     return false;
   }
   ApplyWindowIcon(g_state.sdl_window);
+  ApplyMinimumWindowSize(g_state.sdl_window);
   ApplyRestoredWindowPosition();
 
   g_state.software_window = true;
@@ -930,6 +943,7 @@ bool Init(int width, int height, const char* title) {
       return false;
     }
     ApplyWindowIcon(g_state.sdl_window);
+    ApplyMinimumWindowSize(g_state.sdl_window);
     ApplyRestoredWindowPosition();
     g_state.direct_vulkan = true;
     g_state.initialised = true;
@@ -1076,6 +1090,7 @@ bool Init(int width, int height, const char* title) {
     return CreateSoftwareWaitingWindow(width, height, title);
   }
   ApplyWindowIcon(g_state.sdl_window);
+  ApplyMinimumWindowSize(g_state.sdl_window);
   ApplyRestoredWindowPosition();
   fprintf(stderr, "  [window] SDL3 window created (%dx%d)\n", width, height);
   ShowWindowAccordingToStartupMode();
