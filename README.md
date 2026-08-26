@@ -112,6 +112,10 @@ Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
   "DFIntExample": "120"
 }
 ```
+## How Do I submit an issue?
+
+Go check [FAQ.md](FAQ.md)
+
 ## FAQ
 
 To see the most Frequently Asked Question go check [FAQ.md](FAQ.md)
