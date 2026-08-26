@@ -73,6 +73,7 @@ void ExpectDesktopLayout(const nlohmann::json& policy) {
   EXPECT_EQ(policy["SystemBarPlacement"], "Left");
   EXPECT_EQ(policy["ShouldSystemBarUsuallyBePresent"], true);
   EXPECT_EQ(policy["DevicePreferencesPersistentPresenceVariant"], "windows");
+  EXPECT_EQ(policy["ShowUncheckedBadge"], false);
 }
 
 TEST(RobloxDesktopAppPolicyTest,
@@ -86,7 +87,7 @@ TEST(RobloxDesktopAppPolicyTest,
   const nlohmann::json original_policy = {
       {"PlatformGroup", "Unknown"},       {"UseGridHomePage", nullptr},
       {"SystemBarPlacement", "Bottom"},   {"EligibleForVideoCapture", false},
-      {"AccountOwnedMarker", "preserve"},
+      {"ShowUncheckedBadge", true},       {"AccountOwnedMarker", "preserve"},
   };
   const nlohmann::json configurations = {
       {"GUAC:42:app-policy", original_policy.dump()},
