@@ -92,6 +92,12 @@ target_link_libraries(performance_policy_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(texture_memory_policy_test texture_memory_policy_test.cc)
+target_link_libraries(texture_memory_policy_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
   Mocktail::Runtime
@@ -810,6 +816,7 @@ gtest_discover_tests(session_log_test)
 gtest_discover_tests(failure_dialog_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)
+gtest_discover_tests(texture_memory_policy_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)
