@@ -1,7 +1,5 @@
 # Frequently asked questions
 
-------
-
 [How do I change my FPS?](#how-do-i-change-my-fps)
 
 [How do I submit an issue?](#how-do-i-submit-an-issue)
