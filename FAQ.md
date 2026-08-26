@@ -26,6 +26,8 @@ with your text editor of preference search for "graphics"
 
 change the display value to your desired fps, also turn off vsync if you want more fps than your display supports
 
+---
+
 ### How do I submit an issue?
 
 To make a more standard way so this don't becomes a mess you should follow this to make an issue:
