@@ -256,6 +256,18 @@ std::vector<std::string> DiscordSocketDirectories() {
     directories.emplace_back(std::string(runtime) +
                              "/.flatpak/com.discordapp.Discord/xdg-run");
     directories.emplace_back(std::string(runtime) + "/snap.discord");
+    // Discord-compatible clients expose the same IPC socket from their own
+    // sandbox. A native install writes straight into XDG_RUNTIME_DIR and is
+    // already covered by the entry above.
+    for (const char* application : {"com.discordapp.DiscordCanary",
+                                    "com.discordapp.DiscordPTB",
+                                    "dev.vencord.Vesktop",
+                                    "io.github.equicord.equibop",
+                                    "xyz.armcord.ArmCord"}) {
+      directories.emplace_back(std::string(runtime) + "/app/" + application);
+      directories.emplace_back(std::string(runtime) + "/.flatpak/" +
+                               application + "/xdg-run");
+    }
   }
   append(std::getenv("TMPDIR"));
   directories.emplace_back("/tmp");
