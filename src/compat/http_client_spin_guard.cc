@@ -10,33 +10,40 @@ namespace mocktail {
 namespace compat {
 namespace {
 
-constexpr std::uint32_t kThreadNameRecheckInterval = 4096;
-
 struct ThreadSpinState {
   HttpClientSpinRateLimiter limiter;
-  std::uint32_t operations_until_name_check = 0;
-  bool is_http_client = false;
+  uint8_t checked_state = 0;  // 0 = unchecked, 1 = not_http, 2 = is_http
+  uint8_t retries_remaining = 8;
 };
 
 thread_local ThreadSpinState g_thread_spin_state;
 
 bool IsHttpClientThread(ThreadSpinState* state) {
-  if (state->is_http_client) {
+  if (__builtin_expect(state->checked_state == 1, 1)) {
+    return false;
+  }
+  if (__builtin_expect(state->checked_state == 2, 0)) {
     return true;
   }
-  if (state->operations_until_name_check != 0) {
-    --state->operations_until_name_check;
-    return false;
-  }
-  state->operations_until_name_check = kThreadNameRecheckInterval;
 
   char thread_name[16]{};
-  if (pthread_getname_np(pthread_self(), thread_name, sizeof(thread_name)) !=
-      0) {
-    return false;
+  if (pthread_getname_np(pthread_self(), thread_name, sizeof(thread_name)) == 0) {
+    if (std::strcmp(thread_name, "HttpClient") == 0) {
+      state->checked_state = 2;
+      return true;
+    }
+    if (thread_name[0] != '\0') {
+      state->checked_state = 1;
+      return false;
+    }
   }
-  state->is_http_client = std::strcmp(thread_name, "HttpClient") == 0;
-  return state->is_http_client;
+
+  if (state->retries_remaining > 0) {
+    --state->retries_remaining;
+  } else {
+    state->checked_state = 1;
+  }
+  return false;
 }
 
 std::uint64_t MonotonicNowNs() {

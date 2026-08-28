@@ -3043,7 +3043,7 @@ bool InvokeTaskSchedulerForeground(
             << "] NativeGLInterface.setTaskSchedulerBackgroundMode(false, "
             << "ASMA.start)\n"
             << std::flush;
-  if (sigsetjmp(g_update_surface_app_jmp_buf, 1) == 0) {
+  if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
     g_stage6_empty_gl_helper_returns = 0;
     g_update_surface_app_recovery_in_progress = kStage6RecoveryInline;
     native_set_task_scheduler_background_mode(env, native_gl_class, JNI_FALSE,
@@ -3160,7 +3160,7 @@ void MocktailTrimEngineMemory(int level) {
       mocktail_gameactivity_on_trim_memory_native);
   if (on_trim != nullptr) {
     static sigjmp_buf s_trim_jmp_buf;
-    if (sigsetjmp(s_trim_jmp_buf, 1) == 0) {
+    if (sigsetjmp(s_trim_jmp_buf, 0) == 0) {
       on_trim(env, g_saved_game_activity,
               static_cast<jlong>(g_game_activity_native_handle), level);
     }
@@ -30259,7 +30259,7 @@ void* DelayedUpdateSurfaceAppThread(void* arg) {
   std::cout << "  [engine] delayed nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams\n"
             << std::flush;
   volatile sig_atomic_t update_surface_recovered = 0;
-  if (sigsetjmp(g_update_surface_app_jmp_buf, 1) == 0) {
+  if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
     g_stage6_empty_gl_helper_returns = 0;
     g_update_surface_app_recovery_in_progress = kStage6RecoveryWorker;
     context->native_update_surface_app(env, context->native_gl_class,
@@ -31517,7 +31517,7 @@ void* EngineStartupThread(void* arg) {
           delete delayed_context;
           std::cerr << "  [engine] failed to create delayed UpdateSurfaceApp thread: "
                     << create_result << '\n' << std::flush;
-          if (sigsetjmp(g_update_surface_app_jmp_buf, 1) == 0) {
+          if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
             g_stage6_empty_gl_helper_returns = 0;
             g_update_surface_app_recovery_in_progress =
                 kStage6RecoveryInline;
@@ -31542,7 +31542,7 @@ void* EngineStartupThread(void* arg) {
               << std::flush;
         }
       } else {
-        if (sigsetjmp(g_update_surface_app_jmp_buf, 1) == 0) {
+        if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
           g_stage6_empty_gl_helper_returns = 0;
           g_update_surface_app_recovery_in_progress = kStage6RecoveryInline;
           context->native_update_surface_app(env, native_gl_class, surface,
@@ -31704,7 +31704,7 @@ void* EngineStartupThread(void* arg) {
         << "  [engine] post-StartApp nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams\n"
         << std::flush;
     if (IsEnabled("MOCKTAIL_CALL_REAL_APP_BRIDGE_UPDATE_SURFACE")) {
-      if (sigsetjmp(g_update_surface_app_jmp_buf, 1) == 0) {
+      if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
         g_stage6_empty_gl_helper_returns = 0;
         g_update_surface_app_recovery_in_progress = kStage6RecoveryInline;
         context->native_update_surface_app(env, native_gl_class, surface,

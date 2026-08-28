@@ -5,8 +5,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -281,9 +285,32 @@ void ConvertEtc1RgbBlockToBc1(const uint8_t *etc1, uint8_t *bc1) {
 bool TranscodeEtc1SkyTextureForVulkan(const char *path,
                                       std::vector<unsigned char> *data) {
   if (!IsBundledSkyTexture(path) || data == nullptr ||
-      data->size() > kMaxSkyTextureSize || !TranscodeKtx1Etc1(data)) {
+      data->size() > kMaxSkyTextureSize) {
     return false;
   }
+
+  static std::mutex s_cache_mutex;
+  static std::unordered_map<std::string, std::vector<unsigned char>> s_cached_transcodes;
+
+  const std::string path_key = path != nullptr ? path : "";
+  {
+    std::lock_guard<std::mutex> lock(s_cache_mutex);
+    auto it = s_cached_transcodes.find(path_key);
+    if (it != s_cached_transcodes.end()) {
+      *data = it->second;
+      return true;
+    }
+  }
+
+  if (!TranscodeKtx1Etc1(data)) {
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(s_cache_mutex);
+    s_cached_transcodes[path_key] = *data;
+  }
+
   std::fprintf(stderr,
                "  [asset] Transcoded bundled ETC1 sky texture to BC1 for "
                "Vulkan: %s\n",
