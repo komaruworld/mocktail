@@ -668,24 +668,18 @@ void ReleaseJniReference(jobject obj) {
 }
 
 PseudoJavaObject* PseudoObjectFromRef(jobject obj) {
-  if (__builtin_expect(obj == nullptr, 0)) {
-    return nullptr;
-  }
-  const uintptr_t uobj = reinterpret_cast<uintptr_t>(obj);
-  const uint32_t index = static_cast<uint32_t>(uobj >> 16);
-  if (__builtin_expect(index > 0 && index < 100000, 1)) {
-    void* raw_ptr = __atomic_load_n(&my_segment[index], __ATOMIC_ACQUIRE);
-    if (__builtin_expect(raw_ptr != nullptr, 1)) {
-      return static_cast<PseudoJavaObject*>(reinterpret_cast<Object*>(raw_ptr));
-    }
-    return nullptr;
-  }
-
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  if (g_known_objects.find(obj) == g_known_objects.end()) {
+  if (!obj || g_known_objects.find(obj) == g_known_objects.end()) {
     return nullptr;
   }
-  Object* raw_ptr = reinterpret_cast<Object*>(obj);
+  uintptr_t uobj = reinterpret_cast<uintptr_t>(obj);
+  uint32_t index = uobj >> 16;
+  Object* raw_ptr = nullptr;
+  if (index > 0 && index < 100000) {
+    raw_ptr = reinterpret_cast<Object*>(my_segment[index]);
+  } else {
+    raw_ptr = reinterpret_cast<Object*>(obj);
+  }
   if (!raw_ptr) return nullptr;
   // Avoid host __dynamic_cast on potentially Bionic RTTI; segment entries are
   // PseudoJavaObjects by construction.
