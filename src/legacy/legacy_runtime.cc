@@ -585,50 +585,7 @@ struct EngineStartupContext {
   NativeNoArgFn native_start_lua_app_dm;
 };
 
-struct DelayedStartLuaAppContext {
-  jnivm::VM* vm;
-  JavaVM* java_vm;
-  NativeNoArgFn native_start_lua_app_dm;
-  int delay_ms;
-};
 
-struct AppBridgeInitWithParamsContext {
-  jnivm::VM* vm;
-  JavaVM* java_vm;
-  NativeAppBridgeObjectParamsFn native_init_with_params;
-  jobject init_params;
-  std::atomic<int> finished;
-  std::atomic<int> recovered;
-};
-
-struct AppBridgeAppStartContext {
-  jnivm::VM* vm;
-  JavaVM* java_vm;
-  NativeAppBridgeAppStartFn native_app_bridge_app_start;
-  jclass native_app_bridge_class;
-  jstring base_url;
-  jstring user_agent;
-  jstring android_id;
-  jstring launch_source;
-  jstring empty_string;
-};
-
-
-
-struct DelayedStartAppContext {
-  jnivm::VM* vm;
-  JavaVM* java_vm;
-  NativeAppBridgeObjectParamsFn native_start_app_with_params;
-  jclass native_gl_class;
-  jobject start_app_params;
-};
-
-struct DelayedSendAppEventContext {
-  jnivm::VM* vm;
-  JavaVM* java_vm;
-  NativeSendAppReadyFn native_send_app_ready;
-  NativeSendGameLoadedFn native_send_game_loaded;
-};
 
 constexpr size_t kDefaultEngineStackSize = 1024ULL * 1024 * 1024;
 constexpr size_t kMinEngineStackSize = 16ULL * 1024 * 1024;
@@ -30012,392 +29969,7 @@ void ConfigureLocalStorage(JNIEnv* env, const EngineStartupContext* context) {
             << std::flush;
 }
 
-void* AppBridgeInitWithParamsThread(void* arg) {
-  auto* context = static_cast<AppBridgeInitWithParamsContext*>(arg);
-  if (!context || !context->vm || !context->java_vm ||
-      !context->native_init_with_params || !context->init_params) {
-    std::cerr << "  [engine] nativeAppBridgeV2InitWithParams thread has "
-              << "invalid context\n"
-              << std::flush;
-    if (context) {
-      context->recovered.store(1);
-      context->finished.store(1);
-    }
-    return nullptr;
-  }
 
-  void* raw_env = nullptr;
-  jint attach_result = context->java_vm->AttachCurrentThread(&raw_env, nullptr);
-  std::cout << "  [engine] nativeAppBridgeV2InitWithParams thread "
-            << "AttachCurrentThread result=" << attach_result
-            << " raw_env=" << raw_env << '\n'
-            << std::flush;
-  JNIEnv* env = attach_result == JNI_OK ? static_cast<JNIEnv*>(raw_env)
-                                        : context->vm->GetJNIEnv();
-  if (!env) {
-    std::cerr << "  [engine] nativeAppBridgeV2InitWithParams thread could not "
-              << "get JNIEnv\n"
-              << std::flush;
-    context->recovered.store(1);
-    context->finished.store(1);
-    return nullptr;
-  }
-
-  PublishCurrentJniEnv(env);
-  context->vm->RestoreFunctions();
-  env = context->vm->GetJNIEnv();
-  jclass native_gl_class =
-      env->FindClass("com/roblox/engine/jni/NativeGLInterface");
-
-  std::cout << "  [engine] nativeAppBridgeV2InitWithParams thread entered\n"
-            << std::flush;
-  if (sigsetjmp(g_init_with_params_jmp_buf, 1) == 0) {
-    g_init_with_params_recovery_in_progress = 1;
-    context->native_init_with_params(env, native_gl_class,
-                                     context->init_params);
-    g_init_with_params_recovery_in_progress = 0;
-  } else {
-    g_init_with_params_recovery_in_progress = 0;
-    AbortStage6InitWithParamsStaticGuards(
-        "nativeAppBridgeV2InitWithParams thread");
-    context->recovered.store(1);
-    std::cerr << "  [engine] nativeAppBridgeV2InitWithParams thread recovered\n"
-              << std::flush;
-  }
-  std::cout << "  [engine] nativeAppBridgeV2InitWithParams thread returned\n"
-            << std::flush;
-  DumpStage6AppBridgeStaticState("after V2 init thread");
-  context->java_vm->DetachCurrentThread();
-  context->finished.store(1);
-  return nullptr;
-}
-
-void CallStartLuaDirectClosureIfRequested(const char* label) {
-  if (!IsEnabled("MOCKTAIL_CALL_START_LUA_DIRECT_CLOSURE")) {
-    return;
-  }
-  uintptr_t base = static_cast<uintptr_t>(g_libroblox_base);
-  if (base == 0) {
-    std::cerr << "  [engine] " << label
-              << " direct StartLua closure skipped: libroblox base is null\n"
-              << std::flush;
-    return;
-  }
-  auto* direct_start_lua = reinterpret_cast<NativeDirectNoArgFn>(
-      base + kStage6StartLuaDirectClosureOffset);
-  std::cout << "  [engine] " << label
-            << " nativeAppBridgeStartLuaAppDM direct closure\n"
-            << std::flush;
-  ResetStage6AppBridgeStaticGuards(label);
-  direct_start_lua();
-  std::cout << "  [engine] " << label
-            << " nativeAppBridgeStartLuaAppDM direct closure returned\n"
-            << std::flush;
-}
-
-void* DelayedStartLuaAppThread(void* arg) {
-  std::unique_ptr<DelayedStartLuaAppContext> context(
-      static_cast<DelayedStartLuaAppContext*>(arg));
-  if (!context || !context->vm || !context->java_vm ||
-      !context->native_start_lua_app_dm) {
-    std::cerr << "  [engine] delayed StartLuaAppDM has invalid context\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  if (context->delay_ms > 0) {
-    std::cout << "  [engine] delayed StartLuaAppDM wait "
-              << context->delay_ms << " ms\n"
-              << std::flush;
-    usleep(static_cast<useconds_t>(context->delay_ms) * 1000);
-  }
-
-  void* raw_env = nullptr;
-  jint attach_result = context->java_vm->AttachCurrentThread(&raw_env, nullptr);
-  std::cout << "  [engine] delayed StartLuaAppDM AttachCurrentThread result="
-            << attach_result << " raw_env=" << raw_env << '\n' << std::flush;
-  JNIEnv* env = attach_result == JNI_OK ? static_cast<JNIEnv*>(raw_env)
-                                        : context->vm->GetJNIEnv();
-  if (!env) {
-    std::cerr << "  [engine] delayed StartLuaAppDM could not get JNIEnv\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  PublishCurrentJniEnv(env);
-  context->vm->RestoreFunctions();
-  env = context->vm->GetJNIEnv();
-  jclass native_gl_class =
-      env->FindClass("com/roblox/engine/jni/NativeGLInterface");
-
-  if (IsEnabled("MOCKTAIL_TRACE_START_LUA_JNI")) {
-    setenv("MOCKTAIL_JNI_TRACE", "1", 1);
-  }
-
-  std::cout << "  [engine] delayed nativeAppBridgeStartLuaAppDM\n"
-            << std::flush;
-  if (sigsetjmp(g_start_lua_app_dm_jmp_buf, 1) == 0) {
-    g_stage6_empty_gl_helper_returns = 0;
-    g_start_lua_app_dm_recovery_in_progress = kStage6RecoveryWorker;
-    context->native_start_lua_app_dm(env, native_gl_class);
-    CallStartLuaDirectClosureIfRequested("delayed");
-    g_start_lua_app_dm_recovery_in_progress = kStage6RecoveryInactive;
-  } else {
-    g_start_lua_app_dm_recovery_in_progress = kStage6RecoveryInactive;
-    std::cerr << "  [engine] delayed nativeAppBridgeStartLuaAppDM recovered\n"
-              << std::flush;
-  }
-  std::cout << "  [engine] delayed nativeAppBridgeStartLuaAppDM returned\n"
-            << std::flush;
-  DumpStage6AppBridgeStaticState("after delayed StartLuaAppDM");
-  context->java_vm->DetachCurrentThread();
-  return nullptr;
-}
-
-void* AppBridgeAppStartThread(void* arg) {
-  std::unique_ptr<AppBridgeAppStartContext> context(
-      static_cast<AppBridgeAppStartContext*>(arg));
-  if (!context || !context->vm || !context->java_vm ||
-      !context->native_app_bridge_app_start) {
-    std::cerr << "  [engine] nativeAppBridgeAppStart thread has invalid "
-              << "context\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  void* raw_env = nullptr;
-  jint attach_result = context->java_vm->AttachCurrentThread(&raw_env, nullptr);
-  std::cout << "  [engine] nativeAppBridgeAppStart thread "
-            << "AttachCurrentThread result=" << attach_result
-            << " raw_env=" << raw_env << '\n'
-            << std::flush;
-  JNIEnv* env = attach_result == JNI_OK ? static_cast<JNIEnv*>(raw_env)
-                                        : context->vm->GetJNIEnv();
-  if (!env) {
-    std::cerr << "  [engine] nativeAppBridgeAppStart thread could not get "
-              << "JNIEnv\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  PublishCurrentJniEnv(env);
-  context->vm->RestoreFunctions();
-  env = context->vm->GetJNIEnv();
-
-  std::cout << "  [engine] nativeAppBridgeAppStart thread entered\n"
-            << std::flush;
-  if (sigsetjmp(g_app_bridge_app_start_jmp_buf, 1) == 0) {
-    g_app_bridge_app_start_recovery_in_progress = 1;
-    context->native_app_bridge_app_start(
-        env, context->native_app_bridge_class, context->base_url,
-        context->user_agent, JNI_FALSE, context->android_id,
-        context->launch_source, context->empty_string);
-    g_app_bridge_app_start_recovery_in_progress = 0;
-  } else {
-    g_app_bridge_app_start_recovery_in_progress = 0;
-    std::cerr << "  [engine] nativeAppBridgeAppStart thread recovered\n"
-              << std::flush;
-  }
-  std::cout << "  [engine] nativeAppBridgeAppStart thread returned\n"
-            << std::flush;
-  context->java_vm->DetachCurrentThread();
-  return nullptr;
-}
-
-
-
-void* DelayedStartAppThread(void* arg) {
-  auto* context = static_cast<DelayedStartAppContext*>(arg);
-  if (!context || !context->vm || !context->java_vm ||
-      !context->native_start_app_with_params) {
-    std::cerr << "  [engine] delayed StartApp has invalid context\n"
-              << std::flush;
-    delete context;
-    return nullptr;
-  }
-
-  void* raw_env = nullptr;
-  jint attach_result = context->java_vm->AttachCurrentThread(&raw_env, nullptr);
-  std::cout << "  [engine] delayed StartApp AttachCurrentThread result="
-            << attach_result << " raw_env=" << raw_env << '\n' << std::flush;
-  JNIEnv* env = attach_result == JNI_OK ? static_cast<JNIEnv*>(raw_env)
-                                        : context->vm->GetJNIEnv();
-  if (!env) {
-    std::cerr << "  [engine] delayed StartApp could not get JNIEnv\n"
-              << std::flush;
-    return nullptr;
-  }
-  if (!InitializeActiveHostAbiThread()) {
-    std::cerr << "  [engine] delayed StartApp allocator TLS init failed\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  PublishCurrentJniEnv(env);
-  context->vm->RestoreFunctions();
-  env = context->vm->GetJNIEnv();
-
-  std::cout << "  [engine] delayed nativeAppBridgeV2StartAppWithParams\n"
-            << std::flush;
-  volatile sig_atomic_t graphics_locked = 0;
-  volatile sig_atomic_t made_current = 0;
-  if (HasRealGraphicsContext()) {
-    std::cout << "  [engine] delayed StartApp waiting for graphics mutex\n"
-              << std::flush;
-    pthread_mutex_lock(&g_engine_gl_mutex);
-    graphics_locked = 1;
-    std::cout << "  [engine] delayed StartApp acquired graphics mutex\n"
-              << std::flush;
-    if (mocktail::window::MakeCurrentOnThread()) {
-      made_current = 1;
-    }
-  }
-  volatile sig_atomic_t start_app_recovered = 0;
-  if (sigsetjmp(g_start_app_with_params_jmp_buf, 1) == 0) {
-    g_stage6_empty_gl_helper_returns = 0;
-    g_start_app_with_params_recovery_in_progress = kStage6RecoveryWorker;
-    context->native_start_app_with_params(env, context->native_gl_class,
-                                          context->start_app_params);
-    g_start_app_with_params_recovery_in_progress = kStage6RecoveryInactive;
-  } else {
-    start_app_recovered = 1;
-    g_start_app_with_params_recovery_in_progress = kStage6RecoveryInactive;
-    std::cerr << "  [engine] delayed nativeAppBridgeV2StartAppWithParams recovered\n"
-              << std::flush;
-  }
-  if (made_current != 0) {
-    mocktail::window::ReleaseCurrentOnThread();
-  }
-  if (graphics_locked != 0) {
-    pthread_mutex_unlock(&g_engine_gl_mutex);
-    graphics_locked = 0;
-    std::cout << "  [engine] delayed StartApp released graphics mutex\n"
-              << std::flush;
-  }
-  std::cout << "  [engine] delayed nativeAppBridgeV2StartAppWithParams returned\n"
-            << std::flush;
-  DumpStage6AppBridgeStaticState("after delayed StartAppWithParams");
-  if (start_app_recovered) {
-    std::cerr
-        << "  [engine] delayed start_app recovery may prevent graphics startup\n"
-        << std::flush;
-  }
-  if (start_app_recovered == 0) {
-    context->java_vm->DetachCurrentThread();
-  }
-  // See DelayedUpdateSurfaceAppThread: this is intentionally leaked after a
-  // recovered native graphics call to avoid freeing through corrupted heap.
-  return nullptr;
-}
-
-void* DelayedSendAppReadyThread(void* arg) {
-  auto* context = static_cast<DelayedSendAppEventContext*>(arg);
-  std::unique_ptr<DelayedSendAppEventContext> owned_context(context);
-  if (!context || !context->vm || !context->java_vm ||
-      !context->native_send_app_ready) {
-    std::cerr << "  [engine] delayed AppReady has invalid context\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  void* raw_env = nullptr;
-  jint attach_result = context->java_vm->AttachCurrentThread(&raw_env, nullptr);
-  std::cout << "  [engine] delayed AppReady AttachCurrentThread result="
-            << attach_result << " raw_env=" << raw_env << '\n' << std::flush;
-  JNIEnv* env = attach_result == JNI_OK ? static_cast<JNIEnv*>(raw_env)
-                                        : context->vm->GetJNIEnv();
-  if (!env) {
-    std::cerr << "  [engine] delayed AppReady could not get JNIEnv\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  PublishCurrentJniEnv(env);
-  context->vm->RestoreFunctions();
-  env = context->vm->GetJNIEnv();
-  jclass native_gl_class =
-      env->FindClass("com/roblox/engine/jni/NativeGLInterface");
-
-  std::cout << "  [engine] delayed nativeAppBridgeV2SendAppEventOnAppReady\n"
-            << std::flush;
-  volatile sig_atomic_t recovered = 0;
-  if (sigsetjmp(g_send_app_ready_jmp_buf, 1) == 0) {
-    g_send_app_ready_recovery_in_progress = kStage6RecoveryWorker;
-    jstring empty_ready_arg = env->NewStringUTF("");
-    jstring home_feature = env->NewStringUTF("Home");
-    context->native_send_app_ready(env, native_gl_class, empty_ready_arg,
-                                   empty_ready_arg, empty_ready_arg,
-                                   home_feature);
-    g_send_app_ready_recovery_in_progress = kStage6RecoveryInactive;
-    std::cout
-        << "  [engine] delayed nativeAppBridgeV2SendAppEventOnAppReady returned\n"
-        << std::flush;
-  } else {
-    recovered = 1;
-    g_send_app_ready_recovery_in_progress = kStage6RecoveryInactive;
-    std::cerr << "  [engine] delayed nativeAppBridgeV2SendAppEventOnAppReady recovered\n"
-              << std::flush;
-  }
-  if (recovered == 0) {
-    context->java_vm->DetachCurrentThread();
-  }
-  return nullptr;
-}
-
-void* DelayedSendGameLoadedThread(void* arg) {
-  auto* context = static_cast<DelayedSendAppEventContext*>(arg);
-  std::unique_ptr<DelayedSendAppEventContext> owned_context(context);
-  if (!context || !context->vm || !context->java_vm ||
-      !context->native_send_game_loaded) {
-    std::cerr << "  [engine] delayed GameLoaded has invalid context\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  void* raw_env = nullptr;
-  jint attach_result = context->java_vm->AttachCurrentThread(&raw_env, nullptr);
-  std::cout << "  [engine] delayed GameLoaded AttachCurrentThread result="
-            << attach_result << " raw_env=" << raw_env << '\n' << std::flush;
-  JNIEnv* env = attach_result == JNI_OK ? static_cast<JNIEnv*>(raw_env)
-                                        : context->vm->GetJNIEnv();
-  if (!env) {
-    std::cerr << "  [engine] delayed GameLoaded could not get JNIEnv\n"
-              << std::flush;
-    return nullptr;
-  }
-
-  PublishCurrentJniEnv(env);
-  context->vm->RestoreFunctions();
-  env = context->vm->GetJNIEnv();
-  jclass native_gl_class =
-      env->FindClass("com/roblox/engine/jni/NativeGLInterface");
-
-  std::cout << "  [engine] delayed nativeAppBridgeV2SendAppEventOnGameLoaded\n"
-            << std::flush;
-  volatile sig_atomic_t recovered = 0;
-  if (sigsetjmp(g_send_game_loaded_jmp_buf, 1) == 0) {
-    g_send_game_loaded_recovery_in_progress = kStage6RecoveryWorker;
-    jstring empty_game_loaded_arg = env->NewStringUTF("");
-    jstring home_feature = env->NewStringUTF("Home");
-    context->native_send_game_loaded(env, native_gl_class, home_feature,
-                                     empty_game_loaded_arg,
-                                     empty_game_loaded_arg);
-    g_send_game_loaded_recovery_in_progress = kStage6RecoveryInactive;
-    std::cout
-        << "  [engine] delayed nativeAppBridgeV2SendAppEventOnGameLoaded returned\n"
-        << std::flush;
-  } else {
-    recovered = 1;
-    g_send_game_loaded_recovery_in_progress = kStage6RecoveryInactive;
-    std::cerr
-        << "  [engine] delayed nativeAppBridgeV2SendAppEventOnGameLoaded recovered\n"
-        << std::flush;
-  }
-  if (recovered == 0) {
-    context->java_vm->DetachCurrentThread();
-  }
-  return nullptr;
-}
 
 // Resolve the exact Android Vulkan loader adapter shipped next to this
 // runtime binary. Never resolve it by SONAME: an unversioned host
@@ -30423,6 +29995,29 @@ static std::string RuntimeVulkanAdapterPath() {
   }
   if (directory.empty()) return {};
   return directory + "/libvulkan.so";
+}
+
+void CallStartLuaDirectClosureIfRequested(const char* label) {
+  if (!IsEnabled("MOCKTAIL_CALL_START_LUA_DIRECT_CLOSURE")) {
+    return;
+  }
+  uintptr_t base = static_cast<uintptr_t>(g_libroblox_base);
+  if (base == 0) {
+    std::cerr << "  [engine] " << label
+              << " direct StartLua closure skipped: libroblox base is null\n"
+              << std::flush;
+    return;
+  }
+  auto* direct_start_lua = reinterpret_cast<NativeDirectNoArgFn>(
+      base + kStage6StartLuaDirectClosureOffset);
+  std::cout << "  [engine] " << label
+            << " nativeAppBridgeStartLuaAppDM direct closure\n"
+            << std::flush;
+  ResetStage6AppBridgeStaticGuards(label);
+  direct_start_lua();
+  std::cout << "  [engine] " << label
+            << " nativeAppBridgeStartLuaAppDM direct closure returned\n"
+            << std::flush;
 }
 
 void* EngineStartupThread(void* arg) {
@@ -30962,132 +30557,38 @@ void* EngineStartupThread(void* arg) {
                 << std::flush;
     }
     std::cout << "  [engine] nativeAppBridgeAppStart\n" << std::flush;
-    if (IsEnabled("MOCKTAIL_APP_BRIDGE_APP_START_THREAD")) {
-      auto* app_start_context = new AppBridgeAppStartContext{
-          context->vm,
-          context->java_vm,
-          context->native_app_bridge_app_start,
-          native_app_bridge_class,
-          base_url,
-          user_agent,
-          android_id,
-          launch_source,
-          empty_string,
-      };
-      pthread_t app_start_thread{};
-      pthread_attr_t app_start_attr;
-      pthread_attr_init(&app_start_attr);
-      pthread_attr_setdetachstate(&app_start_attr, PTHREAD_CREATE_DETACHED);
-      int create_result = pthread_create(&app_start_thread, &app_start_attr,
-                                         AppBridgeAppStartThread,
-                                         app_start_context);
-      pthread_attr_destroy(&app_start_attr);
-      if (create_result != 0) {
-        delete app_start_context;
-        std::cerr << "  [engine] failed to create nativeAppBridgeAppStart "
-                  << "thread: " << create_result << '\n'
-                  << std::flush;
-      } else {
-        std::cout << "  [engine] nativeAppBridgeAppStart scheduled on worker "
-                  << "thread\n"
-                  << std::flush;
-      }
+    if (sigsetjmp(g_app_bridge_app_start_jmp_buf, 1) == 0) {
+      g_app_bridge_app_start_recovery_in_progress = 1;
+      context->native_app_bridge_app_start(
+          env, native_app_bridge_class, base_url, user_agent, JNI_FALSE,
+          android_id, launch_source, empty_string);
+      g_app_bridge_app_start_recovery_in_progress = 0;
     } else {
-      if (sigsetjmp(g_app_bridge_app_start_jmp_buf, 1) == 0) {
-        g_app_bridge_app_start_recovery_in_progress = 1;
-        context->native_app_bridge_app_start(
-            env, native_app_bridge_class, base_url, user_agent, JNI_FALSE,
-            android_id, launch_source, empty_string);
-        g_app_bridge_app_start_recovery_in_progress = 0;
-      } else {
-        g_app_bridge_app_start_recovery_in_progress = 0;
-        std::cerr << "  [engine] nativeAppBridgeAppStart recovered\n"
-                  << std::flush;
-      }
-      std::cout << "  [engine] nativeAppBridgeAppStart returned\n"
+      g_app_bridge_app_start_recovery_in_progress = 0;
+      std::cerr << "  [engine] nativeAppBridgeAppStart recovered\n"
                 << std::flush;
     }
+    std::cout << "  [engine] nativeAppBridgeAppStart returned\n"
+              << std::flush;
   }
 
   if (context->run_init_with_params) {
-      env = ensure_env();
-      std::cout << "  [engine] nativeAppBridgeV2InitWithParams\n" << std::flush;
+    env = ensure_env();
+    std::cout << "  [engine] nativeAppBridgeV2InitWithParams\n" << std::flush;
     if (context->call_real_init_with_params) {
       jobject init_params =
           BuildAppBridgeInitParams(env, client_settings, fast_flags, app_params,
                                    asset_path, app_bridge_init_headless);
-      if (IsEnabled("MOCKTAIL_CALL_REAL_APP_BRIDGE_INIT_THREAD")) {
-        auto* init_context = new AppBridgeInitWithParamsContext{
-            context->vm,
-            context->java_vm,
-            context->native_init_with_params,
-            init_params,
-            0,
-            0,
-        };
-        pthread_t init_thread{};
-        pthread_attr_t init_attr;
-        pthread_attr_init(&init_attr);
-        pthread_attr_setdetachstate(&init_attr, PTHREAD_CREATE_DETACHED);
-        int create_result = pthread_create(&init_thread, &init_attr,
-                                           AppBridgeInitWithParamsThread,
-                                           init_context);
-        pthread_attr_destroy(&init_attr);
-        if (create_result != 0) {
-          delete init_context;
-          std::cerr << "  [engine] failed to create "
-                    << "nativeAppBridgeV2InitWithParams thread: "
-                    << create_result << '\n'
-                    << std::flush;
-          MocktailAppBridgeInit(env, app_params);
-        } else {
-          std::cout << "  [engine] nativeAppBridgeV2InitWithParams scheduled "
-                    << "on worker thread\n"
-                    << std::flush;
-          const int timeout_ms =
-              GetEnvInt("MOCKTAIL_APP_BRIDGE_INIT_THREAD_TIMEOUT_MS", 1500);
-          const uint64_t start_ms = MonotonicMillis();
-          while (init_context->finished.load() == 0) {
-            if (IsEnabled("MOCKTAIL_APP_BRIDGE_INIT_THREAD_PUMP")) {
-              PumpRobloxMainThreadMessagesOnce();
-            }
-            if (timeout_ms >= 0) {
-              const uint64_t now_ms = MonotonicMillis();
-              if (now_ms >= start_ms &&
-                  now_ms - start_ms >= static_cast<uint64_t>(timeout_ms)) {
-                break;
-              }
-            }
-            usleep(10 * 1000);
-          }
-          if (init_context->finished.load() != 0) {
-            const bool recovered = init_context->recovered.load() != 0;
-            delete init_context;
-            if (recovered) {
-              MocktailAppBridgeInit(env, app_params);
-            }
-          } else {
-            std::cerr << "  [engine] nativeAppBridgeV2InitWithParams timed "
-                      << "out after " << timeout_ms
-                      << " ms; continuing with Mocktail app bridge staging\n"
-                      << std::flush;
-            MocktailAppBridgeInit(env, app_params);
-            // The detached Roblox worker can still be inside a native futex
-            // wait, so keep its tiny context alive for the rest of the run.
-          }
-        }
+      if (sigsetjmp(g_init_with_params_jmp_buf, 1) == 0) {
+        g_init_with_params_recovery_in_progress = 1;
+        context->native_init_with_params(env, native_gl_class, init_params);
+        g_init_with_params_recovery_in_progress = 0;
       } else {
-        if (sigsetjmp(g_init_with_params_jmp_buf, 1) == 0) {
-          g_init_with_params_recovery_in_progress = 1;
-          context->native_init_with_params(env, native_gl_class, init_params);
-          g_init_with_params_recovery_in_progress = 0;
-        } else {
-          AbortStage6InitWithParamsStaticGuards(
-              "nativeAppBridgeV2InitWithParams inline");
-          std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
-                    << std::flush;
-          MocktailAppBridgeInit(env, app_params);
-        }
+        AbortStage6InitWithParamsStaticGuards(
+            "nativeAppBridgeV2InitWithParams inline");
+        std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
+                  << std::flush;
+        MocktailAppBridgeInit(env, app_params);
       }
     } else {
       MocktailAppBridgeInit(env, app_params);
@@ -31361,32 +30862,6 @@ void* EngineStartupThread(void* arg) {
       std::cout << "  [engine] nativeAppBridgeStartLuaAppDM returned\n"
                 << std::flush;
       DumpStage6AppBridgeStaticState("after inline StartLuaAppDM");
-    } else if (IsEnabled("MOCKTAIL_START_LUA_APP_DM_THREAD")) {
-      auto* delayed_context = new DelayedStartLuaAppContext{
-          context->vm,
-          context->java_vm,
-          context->native_start_lua_app_dm,
-          delay_ms,
-      };
-      pthread_t start_lua_thread{};
-      pthread_attr_t start_lua_attr;
-      pthread_attr_init(&start_lua_attr);
-      pthread_attr_setdetachstate(&start_lua_attr, PTHREAD_CREATE_DETACHED);
-      int create_result = pthread_create(&start_lua_thread, &start_lua_attr,
-                                         DelayedStartLuaAppThread,
-                                         delayed_context);
-      pthread_attr_destroy(&start_lua_attr);
-      if (create_result != 0) {
-        delete delayed_context;
-        std::cerr
-            << "  [engine] failed to create delayed StartLuaAppDM thread: "
-            << create_result << '\n' << std::flush;
-      } else {
-        std::cout
-            << "  [engine] delayed nativeAppBridgeStartLuaAppDM scheduled on "
-            << "worker thread\n"
-            << std::flush;
-      }
     } else {
       g_pending_main_thread_start_lua_app_dm =
           context->native_start_lua_app_dm;
@@ -31464,75 +30939,26 @@ void* EngineStartupThread(void* arg) {
 	              << std::flush;
     volatile sig_atomic_t start_app_recovered = 0;
     if (effective_call_real_start_app_with_params) {
-      const bool use_start_app_thread =
-          IsEnabled("MOCKTAIL_CALL_REAL_APP_BRIDGE_START_THREAD") &&
-          !force_inline_start_app_with_params;
-      if (use_start_app_thread) {
-        if (mocktail::window::IsInitialised()) {
-          mocktail::window::ReleaseCurrentOnThread();
-        }
-        auto* delayed_context = new DelayedStartAppContext{
-            context->vm,
-            context->java_vm,
-            context->native_start_app_with_params,
-            native_gl_class,
-            start_app_params,
-        };
-        pthread_t start_app_thread{};
-        pthread_attr_t start_app_attr;
-        pthread_attr_init(&start_app_attr);
-        pthread_attr_setdetachstate(&start_app_attr, PTHREAD_CREATE_DETACHED);
-        int create_result = pthread_create(&start_app_thread, &start_app_attr,
-                                           DelayedStartAppThread,
-                                           delayed_context);
-        pthread_attr_destroy(&start_app_attr);
-        if (create_result != 0) {
-          delete delayed_context;
-          std::cerr << "  [engine] failed to create delayed StartApp thread: "
-                    << create_result << '\n' << std::flush;
-          if (sigsetjmp(g_start_app_with_params_jmp_buf, 1) == 0) {
-            g_stage6_empty_gl_helper_returns = 0;
-            g_start_app_with_params_recovery_in_progress =
-                kStage6RecoveryInline;
-            context->native_start_app_with_params(env, native_gl_class,
-                                                  start_app_params);
-            g_start_app_with_params_recovery_in_progress =
-                kStage6RecoveryInactive;
-          } else {
-            start_app_recovered = 1;
-            g_start_app_with_params_recovery_in_progress =
-                kStage6RecoveryInactive;
-            std::cerr <<
-                "  [engine] nativeAppBridgeV2StartAppWithParams recovered\n"
-                        << std::flush;
-          }
-        } else {
-          std::cout
-              << "  [engine] delayed nativeAppBridgeV2StartAppWithParams scheduled on worker thread\n"
-              << std::flush;
-        }
+      if (force_inline_start_app_with_params) {
+        std::cout << "  [engine] forcing inline StartAppWithParams because "
+                     "StartGameWithParam is enabled\n"
+                  << std::flush;
+      }
+      if (sigsetjmp(g_start_app_with_params_jmp_buf, 1) == 0) {
+        g_stage6_empty_gl_helper_returns = 0;
+        g_start_app_with_params_recovery_in_progress =
+            kStage6RecoveryInline;
+        context->native_start_app_with_params(env, native_gl_class,
+                                              start_app_params);
+        g_start_app_with_params_recovery_in_progress =
+            kStage6RecoveryInactive;
       } else {
-        if (force_inline_start_app_with_params) {
-          std::cout << "  [engine] forcing inline StartAppWithParams because "
-                       "StartGameWithParam is enabled\n"
+        start_app_recovered = 1;
+        g_start_app_with_params_recovery_in_progress =
+            kStage6RecoveryInactive;
+        std::cerr <<
+            "  [engine] nativeAppBridgeV2StartAppWithParams recovered\n"
                     << std::flush;
-        }
-        if (sigsetjmp(g_start_app_with_params_jmp_buf, 1) == 0) {
-          g_stage6_empty_gl_helper_returns = 0;
-          g_start_app_with_params_recovery_in_progress =
-              kStage6RecoveryInline;
-          context->native_start_app_with_params(env, native_gl_class,
-                                                start_app_params);
-          g_start_app_with_params_recovery_in_progress =
-              kStage6RecoveryInactive;
-        } else {
-          start_app_recovered = 1;
-          g_start_app_with_params_recovery_in_progress =
-              kStage6RecoveryInactive;
-          std::cerr <<
-              "  [engine] nativeAppBridgeV2StartAppWithParams recovered\n"
-                      << std::flush;
-        }
       }
     } else {
       MocktailAppBridgeStart(env, app_params);
@@ -31637,113 +31063,57 @@ void* EngineStartupThread(void* arg) {
 
   if (context->native_send_app_ready &&
       ShouldRunStartupStep("MOCKTAIL_SEND_APP_READY", false)) {
-    if (IsEnabled("MOCKTAIL_SEND_APP_READY_THREAD")) {
-      auto* delayed_context = new DelayedSendAppEventContext{
-          context->vm,
-          context->java_vm,
-          context->native_send_app_ready,
-          nullptr,
-      };
-      pthread_t send_app_ready_thread{};
-      pthread_attr_t send_app_ready_attr;
-      pthread_attr_init(&send_app_ready_attr);
-      pthread_attr_setdetachstate(&send_app_ready_attr, PTHREAD_CREATE_DETACHED);
-      int create_result = pthread_create(&send_app_ready_thread,
-                                         &send_app_ready_attr,
-                                         DelayedSendAppReadyThread,
-                                         delayed_context);
-      pthread_attr_destroy(&send_app_ready_attr);
-      if (create_result != 0) {
-        delete delayed_context;
-        std::cerr
-            << "  [engine] failed to create delayed AppReady thread: "
-            << create_result << '\n' << std::flush;
-      } else {
-        std::cout
-            << "  [engine] delayed nativeAppBridgeV2SendAppEventOnAppReady scheduled on worker thread\n"
-            << std::flush;
-      }
+    env = ensure_env();
+    volatile sig_atomic_t send_app_ready_recovered = 0;
+    std::cout << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady\n"
+              << std::flush;
+    if (sigsetjmp(g_send_app_ready_jmp_buf, 1) == 0) {
+      g_send_app_ready_recovery_in_progress = kStage6RecoveryInline;
+      jstring empty_ready_arg = env->NewStringUTF("");
+      jstring home_feature = env->NewStringUTF("Home");
+      context->native_send_app_ready(env, native_gl_class, empty_ready_arg,
+                                     empty_ready_arg, empty_ready_arg,
+                                     home_feature);
+      g_send_app_ready_recovery_in_progress = kStage6RecoveryInactive;
     } else {
-      env = ensure_env();
-      volatile sig_atomic_t send_app_ready_recovered = 0;
-      std::cout << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady\n"
-                << std::flush;
-      if (sigsetjmp(g_send_app_ready_jmp_buf, 1) == 0) {
-        g_send_app_ready_recovery_in_progress = kStage6RecoveryInline;
-        jstring empty_ready_arg = env->NewStringUTF("");
-        jstring home_feature = env->NewStringUTF("Home");
-        context->native_send_app_ready(env, native_gl_class, empty_ready_arg,
-                                       empty_ready_arg, empty_ready_arg,
-                                       home_feature);
-        g_send_app_ready_recovery_in_progress = kStage6RecoveryInactive;
-      } else {
-        send_app_ready_recovered = 1;
-        g_send_app_ready_recovery_in_progress = kStage6RecoveryInactive;
-        std::cerr
-            << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady recovered\n"
-            << std::flush;
-      }
-      if (send_app_ready_recovered == 0) {
-        std::cout
-            << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady returned\n"
-            << std::flush;
-      }
+      send_app_ready_recovered = 1;
+      g_send_app_ready_recovery_in_progress = kStage6RecoveryInactive;
+      std::cerr
+          << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady recovered\n"
+          << std::flush;
+    }
+    if (send_app_ready_recovered == 0) {
+      std::cout
+          << "  [engine] nativeAppBridgeV2SendAppEventOnAppReady returned\n"
+          << std::flush;
     }
   }
 
   if (context->native_send_game_loaded &&
       ShouldRunStartupStep("MOCKTAIL_SEND_GAME_LOADED", false)) {
-    if (IsEnabled("MOCKTAIL_SEND_GAME_LOADED_THREAD")) {
-      auto* delayed_context = new DelayedSendAppEventContext{
-          context->vm,
-          context->java_vm,
-          nullptr,
-          context->native_send_game_loaded,
-      };
-      pthread_t send_game_loaded_thread{};
-      pthread_attr_t send_game_loaded_attr;
-      pthread_attr_init(&send_game_loaded_attr);
-      pthread_attr_setdetachstate(&send_game_loaded_attr, PTHREAD_CREATE_DETACHED);
-      int create_result = pthread_create(&send_game_loaded_thread,
-                                         &send_game_loaded_attr,
-                                         DelayedSendGameLoadedThread,
-                                         delayed_context);
-      pthread_attr_destroy(&send_game_loaded_attr);
-      if (create_result != 0) {
-        delete delayed_context;
-        std::cerr
-            << "  [engine] failed to create delayed GameLoaded thread: "
-            << create_result << '\n' << std::flush;
-      } else {
-        std::cout
-            << "  [engine] delayed nativeAppBridgeV2SendAppEventOnGameLoaded scheduled on worker thread\n"
-            << std::flush;
-      }
+    env = ensure_env();
+    volatile sig_atomic_t send_game_loaded_recovered = 0;
+    std::cout << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded\n"
+              << std::flush;
+    if (sigsetjmp(g_send_game_loaded_jmp_buf, 1) == 0) {
+      g_send_game_loaded_recovery_in_progress = kStage6RecoveryInline;
+      jstring empty_game_loaded_arg = env->NewStringUTF("");
+      jstring home_feature = env->NewStringUTF("Home");
+      context->native_send_game_loaded(env, native_gl_class, home_feature,
+                                       empty_game_loaded_arg,
+                                       empty_game_loaded_arg);
+      g_send_game_loaded_recovery_in_progress = kStage6RecoveryInactive;
     } else {
-      env = ensure_env();
-      volatile sig_atomic_t send_game_loaded_recovered = 0;
-      std::cout << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded\n"
-                << std::flush;
-      if (sigsetjmp(g_send_game_loaded_jmp_buf, 1) == 0) {
-        g_send_game_loaded_recovery_in_progress = kStage6RecoveryInline;
-        jstring empty_game_loaded_arg = env->NewStringUTF("");
-        jstring home_feature = env->NewStringUTF("Home");
-        context->native_send_game_loaded(env, native_gl_class, home_feature,
-                                         empty_game_loaded_arg,
-                                         empty_game_loaded_arg);
-        g_send_game_loaded_recovery_in_progress = kStage6RecoveryInactive;
-      } else {
-        send_game_loaded_recovered = 1;
-        g_send_game_loaded_recovery_in_progress = kStage6RecoveryInactive;
-        std::cerr
-            << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded recovered\n"
-            << std::flush;
-      }
-      if (send_game_loaded_recovered == 0) {
-        std::cout
-            << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded returned\n"
-            << std::flush;
-      }
+      send_game_loaded_recovered = 1;
+      g_send_game_loaded_recovery_in_progress = kStage6RecoveryInactive;
+      std::cerr
+          << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded recovered\n"
+          << std::flush;
+    }
+    if (send_game_loaded_recovered == 0) {
+      std::cout
+          << "  [engine] nativeAppBridgeV2SendAppEventOnGameLoaded returned\n"
+          << std::flush;
     }
   }
 

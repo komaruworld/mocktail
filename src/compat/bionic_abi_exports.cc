@@ -352,8 +352,8 @@ int32_t* mocktail_bionic_mutex_owner(pthread_mutex_t* mutex) {
 
 pid_t mocktail_bionic_tid() {
   thread_local pid_t tid = 0;
-  if (tid == 0) {
-    tid = static_cast<pid_t>(::syscall(SYS_gettid));
+  if (__builtin_expect(tid == 0, 0)) {
+    tid = ::gettid();
   }
   return tid;
 }

@@ -33,8 +33,8 @@ int32_t* RwlockWriterTid(pthread_rwlock_t* rwlock) {
 
 pid_t RwlockTid() {
   thread_local pid_t tid = 0;
-  if (tid == 0) {
-    tid = static_cast<pid_t>(::syscall(SYS_gettid));
+  if (__builtin_expect(tid == 0, 0)) {
+    tid = ::gettid();
   }
   return tid;
 }
