@@ -1,9 +1,11 @@
 #include "jnivm/jnivm.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -297,7 +299,16 @@ jlong g_local_storage_current_user = kLocalStorageUninitializedUser;
 bool g_cookie_store_loaded = false;
 std::string g_cookie_header;
 
-int AllocateSegmentSlot(void* value, std::shared_ptr<void> owner = nullptr) {
+enum class SegmentType : uint8_t {
+  kEmpty = 0,
+  kObject = 1,
+  kClass = 2,
+};
+
+static std::atomic<uint8_t> g_segment_types[100000] = {};
+
+int AllocateSegmentSlot(void* value, std::shared_ptr<void> owner = nullptr,
+                        SegmentType type = SegmentType::kObject) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   int index = g_jni_ref_index++;
   if (index >= 100000) {
@@ -306,6 +317,8 @@ int AllocateSegmentSlot(void* value, std::shared_ptr<void> owner = nullptr) {
   }
   my_segment[index] = value;
   g_segment_owners[index] = std::move(owner);
+  g_segment_types[index].store(static_cast<uint8_t>(type),
+                               std::memory_order_release);
   return index;
 }
 
@@ -659,7 +672,7 @@ std::shared_ptr<Class> ClassFromJClass(jclass clazz) {
 static jclass StoreClass(std::shared_ptr<Class> cls) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   Class* raw_ptr = cls.get();
-  int index = AllocateSegmentSlot(raw_ptr, cls);
+  int index = AllocateSegmentSlot(raw_ptr, cls, SegmentType::kClass);
   jclass handle = reinterpret_cast<jclass>(static_cast<uintptr_t>(index << 16));
   g_known_classes.insert(handle);
   return handle;
@@ -668,7 +681,7 @@ static jclass StoreClass(std::shared_ptr<Class> cls) {
 jobject StoreObject(std::unique_ptr<Object> object) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
   Object* raw_ptr = object.get();
-  int index = AllocateSegmentSlot(raw_ptr);
+  int index = AllocateSegmentSlot(raw_ptr, nullptr, SegmentType::kObject);
   jobject handle =
       reinterpret_cast<jobject>(static_cast<uintptr_t>(index << 16));
   g_known_objects.insert(handle);
@@ -713,6 +726,8 @@ void ReleaseJniReference(jobject obj) {
   uintptr_t uobj = reinterpret_cast<uintptr_t>(obj);
   uint32_t index = uobj >> 16;
   if (index > 0 && index < 100000) {
+    g_segment_types[index].store(static_cast<uint8_t>(SegmentType::kEmpty),
+                                 std::memory_order_release);
     my_segment[index] = nullptr;
     g_segment_owners[index].reset();
   }
@@ -727,21 +742,27 @@ void ReleaseJniReference(jobject obj) {
 }
 
 PseudoJavaObject* PseudoObjectFromRef(jobject obj) {
-  std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  if (!obj || g_known_objects.find(obj) == g_known_objects.end()) {
+  if (__builtin_expect(obj == nullptr, 0)) {
     return nullptr;
   }
-  uintptr_t uobj = reinterpret_cast<uintptr_t>(obj);
-  uint32_t index = uobj >> 16;
-  Object* raw_ptr = nullptr;
-  if (index > 0 && index < 100000) {
-    raw_ptr = reinterpret_cast<Object*>(my_segment[index]);
-  } else {
-    raw_ptr = reinterpret_cast<Object*>(obj);
+  const uintptr_t uobj = reinterpret_cast<uintptr_t>(obj);
+  const uint32_t index = static_cast<uint32_t>(uobj >> 16);
+  if (__builtin_expect(index > 0 && index < 100000, 1)) {
+    const uint8_t type = g_segment_types[index].load(std::memory_order_acquire);
+    if (__builtin_expect(type == static_cast<uint8_t>(SegmentType::kObject), 1)) {
+      void* raw_ptr = my_segment[index];
+      if (__builtin_expect(raw_ptr != nullptr, 1)) {
+        return static_cast<PseudoJavaObject*>(reinterpret_cast<Object*>(raw_ptr));
+      }
+    }
+    return nullptr;
   }
+  std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
+  if (g_known_objects.find(obj) == g_known_objects.end()) {
+    return nullptr;
+  }
+  Object* raw_ptr = reinterpret_cast<Object*>(obj);
   if (!raw_ptr) return nullptr;
-  // Avoid host __dynamic_cast on potentially Bionic RTTI; segment entries are
-  // PseudoJavaObjects by construction.
   return static_cast<PseudoJavaObject*>(raw_ptr);
 }
 
@@ -962,18 +983,22 @@ void RecordNativeHelperCallback(jobject obj, const char* name) {
   SetBooleanFieldRaw(obj, name, JNI_TRUE);
 }
 
-std::string StringFromJString(jstring str) {
-  std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
-  if (!str) {
+std::string_view StringViewFromJString(jstring str) {
+  if (__builtin_expect(!str, 0)) {
     return {};
   }
-  if (g_known_strings.find(str) != g_known_strings.end()) {
-    auto* string_object = static_cast<PseudoStringObject*>(
-        PseudoObjectFromRef(reinterpret_cast<jobject>(str)));
-    return string_object ? string_object->value : std::string();
+  auto* string_object = static_cast<PseudoStringObject*>(
+      PseudoObjectFromRef(reinterpret_cast<jobject>(str)));
+  if (string_object) {
+    return string_object->value;
   }
   const char* utf = reinterpret_cast<const char*>(str);
-  return utf ? std::string(utf) : std::string();
+  return utf ? std::string_view(utf) : std::string_view();
+}
+
+std::string StringFromJString(jstring str) {
+  const std::string_view sv = StringViewFromJString(str);
+  return std::string(sv);
 }
 
 bool IsUtf8CharsetName(jstring charset_name) {

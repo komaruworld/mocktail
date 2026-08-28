@@ -71,39 +71,38 @@ bool AssetTraceEnabled() {
   return enabled;
 }
 
-std::string StripAssetUriPrefix(const char* filename) {
-  std::string path(filename ? filename : "");
-  static const char* kPrefixes[] = {
+std::string_view StripAssetUriPrefix(std::string_view path) {
+  static constexpr const char* kPrefixes[] = {
       "file:///android_asset/",
       "rbxasset://",
   };
   for (const char* prefix : kPrefixes) {
     const size_t prefix_len = std::strlen(prefix);
-    if (path.compare(0, prefix_len, prefix) == 0) {
+    if (path.size() >= prefix_len && path.substr(0, prefix_len) == prefix) {
       return path.substr(prefix_len);
     }
   }
   return path;
 }
 
-bool HasUnsafePathSegment(const std::string& path) {
+bool HasUnsafePathSegment(std::string_view path) {
   if (path.empty() || path[0] == '/') {
     return true;
   }
   return path == "." || path == ".." ||
-         path.find("/../") != std::string::npos || path.find("../") == 0 ||
-         path.rfind("/..") == path.size() - 3 ||
-         path.find("//") != std::string::npos;
+         path.find("/../") != std::string_view::npos || path.find("../") == 0 ||
+         (path.size() >= 3 && path.rfind("/..") == path.size() - 3) ||
+         path.find("//") != std::string_view::npos;
 }
 
-std::string StripAndroidAssetPrefix(const std::string& path) {
-  static const char* kPrefixes[] = {
+std::string_view StripAndroidAssetPrefix(std::string_view path) {
+  static constexpr const char* kPrefixes[] = {
       "assets/",
       "content/",
   };
   for (const char* prefix : kPrefixes) {
     const size_t prefix_len = std::strlen(prefix);
-    if (path.compare(0, prefix_len, prefix) == 0) {
+    if (path.size() >= prefix_len && path.substr(0, prefix_len) == prefix) {
       return path.substr(prefix_len);
     }
   }
@@ -137,13 +136,14 @@ std::string ResolveAssetPath(const char* filename) {
   if (filename == nullptr) {
     return {};
   }
-  std::string requested = StripAssetUriPrefix(filename);
-  if (HasUnsafePathSegment(requested)) {
+  const std::string_view requested_view = StripAssetUriPrefix(filename);
+  if (HasUnsafePathSegment(requested_view)) {
     return {};
   }
 
+  const std::string requested(requested_view);
   const char* root_env = GetEnvNonEmpty("MOCKTAIL_ASSET_ROOT");
-  std::string root = root_env != nullptr ? root_env : "rbx_bin/assets";
+  const std::string root = root_env != nullptr ? root_env : "rbx_bin/assets";
   const std::string cache_key = AssetCacheKey(root, requested);
 
   {
@@ -157,7 +157,7 @@ std::string ResolveAssetPath(const char* filename) {
     }
   }
 
-  std::string stripped = StripAndroidAssetPrefix(requested);
+  const std::string stripped(StripAndroidAssetPrefix(requested_view));
 
   const std::vector<std::string> candidates = {
       root + "/" + requested,
@@ -218,12 +218,12 @@ bool LoadFile(const std::string& path, std::vector<unsigned char>* data) {
 }
 
 std::string ApkEntryName(const char* filename) {
-  std::string requested = StripAssetUriPrefix(filename);
+  std::string_view requested = StripAssetUriPrefix(filename);
   constexpr const char* kAssetsPrefix = "assets/";
-  if (requested.compare(0, std::strlen(kAssetsPrefix), kAssetsPrefix) == 0) {
-    requested.erase(0, std::strlen(kAssetsPrefix));
+  if (requested.rfind(kAssetsPrefix, 0) == 0) {
+    requested.remove_prefix(std::strlen(kAssetsPrefix));
   }
-  return "assets/" + requested;
+  return "assets/" + std::string(requested);
 }
 
 bool OpenStoredApkEntryDescriptor(const std::string& entry_name, int* fd,
