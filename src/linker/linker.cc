@@ -19,6 +19,7 @@
 #include <elf.h>
 #include <link.h>
 
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <list>
@@ -127,10 +128,9 @@ bool IsBionicLibcOnlySymbol(std::string_view symbol) {
       "stderr",     "stdin",        "stdout", "ungetc",
       "vfprintf",   "vfscanf",
   };
-  for (std::string_view stdio_symbol : kStdioSymbols) {
-    if (symbol == stdio_symbol) {
-      return true;
-    }
+  if (std::binary_search(std::begin(kStdioSymbols), std::end(kStdioSymbols),
+                         symbol)) {
+    return true;
   }
   return symbol == "__cmsg_nxthdr" || symbol == "__cxa_thread_atexit_impl" ||
          symbol == "__readlink_chk" || symbol == "__register_atfork" ||

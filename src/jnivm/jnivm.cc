@@ -1346,17 +1346,17 @@ void SyncRobloxCookiesFromEngine(VM* vm) {
 
 bool IsRobloxCookieSyncMethod(jobject obj, jmethodID method_id) {
   return obj != nullptr && method_id != nullptr &&
-         ObjectClassName(obj) == "com/roblox/client/startup/MainGameActivity" &&
          std::strcmp(MethodName(method_id), "syncCookiesFromEngine") == 0 &&
-         std::strcmp(MethodSignature(method_id), "()V") == 0;
+         std::strcmp(MethodSignature(method_id), "()V") == 0 &&
+         ObjectClassName(obj) == "com/roblox/client/startup/MainGameActivity";
 }
 
 bool IsRobloxDidLogInMethod(jobject obj, jmethodID method_id) {
   return obj != nullptr && method_id != nullptr &&
-         ObjectClassName(obj) == "com/roblox/client/startup/NativeHelper" &&
          std::strcmp(MethodName(method_id),
                      "gameActivity_onDidLogInReceived") == 0 &&
-         std::strcmp(MethodSignature(method_id), "(Ljava/lang/String;)V") == 0;
+         std::strcmp(MethodSignature(method_id), "(Ljava/lang/String;)V") == 0 &&
+         ObjectClassName(obj) == "com/roblox/client/startup/NativeHelper";
 }
 
 bool CookieObjectResultForMethodV(const char* name, va_list args,
@@ -2813,25 +2813,25 @@ PseudoArray* ArrayFromRef(jarray array) {
 bool IsFmodAudioDeviceMethod(jobject obj, jmethodID method_id,
                              const char* name, const char* signature) {
   return obj != nullptr && method_id != nullptr &&
-         ObjectClassName(obj) == "org/fmod/AudioDevice" &&
          std::strcmp(MethodName(method_id), name) == 0 &&
-         std::strcmp(MethodSignature(method_id), signature) == 0;
+         std::strcmp(MethodSignature(method_id), signature) == 0 &&
+         ObjectClassName(obj) == "org/fmod/AudioDevice";
 }
 
 bool IsWebRtcAudioRecordMethod(jobject obj, jmethodID method_id,
                                const char *name, const char *signature) {
   return obj != nullptr && method_id != nullptr &&
-         ObjectClassName(obj) == "org/webrtc/voiceengine/WebRtcAudioRecord" &&
          std::strcmp(MethodName(method_id), name) == 0 &&
-         std::strcmp(MethodSignature(method_id), signature) == 0;
+         std::strcmp(MethodSignature(method_id), signature) == 0 &&
+         ObjectClassName(obj) == "org/webrtc/voiceengine/WebRtcAudioRecord";
 }
 
 bool IsWebRtcAudioTrackMethod(jobject obj, jmethodID method_id,
                               const char *name, const char *signature) {
   return obj != nullptr && method_id != nullptr &&
-         ObjectClassName(obj) == "org/webrtc/voiceengine/WebRtcAudioTrack" &&
          std::strcmp(MethodName(method_id), name) == 0 &&
-         std::strcmp(MethodSignature(method_id), signature) == 0;
+         std::strcmp(MethodSignature(method_id), signature) == 0 &&
+         ObjectClassName(obj) == "org/webrtc/voiceengine/WebRtcAudioTrack";
 }
 
 constexpr char kRobloxNativeGlJavaInterfaceClass[] =
@@ -2974,27 +2974,28 @@ bool IsRobloxTextInputStaticMethod(jclass clazz, jmethodID method_id,
 bool IsRobloxTextInputInstanceMethod(jobject obj, jmethodID method_id,
                                      const char* name,
                                      const char* signature) {
-  return obj != nullptr && ObjectClassName(obj) == kRobloxNativeHelperClass &&
+  return obj != nullptr &&
          std::strcmp(MethodName(method_id), name) == 0 &&
-         std::strcmp(MethodSignature(method_id), signature) == 0;
+         std::strcmp(MethodSignature(method_id), signature) == 0 &&
+         ObjectClassName(obj) == kRobloxNativeHelperClass;
 }
 
 bool IsRobloxEngineJavaTextInputMethod(jobject obj, jmethodID method_id,
                                        const char* name,
                                        const char* signature) {
   return obj != nullptr && method_id != nullptr &&
-         ObjectClassName(obj) == kRobloxEngineJavaCallbackClass &&
          std::strcmp(MethodName(method_id), name) == 0 &&
-         std::strcmp(MethodSignature(method_id), signature) == 0;
+         std::strcmp(MethodSignature(method_id), signature) == 0 &&
+         ObjectClassName(obj) == kRobloxEngineJavaCallbackClass;
 }
 
 bool HandleRobloxExperienceLifecycleVoidMethod(jobject obj,
                                                 jmethodID method_id) {
   if (obj == nullptr || method_id == nullptr ||
-      ObjectClassName(obj) != kRobloxNativeHelperClass ||
       std::strcmp(MethodName(method_id),
                   "gameActivity_onLuaAppDidReturn") != 0 ||
-      std::strcmp(MethodSignature(method_id), "()V") != 0) {
+      std::strcmp(MethodSignature(method_id), "()V") != 0 ||
+      ObjectClassName(obj) != kRobloxNativeHelperClass) {
     return false;
   }
   VM* vm = CurrentVM();
