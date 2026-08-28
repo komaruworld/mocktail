@@ -3043,12 +3043,23 @@ bool InvokeTaskSchedulerForeground(
             << "] NativeGLInterface.setTaskSchedulerBackgroundMode(false, "
             << "ASMA.start)\n"
             << std::flush;
-  native_set_task_scheduler_background_mode(env, native_gl_class, JNI_FALSE,
-                                            reason);
-  std::cout << "  [" << log_scope
-            << "] NativeGLInterface.setTaskSchedulerBackgroundMode returned\n"
+  if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
+    g_stage6_empty_gl_helper_returns = 0;
+    g_update_surface_app_recovery_in_progress = kStage6RecoveryInline;
+    native_set_task_scheduler_background_mode(env, native_gl_class, JNI_FALSE,
+                                              reason);
+    g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
+    std::cout << "  [" << log_scope
+              << "] NativeGLInterface.setTaskSchedulerBackgroundMode returned\n"
+              << std::flush;
+    return true;
+  }
+
+  g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
+  std::cerr << "  [" << log_scope
+            << "] setTaskSchedulerBackgroundMode recovered from crash\n"
             << std::flush;
-  return true;
+  return false;
 }
 
 void RunPendingMainThreadTaskSchedulerForeground() {
@@ -3136,7 +3147,7 @@ bool RunTaskSchedulerForegroundOnMainThread(
 typedef void (*GameActivityTrimMemoryFn)(JNIEnv* env, jobject activity,
                                          jlong handle, jint level);
 
-[[maybe_unused]] void MocktailTrimEngineMemory(int level) {
+void MocktailTrimEngineMemory(int level) {
   if (mocktail_gameactivity_on_trim_memory_native == nullptr ||
       g_game_activity_native_handle == 0) {
     return;
@@ -3148,8 +3159,11 @@ typedef void (*GameActivityTrimMemoryFn)(JNIEnv* env, jobject activity,
   auto* on_trim = reinterpret_cast<GameActivityTrimMemoryFn>(
       mocktail_gameactivity_on_trim_memory_native);
   if (on_trim != nullptr) {
-    on_trim(env, g_saved_game_activity,
-            static_cast<jlong>(g_game_activity_native_handle), level);
+    static sigjmp_buf s_trim_jmp_buf;
+    if (sigsetjmp(s_trim_jmp_buf, 0) == 0) {
+      on_trim(env, g_saved_game_activity,
+              static_cast<jlong>(g_game_activity_native_handle), level);
+    }
   }
 }
 
@@ -30235,12 +30249,24 @@ void* DelayedUpdateSurfaceAppThread(void* arg) {
 
   std::cout << "  [engine] delayed nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams\n"
             << std::flush;
-  context->native_update_surface_app(env, context->native_gl_class,
-                                     context->surface,
-                                     context->platform_params);
-  std::cout
-      << "  [engine] delayed nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams returned\n"
-      << std::flush;
+  volatile sig_atomic_t update_surface_recovered = 0;
+  if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
+    g_stage6_empty_gl_helper_returns = 0;
+    g_update_surface_app_recovery_in_progress = kStage6RecoveryWorker;
+    context->native_update_surface_app(env, context->native_gl_class,
+                                       context->surface,
+                                       context->platform_params);
+    g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
+    std::cout
+        << "  [engine] delayed nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams returned\n"
+        << std::flush;
+  } else {
+    update_surface_recovered = 1;
+    g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
+    std::cerr
+        << "  [engine] delayed UpdateSurfaceAppWithPlatformParams recovered\n"
+        << std::flush;
+  }
   if (made_current != 0) {
     mocktail::window::ReleaseCurrentOnThread();
   }
@@ -30248,7 +30274,9 @@ void* DelayedUpdateSurfaceAppThread(void* arg) {
     pthread_mutex_unlock(&g_engine_gl_mutex);
   }
   DumpStage6AppBridgeStaticState("after delayed UpdateSurfaceApp");
-  context->java_vm->DetachCurrentThread();
+  if (update_surface_recovered == 0) {
+    context->java_vm->DetachCurrentThread();
+  }
   // Roblox can corrupt host heap state while we recover from the incomplete GL
   // helper path. Keep this tiny context alive instead of freeing through a
   // potentially damaged allocator.
@@ -31504,12 +31532,25 @@ void* EngineStartupThread(void* arg) {
               << "  [engine] delayed nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams scheduled on worker thread\n"
               << std::flush;
         }
-        context->native_update_surface_app(env, native_gl_class, surface,
-                                           platform_params);
-        std::cout
-            << "  [engine] nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams returned\n"
-            << std::flush;
-        DumpStage6AppBridgeStaticState("after inline UpdateSurfaceApp");
+      } else {
+        if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
+          g_stage6_empty_gl_helper_returns = 0;
+          g_update_surface_app_recovery_in_progress = kStage6RecoveryInline;
+          context->native_update_surface_app(env, native_gl_class, surface,
+                                             platform_params);
+          g_update_surface_app_recovery_in_progress =
+              kStage6RecoveryInactive;
+          std::cout
+              << "  [engine] nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams returned\n"
+              << std::flush;
+          DumpStage6AppBridgeStaticState("after inline UpdateSurfaceApp");
+        } else {
+          g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
+          std::cerr
+              << "  [engine] UpdateSurfaceAppWithPlatformParams recovered from crash\n"
+              << std::flush;
+        }
+      }
 	    } else {
 	      std::cout
 	          << "  [engine] nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams bypassed\n"
@@ -31653,12 +31694,24 @@ void* EngineStartupThread(void* arg) {
     std::cout
         << "  [engine] post-StartApp nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams\n"
         << std::flush;
-      context->native_update_surface_app(env, native_gl_class, surface,
-                                         platform_params);
-      std::cout
-          << "  [engine] post-StartApp nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams returned\n"
-          << std::flush;
-      DumpStage6AppBridgeStaticState("after post-StartApp UpdateSurfaceApp");
+    if (IsEnabled("MOCKTAIL_CALL_REAL_APP_BRIDGE_UPDATE_SURFACE")) {
+      if (sigsetjmp(g_update_surface_app_jmp_buf, 0) == 0) {
+        g_stage6_empty_gl_helper_returns = 0;
+        g_update_surface_app_recovery_in_progress = kStage6RecoveryInline;
+        context->native_update_surface_app(env, native_gl_class, surface,
+                                           platform_params);
+        g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
+        std::cout
+            << "  [engine] post-StartApp nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams returned\n"
+            << std::flush;
+        DumpStage6AppBridgeStaticState("after post-StartApp UpdateSurfaceApp");
+      } else {
+        g_update_surface_app_recovery_in_progress = kStage6RecoveryInactive;
+        std::cerr
+            << "  [engine] post-StartApp UpdateSurfaceAppWithPlatformParams recovered from crash\n"
+            << std::flush;
+      }
+    } else {
       std::cout
           << "  [engine] post-StartApp nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams bypassed\n"
           << std::flush;
