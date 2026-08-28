@@ -2311,6 +2311,48 @@ TEST_F(JniVmTest, DesktopPlatformIdentityAdvertisesPcWithoutTouchscreen) {
             JNI_TRUE);
 }
 
+TEST_F(JniVmTest, LocalFramesReleaseInnerRefsAndPromoteResult) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jstring keep = env->NewStringUTF("keep");
+  ASSERT_NE(keep, nullptr);
+  ASSERT_EQ(env->PushLocalFrame(16), JNI_OK);
+  jstring inner = env->NewStringUTF("inner");
+  ASSERT_NE(inner, nullptr);
+  EXPECT_EQ(ReadJavaString(env, inner), "inner");
+  EXPECT_EQ(env->PopLocalFrame(nullptr), nullptr);
+  EXPECT_EQ(ReadJavaString(env, inner), "");
+  EXPECT_EQ(ReadJavaString(env, keep), "keep");
+
+  ASSERT_EQ(env->PushLocalFrame(16), JNI_OK);
+  jstring promoted = env->NewStringUTF("promoted");
+  jobject result = env->PopLocalFrame(promoted);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(ReadJavaString(env, static_cast<jstring>(result)), "promoted");
+}
+
+TEST_F(JniVmTest, GlobalRefSurvivesLocalFramePop) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  ASSERT_EQ(env->PushLocalFrame(16), JNI_OK);
+  jstring inner = env->NewStringUTF("global");
+  jobject global = env->NewGlobalRef(inner);
+  ASSERT_NE(global, nullptr);
+  env->PopLocalFrame(nullptr);
+  EXPECT_EQ(ReadJavaString(env, static_cast<jstring>(global)), "global");
+  env->DeleteGlobalRef(global);
+}
+
+TEST_F(JniVmTest, EncodedHandlesStayValidPastSignedShiftBoundary) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  ASSERT_EQ(env->PushLocalFrame(16), JNI_OK);
+  jstring high = nullptr;
+  for (int i = 0; i < 32768; ++i) {
+    high = env->NewStringUTF("slot");
+  }
+  ASSERT_NE(high, nullptr);
+  EXPECT_EQ(ReadJavaString(env, high), "slot");
+  env->PopLocalFrame(nullptr);
+}
+
 TEST_F(JniVmTest, MainGameActivityReturnsNativeHelperAndTracksCallbacks) {
   JNIEnv *env = vm_->GetJNIEnv();
   jclass activity_class =

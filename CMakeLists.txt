@@ -467,6 +467,7 @@ target_include_directories(mocktail_window PUBLIC src)
 mocktail_apply_compile_options(mocktail_window)
 target_link_libraries(mocktail_window PUBLIC
   Mocktail::PlatformSdl
+  Mocktail::SdlVulkanWsi
   SDL3::SDL3
   ${CMAKE_DL_LIBS}
   PRIVATE Mocktail::Runtime

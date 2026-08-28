@@ -2,7 +2,6 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
-#include <limits>
 #include <vector>
 
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
@@ -275,110 +274,13 @@ TEST(AndroidVulkanWsiAdapterTest, LeavesNonSurfaceExtensionsUnchanged) {
             (std::vector<std::string>{"VK_EXT_debug_utils"}));
 }
 
-TEST(AndroidVulkanWsiAdapterTest, NormalizesHostSuboptimalForAndroidClient) {
+TEST(AndroidVulkanWsiAdapterTest, MapsSuboptimalToOutOfDateForSwapchainRebuild) {
+  constexpr VkResult kOutOfDate = static_cast<VkResult>(-1000001004);
   EXPECT_EQ(graphics::NormalizeAndroidSwapchainResult(VK_SUBOPTIMAL_KHR),
-            VK_SUCCESS);
+            kOutOfDate);
   EXPECT_EQ(graphics::NormalizeAndroidSwapchainResult(VK_SUCCESS),
             VK_SUCCESS);
-  constexpr VkResult kOutOfDate = static_cast<VkResult>(-1000001004);
   EXPECT_EQ(graphics::NormalizeAndroidSwapchainResult(kOutOfDate), kOutOfDate);
-}
-
-TEST(AndroidVulkanWsiAdapterTest, BoundsOnlyInfiniteHostImageAcquire) {
-  constexpr std::uint64_t kFiniteTimeout = 250000000ULL;
-
-  EXPECT_EQ(graphics::BoundHostImageAcquireTimeout(
-                std::numeric_limits<std::uint64_t>::max()),
-            graphics::kHostImageAcquireWatchdogTimeoutNs);
-  EXPECT_EQ(graphics::BoundHostImageAcquireTimeout(kFiniteTimeout),
-            kFiniteTimeout);
-}
-
-TEST(AndroidVulkanWsiAdapterTest,
-     ConvertsOnlyWatchdogTimeoutIntoSurfaceRecovery) {
-  const std::uint64_t infinite_timeout =
-      std::numeric_limits<std::uint64_t>::max();
-  constexpr std::uint64_t kFiniteTimeout = 250000000ULL;
-
-  EXPECT_TRUE(graphics::IsHostImageAcquireWatchdogTimeout(infinite_timeout,
-                                                          VK_TIMEOUT));
-  EXPECT_EQ(
-      graphics::NormalizeHostImageAcquireResult(infinite_timeout, VK_TIMEOUT),
-      VK_ERROR_OUT_OF_DATE_KHR);
-  EXPECT_FALSE(
-      graphics::IsHostImageAcquireWatchdogTimeout(kFiniteTimeout, VK_TIMEOUT));
-  EXPECT_EQ(
-      graphics::NormalizeHostImageAcquireResult(kFiniteTimeout, VK_TIMEOUT),
-      VK_TIMEOUT);
-}
-
-TEST(AndroidVulkanWsiAdapterTest,
-     UnthrottledInfiniteAcquireUsesShortBoundWithoutOutOfDate) {
-  const std::uint64_t infinite_timeout =
-      std::numeric_limits<std::uint64_t>::max();
-  constexpr std::uint64_t kFiniteTimeout = 250000000ULL;
-
-  EXPECT_EQ(graphics::BoundHostImageAcquireTimeout(infinite_timeout, true),
-            graphics::kHostImageAcquireUnthrottledTimeoutNs);
-  EXPECT_EQ(graphics::kHostImageAcquireUnthrottledTimeoutNs, infinite_timeout);
-  EXPECT_NE(graphics::BoundHostImageAcquireTimeout(infinite_timeout, true),
-            graphics::kHostImageAcquireWatchdogTimeoutNs);
-  EXPECT_EQ(graphics::BoundHostImageAcquireTimeout(infinite_timeout, false),
-            graphics::kHostImageAcquireWatchdogTimeoutNs);
-  EXPECT_EQ(graphics::BoundHostImageAcquireTimeout(kFiniteTimeout, true),
-            kFiniteTimeout);
-
-  EXPECT_FALSE(graphics::IsHostImageAcquireWatchdogTimeout(
-      infinite_timeout, VK_TIMEOUT, true));
-  EXPECT_TRUE(graphics::IsHostImageAcquireWatchdogTimeout(
-      infinite_timeout, VK_TIMEOUT, false));
-  EXPECT_EQ(graphics::NormalizeHostImageAcquireResult(infinite_timeout,
-                                                      VK_TIMEOUT, true),
-            VK_TIMEOUT);
-  EXPECT_EQ(graphics::NormalizeHostImageAcquireResult(infinite_timeout,
-                                                      VK_TIMEOUT, false),
-            VK_ERROR_OUT_OF_DATE_KHR);
-  EXPECT_EQ(graphics::NormalizeHostImageAcquireResult(kFiniteTimeout,
-                                                      VK_TIMEOUT, true),
-            VK_TIMEOUT);
-}
-
-TEST(AndroidVulkanWsiAdapterTest,
-     SlicesInfiniteSynchronizationWaitWithoutCompletingIt) {
-  const std::uint64_t infinite_timeout =
-      std::numeric_limits<std::uint64_t>::max();
-  constexpr std::uint64_t kFiniteTimeout = 750000000ULL;
-
-  EXPECT_EQ(graphics::BoundHostSynchronizationWaitTimeout(infinite_timeout),
-            graphics::kHostInfiniteWaitDiagnosticSliceNs);
-  EXPECT_EQ(graphics::BoundHostSynchronizationWaitTimeout(kFiniteTimeout),
-            kFiniteTimeout);
-  EXPECT_TRUE(graphics::ShouldContinueHostSynchronizationWait(infinite_timeout,
-                                                               VK_TIMEOUT));
-  EXPECT_FALSE(graphics::ShouldContinueHostSynchronizationWait(kFiniteTimeout,
-                                                                VK_TIMEOUT));
-  EXPECT_FALSE(graphics::ShouldContinueHostSynchronizationWait(infinite_timeout,
-                                                                VK_SUCCESS));
-}
-
-TEST(AndroidVulkanWsiAdapterTest,
-     UnthrottledInfiniteFenceWaitStillSlicesUntilSignaled) {
-  const std::uint64_t infinite_timeout =
-      std::numeric_limits<std::uint64_t>::max();
-  constexpr std::uint64_t kFiniteTimeout = 750000000ULL;
-
-  EXPECT_EQ(
-      graphics::BoundHostSynchronizationWaitTimeout(infinite_timeout, true),
-      graphics::kHostInfiniteWaitDiagnosticSliceNs);
-  EXPECT_EQ(
-      graphics::BoundHostSynchronizationWaitTimeout(kFiniteTimeout, true),
-      kFiniteTimeout);
-  EXPECT_TRUE(graphics::ShouldContinueHostSynchronizationWait(
-      infinite_timeout, VK_TIMEOUT, true));
-  EXPECT_TRUE(graphics::ShouldContinueHostSynchronizationWait(
-      infinite_timeout, VK_TIMEOUT, false));
-  EXPECT_FALSE(graphics::ShouldContinueHostSynchronizationWait(
-      kFiniteTimeout, VK_TIMEOUT, true));
 }
 
 }  // namespace

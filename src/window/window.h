@@ -31,7 +31,7 @@ bool PumpEvents();
 // missed the slot or SDL still has events).
 uint64_t PaceInputPump();
 
-// True when MOCKTAIL_VSYNC is off/0 or MOCKTAIL_FRAME_RATE_LIMIT is unlimited.
+// True when CachedPresentModePolicy() is unthrottled.
 bool UnthrottledPresentationRequested();
 
 // Queues supported GameActivity fullscreen flags for the SDL thread.

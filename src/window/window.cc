@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "mocktail/graphics/present_mode_policy.h"
 #include "mocktail/platform/display_refresh_capabilities.h"
 #include "mocktail/platform/sdl_application_metadata.h"
 #include "mocktail/platform/sdl_event_converter.h"
@@ -2191,16 +2192,8 @@ bool PumpEvents() {
 }
 
 bool UnthrottledPresentationRequested() {
-  static const bool unthrottled = [] {
-    const char* vsync = GetEnvNonEmpty("MOCKTAIL_VSYNC");
-    if (vsync != nullptr &&
-        (std::strcmp(vsync, "off") == 0 || std::strcmp(vsync, "0") == 0)) {
-      return true;
-    }
-    const char* frame_rate = GetEnvNonEmpty("MOCKTAIL_FRAME_RATE_LIMIT");
-    return frame_rate != nullptr && std::strcmp(frame_rate, "unlimited") == 0;
-  }();
-  return unthrottled;
+  return graphics::CachedPresentModePolicy() ==
+         graphics::PresentModePolicy::kUnthrottled;
 }
 
 uint64_t PaceInputPump() {

@@ -17,7 +17,7 @@ namespace runtime {
 namespace {
 
 constexpr char kVulkanClientSettingsOverrides[] =
-    R"({"FStringGraphicsTextureManager2DenyPattern2":".*","FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*"})";
+    R"({"FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*"})";
 
 constexpr const char* kIcdDirectories[] = {
     "/usr/share/vulkan/icd.d",

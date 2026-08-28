@@ -286,8 +286,8 @@ void NoteSuboptimalTranslation() {
   static std::atomic<bool> logged{false};
   if (!logged.exchange(true, std::memory_order_relaxed)) {
     std::fprintf(stderr,
-                 "  [vulkan] normalized host VK_SUBOPTIMAL_KHR for Android "
-                 "client compatibility\n");
+                 "  [vulkan] mapped VK_SUBOPTIMAL_KHR to OUT_OF_DATE so the "
+                 "swapchain can rebuild\n");
   }
 }
 
@@ -916,17 +916,6 @@ class VulkanCallObservation final {
   VkResult result_ = VK_ERROR_UNKNOWN;
 };
 
-mocktail::graphics::PresentModePolicy CachedPresentPolicy() {
-  static const mocktail::graphics::PresentModePolicy policy = [] {
-    const char* vsync = std::getenv("MOCKTAIL_VSYNC");
-    const char* frame_rate = std::getenv("MOCKTAIL_FRAME_RATE_LIMIT");
-    return mocktail::graphics::ResolvePresentModePolicy(
-        vsync != nullptr ? vsync : "auto",
-        frame_rate != nullptr ? frame_rate : "display");
-  }();
-  return policy;
-}
-
 VkResult WaitForSemaphoresObserved(const char* call_name,
                                    PFN_vkWaitSemaphores host_wait,
                                    VkDevice device,
@@ -939,31 +928,8 @@ VkResult WaitForSemaphoresObserved(const char* call_name,
     }
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const bool unthrottled =
-      CachedPresentPolicy() ==
-      mocktail::graphics::PresentModePolicy::kUnthrottled;
-  const std::uint64_t host_timeout =
-      mocktail::graphics::BoundHostSynchronizationWaitTimeout(timeout,
-                                                             unthrottled);
-  std::uint64_t timeout_slices = 0;
-  VkResult result = VK_SUCCESS;
-  do {
-    result = host_wait(device, wait_info, host_timeout);
-    if (!mocktail::graphics::ShouldContinueHostSynchronizationWait(
-            timeout, result, unthrottled)) {
-      break;
-    }
-    ++timeout_slices;
-    if (timeout_slices == 1 || timeout_slices == 5 ||
-        timeout_slices % 30 == 0) {
-      std::fprintf(
-          stderr,
-          "  [vulkan] %s still blocked: elapsed=%llus semaphores=%u; "
-          "preserving infinite guest wait\n",
-          call_name, static_cast<unsigned long long>(timeout_slices),
-          wait_info != nullptr ? wait_info->semaphoreCount : 0U);
-    }
-  } while (true);
+  static_cast<void>(call_name);
+  const VkResult result = host_wait(device, wait_info, timeout);
   if (observation != nullptr) {
     observation->SetResult(result);
   }
@@ -987,6 +953,68 @@ std::uint64_t MonotonicNanos() {
          static_cast<std::uint64_t>(ts.tv_nsec);
 }
 
+struct FpsWaitTrace {
+  const char* name = nullptr;
+  std::atomic<std::uint64_t> samples{0};
+  std::atomic<std::uint64_t> total_ns{0};
+  std::atomic<std::uint64_t> max_ns{0};
+  std::atomic<std::uint64_t> window_start_ns{0};
+
+  void Record(std::uint64_t start_ns) {
+    if (name == nullptr || start_ns == 0) {
+      return;
+    }
+    const std::uint64_t wait_ns = MonotonicNanos() - start_ns;
+    total_ns.fetch_add(wait_ns, std::memory_order_relaxed);
+    std::uint64_t max_wait = max_ns.load(std::memory_order_relaxed);
+    while (wait_ns > max_wait &&
+           !max_ns.compare_exchange_weak(max_wait, wait_ns,
+                                         std::memory_order_relaxed)) {
+    }
+    const std::uint64_t n = samples.fetch_add(1, std::memory_order_relaxed) + 1;
+    std::uint64_t window = window_start_ns.load(std::memory_order_relaxed);
+    if (window == 0) {
+      window_start_ns.compare_exchange_strong(window, start_ns,
+                                              std::memory_order_relaxed);
+      window = window_start_ns.load(std::memory_order_relaxed);
+    }
+    if (start_ns - window < 1000000000ULL || n == 0) {
+      return;
+    }
+    const std::uint64_t total = total_ns.exchange(0, std::memory_order_relaxed);
+    const std::uint64_t peak = max_ns.exchange(0, std::memory_order_relaxed);
+    const std::uint64_t count = samples.exchange(0, std::memory_order_relaxed);
+    window_start_ns.store(start_ns, std::memory_order_relaxed);
+    if (count == 0) {
+      return;
+    }
+    std::fprintf(stderr, "  [fps] %s n=%llu avg=%llu us max=%llu us\n", name,
+                 static_cast<unsigned long long>(count),
+                 static_cast<unsigned long long>(total / count / 1000ULL),
+                 static_cast<unsigned long long>(peak / 1000ULL));
+  }
+};
+
+FpsWaitTrace& PresentWaitTrace() {
+  static FpsWaitTrace trace{"vkQueuePresentKHR"};
+  return trace;
+}
+
+FpsWaitTrace& AcquireWaitTrace() {
+  static FpsWaitTrace trace{"vkAcquireNextImageKHR"};
+  return trace;
+}
+
+FpsWaitTrace& FenceWaitTrace() {
+  static FpsWaitTrace trace{"vkWaitForFences"};
+  return trace;
+}
+
+FpsWaitTrace& QueueIdleWaitTrace() {
+  static FpsWaitTrace trace{"vkQueueWaitIdle"};
+  return trace;
+}
+
 VkResult VKAPI_CALL
 ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
   AdapterState& state = State();
@@ -1004,42 +1032,7 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
   const std::uint64_t present_start_ns = fps_trace ? MonotonicNanos() : 0;
   const VkResult result = host_present(queue, present_info);
   if (fps_trace) {
-    const std::uint64_t present_ns = MonotonicNanos() - present_start_ns;
-    static std::atomic<std::uint64_t> present_samples{0};
-    static std::atomic<std::uint64_t> present_total_ns{0};
-    static std::atomic<std::uint64_t> present_max_ns{0};
-    static std::atomic<std::uint64_t> window_start_ns{0};
-    present_total_ns.fetch_add(present_ns, std::memory_order_relaxed);
-    std::uint64_t max_ns = present_max_ns.load(std::memory_order_relaxed);
-    while (present_ns > max_ns &&
-           !present_max_ns.compare_exchange_weak(max_ns, present_ns,
-                                                 std::memory_order_relaxed)) {
-    }
-    const std::uint64_t samples =
-        present_samples.fetch_add(1, std::memory_order_relaxed) + 1;
-    std::uint64_t start_ns = window_start_ns.load(std::memory_order_relaxed);
-    if (start_ns == 0) {
-      window_start_ns.compare_exchange_strong(start_ns, present_start_ns,
-                                              std::memory_order_relaxed);
-      start_ns = window_start_ns.load(std::memory_order_relaxed);
-    }
-    if (present_start_ns - start_ns >= 1000000000ULL && samples != 0) {
-      const std::uint64_t total =
-          present_total_ns.exchange(0, std::memory_order_relaxed);
-      const std::uint64_t max_wait =
-          present_max_ns.exchange(0, std::memory_order_relaxed);
-      const std::uint64_t n =
-          present_samples.exchange(0, std::memory_order_relaxed);
-      window_start_ns.store(present_start_ns, std::memory_order_relaxed);
-      if (n != 0) {
-        std::fprintf(stderr,
-                     "  [fps] vkQueuePresentKHR n=%llu avg=%llu us max=%llu "
-                     "us\n",
-                     static_cast<unsigned long long>(n),
-                     static_cast<unsigned long long>(total / n / 1000ULL),
-                     static_cast<unsigned long long>(max_wait / 1000ULL));
-      }
-    }
+    PresentWaitTrace().Record(present_start_ns);
   }
   const NoteHostPresentEndFn note_end =
       state.note_host_present_end.load(std::memory_order_acquire);
@@ -1459,16 +1452,47 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
   }
   VkSwapchainCreateInfoKHR host_info = *create_info;
   const mocktail::graphics::PresentModePolicy present_policy =
-      CachedPresentPolicy();
-  if (present_policy == mocktail::graphics::PresentModePolicy::kUnthrottled) {
+      mocktail::graphics::CachedPresentModePolicy();
+  if (present_policy != mocktail::graphics::PresentModePolicy::kHostDefault) {
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR host_caps = nullptr;
+    PFN_vkGetPhysicalDeviceSurfacePresentModesKHR host_modes_query = nullptr;
     {
       AdapterState& state = State();
       std::lock_guard<std::mutex> lock(state.mutex);
       host_caps = state.host_surface_capabilities;
+      host_modes_query = state.host_surface_present_modes;
     }
     const VkPhysicalDevice physical_device =
         HostDispatchForDevice(device).physical_device;
+    if (host_modes_query != nullptr && physical_device != VK_NULL_HANDLE) {
+      std::uint32_t host_count = 0;
+      if (host_modes_query(physical_device, create_info->surface, &host_count,
+                           nullptr) == VK_SUCCESS &&
+          host_count != 0) {
+        std::vector<VkPresentModeKHR> host_modes(host_count);
+        const VkResult modes_result = host_modes_query(
+            physical_device, create_info->surface, &host_count,
+            host_modes.data());
+        if (modes_result == VK_SUCCESS || modes_result == VK_INCOMPLETE) {
+          host_modes.resize(host_count);
+          const std::vector<VkPresentModeKHR> selected =
+              mocktail::graphics::FilterPresentModes(present_policy,
+                                                     host_modes);
+          if (!selected.empty()) {
+            static std::atomic<bool> mode_logged{false};
+            if (!mode_logged.exchange(true, std::memory_order_relaxed)) {
+              std::fprintf(
+                  stderr,
+                  "  [vulkan] swapchain presentMode requested=%s applied=%s\n",
+                  mocktail::graphics::PresentModeKhrName(
+                      create_info->presentMode),
+                  mocktail::graphics::PresentModeKhrName(selected.front()));
+            }
+            host_info.presentMode = selected.front();
+          }
+        }
+      }
+    }
     VkSurfaceCapabilitiesKHR capabilities{};
     if (host_caps != nullptr && physical_device != VK_NULL_HANDLE &&
         host_caps(physical_device, create_info->surface, &capabilities) ==
@@ -1482,8 +1506,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
         static std::atomic<bool> logged{false};
         if (!logged.exchange(true, std::memory_order_relaxed)) {
           std::fprintf(stderr,
-                       "  [vulkan] unthrottled swapchain minImageCount=%u "
-                       "(requested=%u max=%u)\n",
+                       "  [vulkan] present policy=%s swapchain "
+                       "minImageCount=%u (requested=%u max=%u)\n",
+                       mocktail::graphics::PresentModePolicyName(
+                           present_policy),
                        preferred, create_info->minImageCount,
                        capabilities.maxImageCount);
         }
@@ -1536,34 +1562,15 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const bool unthrottled =
-      CachedPresentPolicy() ==
-      mocktail::graphics::PresentModePolicy::kUnthrottled;
-  const std::uint64_t host_timeout =
-      mocktail::graphics::BoundHostImageAcquireTimeout(timeout, unthrottled);
-  VkResult host_result = host_acquire(device, swapchain, host_timeout,
-                                      semaphore, fence, image_index);
-  if (host_result == VK_NOT_READY &&
-      timeout == std::numeric_limits<std::uint64_t>::max()) {
-    host_result = host_acquire(device, swapchain,
-                               std::numeric_limits<std::uint64_t>::max(),
-                               semaphore, fence, image_index);
+  const bool fps_trace = FpsTraceEnabled();
+  const std::uint64_t acquire_start_ns = fps_trace ? MonotonicNanos() : 0;
+  const VkResult host_result = host_acquire(
+      device, swapchain, timeout, semaphore, fence, image_index);
+  if (fps_trace) {
+    AcquireWaitTrace().Record(acquire_start_ns);
   }
-  const bool watchdog_timeout =
-      mocktail::graphics::IsHostImageAcquireWatchdogTimeout(
-          timeout, host_result, unthrottled);
   const VkResult result =
-      mocktail::graphics::NormalizeHostImageAcquireResult(
-          timeout, host_result, unthrottled);
-  if (watchdog_timeout) {
-    static std::atomic<std::uint64_t> watchdog_timeout_count{0};
-    const std::uint64_t count =
-        watchdog_timeout_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    std::fprintf(stderr,
-                 "  [vulkan] host image acquire timed out after 1000ms; "
-                 "requesting surface recovery count=%llu\n",
-                 static_cast<unsigned long long>(count));
-  }
+      mocktail::graphics::NormalizeAndroidSwapchainResult(host_result);
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     const NoteSurfaceOutOfDateFn note_surface_out_of_date =
         State().note_surface_out_of_date.load(std::memory_order_acquire);
@@ -1585,34 +1592,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImage2KHR(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const bool unthrottled =
-      CachedPresentPolicy() ==
-      mocktail::graphics::PresentModePolicy::kUnthrottled;
-  VkAcquireNextImageInfoKHR host_info = *acquire_info;
-  host_info.timeout = mocktail::graphics::BoundHostImageAcquireTimeout(
-      acquire_info->timeout, unthrottled);
-  VkResult host_result = host_acquire(device, &host_info, image_index);
-  if (host_result == VK_NOT_READY &&
-      acquire_info->timeout == std::numeric_limits<std::uint64_t>::max()) {
-    VkAcquireNextImageInfoKHR blocking_info = host_info;
-    blocking_info.timeout = std::numeric_limits<std::uint64_t>::max();
-    host_result = host_acquire(device, &blocking_info, image_index);
-  }
-  const bool watchdog_timeout =
-      mocktail::graphics::IsHostImageAcquireWatchdogTimeout(
-          acquire_info->timeout, host_result, unthrottled);
+  const VkResult host_result =
+      host_acquire(device, acquire_info, image_index);
   const VkResult result =
-      mocktail::graphics::NormalizeHostImageAcquireResult(
-          acquire_info->timeout, host_result, unthrottled);
-  if (watchdog_timeout) {
-    static std::atomic<std::uint64_t> watchdog_timeout_count{0};
-    const std::uint64_t count =
-        watchdog_timeout_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    std::fprintf(stderr,
-                 "  [vulkan] host image acquire2 timed out after 1000ms; "
-                 "requesting surface recovery count=%llu\n",
-                 static_cast<unsigned long long>(count));
-  }
+      mocktail::graphics::NormalizeAndroidSwapchainResult(host_result);
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     const NoteSurfaceOutOfDateFn note_surface_out_of_date =
         State().note_surface_out_of_date.load(std::memory_order_acquire);
@@ -1634,31 +1617,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const bool unthrottled =
-      CachedPresentPolicy() ==
-      mocktail::graphics::PresentModePolicy::kUnthrottled;
-  const std::uint64_t host_timeout =
-      mocktail::graphics::BoundHostSynchronizationWaitTimeout(timeout,
-                                                             unthrottled);
-  std::uint64_t timeout_slices = 0;
-  VkResult result = VK_SUCCESS;
-  do {
-    result = host_wait(device, fence_count, fences, wait_all, host_timeout);
-    if (!mocktail::graphics::ShouldContinueHostSynchronizationWait(
-            timeout, result, unthrottled)) {
-      break;
-    }
-    ++timeout_slices;
-    if (timeout_slices == 1 || timeout_slices == 5 ||
-        timeout_slices % 30 == 0) {
-      std::fprintf(
-          stderr,
-          "  [vulkan] vkWaitForFences still blocked: elapsed=%llus "
-          "fences=%u wait_all=%u; preserving infinite guest wait\n",
-          static_cast<unsigned long long>(timeout_slices), fence_count,
-          wait_all == VK_TRUE ? 1U : 0U);
-    }
-  } while (true);
+  const bool fps_trace = FpsTraceEnabled();
+  const std::uint64_t fence_start_ns = fps_trace ? MonotonicNanos() : 0;
+  const VkResult result =
+      host_wait(device, fence_count, fences, wait_all, timeout);
+  if (fps_trace) {
+    FenceWaitTrace().Record(fence_start_ns);
+  }
   observation.SetResult(result);
   return result;
 }
@@ -1901,8 +1866,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueWaitIdle(VkQueue queue) {
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  const bool fps_trace = FpsTraceEnabled();
+  const std::uint64_t idle_start_ns = fps_trace ? MonotonicNanos() : 0;
   const VkResult result =
       State().text_overlay.QueueWaitIdle(queue, host_wait);
+  if (fps_trace) {
+    QueueIdleWaitTrace().Record(idle_start_ns);
+  }
   observation.SetResult(result);
   return result;
 }
@@ -1996,7 +1966,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfacePresentModesKHR(
     }
     host_modes.resize(host_count);
   }
-  const mocktail::graphics::PresentModePolicy policy = CachedPresentPolicy();
+  const mocktail::graphics::PresentModePolicy policy = mocktail::graphics::CachedPresentModePolicy();
   const std::vector<VkPresentModeKHR> visible =
       mocktail::graphics::FilterPresentModes(policy, host_modes);
   {
@@ -2035,26 +2005,24 @@ vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
   }
   const VkResult result = state.text_overlay.QueuePresent(
       queue, present_info, ObservedHostQueuePresent);
-  if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+  const VkResult normalized_result = NormalizeSwapchainResult(result);
+  if (normalized_result == VK_ERROR_OUT_OF_DATE_KHR) {
     const NoteSurfaceOutOfDateFn note_surface_out_of_date =
         state.note_surface_out_of_date.load(std::memory_order_acquire);
     if (note_surface_out_of_date != nullptr) {
       note_surface_out_of_date();
     }
   }
-  if ((result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) &&
-      note_present != nullptr) {
+  if (normalized_result == VK_SUCCESS && note_present != nullptr) {
     note_present();
   }
-  if ((result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) &&
-      present_info != nullptr && present_info->pResults != nullptr) {
+  if (present_info != nullptr && present_info->pResults != nullptr) {
     for (std::uint32_t index = 0; index < present_info->swapchainCount;
          ++index) {
       present_info->pResults[index] =
           NormalizeSwapchainResult(present_info->pResults[index]);
     }
   }
-  const VkResult normalized_result = NormalizeSwapchainResult(result);
   observation.SetResult(normalized_result);
   return normalized_result;
 }

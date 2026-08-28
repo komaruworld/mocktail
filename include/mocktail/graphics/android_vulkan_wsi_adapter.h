@@ -2,7 +2,6 @@
 #define MOCKTAIL_GRAPHICS_ANDROID_VULKAN_WSI_ADAPTER_H_
 
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <vector>
 
@@ -20,50 +19,13 @@ inline constexpr AndroidVulkanResult kAndroidVulkanSuccess =
     static_cast<AndroidVulkanResult>(0);
 inline constexpr AndroidVulkanResult kAndroidVulkanErrorInitializationFailed =
     static_cast<AndroidVulkanResult>(-3);
-inline constexpr std::uint64_t kHostInfiniteWaitDiagnosticSliceNs =
-    1000000000ULL;
-inline constexpr std::uint64_t kHostImageAcquireWatchdogTimeoutNs =
-    kHostInfiniteWaitDiagnosticSliceNs;
-// In unthrottled mode, infinite acquire preserves the guest's infinite wait
-// rather than polling once with 0 (which returns VK_NOT_READY and drops frames)
-// or forcing swapchain recreation as OUT_OF_DATE.
-inline constexpr std::uint64_t kHostImageAcquireUnthrottledTimeoutNs =
-    std::numeric_limits<std::uint64_t>::max();
 
 inline constexpr char kAndroidSurfaceExtension[] =
     "VK_KHR_android_surface";
 
-// Roblox treats VK_SUBOPTIMAL_KHR as a hard error, so expose it as success.
+// Roblox treats VK_SUBOPTIMAL_KHR as a hard error. Map it to OUT_OF_DATE so
+// the guest recreates the swapchain instead of presenting an obsolete surface.
 VkResult NormalizeAndroidSwapchainResult(VkResult result);
-
-// Bounds only infinite acquire waits so a lost compositor wakeup cannot hang.
-// Unthrottled infinite acquire preserves the guest infinite wait and never
-// recovers as OUT_OF_DATE; the 1s watchdog path stays for vsync/default infinite waits.
-std::uint64_t BoundHostImageAcquireTimeout(std::uint64_t requested_timeout);
-std::uint64_t BoundHostImageAcquireTimeout(std::uint64_t requested_timeout,
-                                           bool unthrottled);
-bool IsHostImageAcquireWatchdogTimeout(std::uint64_t requested_timeout,
-                                       VkResult host_result);
-bool IsHostImageAcquireWatchdogTimeout(std::uint64_t requested_timeout,
-                                       VkResult host_result, bool unthrottled);
-VkResult NormalizeHostImageAcquireResult(std::uint64_t requested_timeout,
-                                         VkResult host_result);
-VkResult NormalizeHostImageAcquireResult(std::uint64_t requested_timeout,
-                                         VkResult host_result,
-                                         bool unthrottled);
-
-// Infinite guest fence/semaphore waits use finite host slices without exposing
-// slice timeouts. Unthrottled does not poll-once here: the engine asked to
-// wait for GPU work, and a TIMEOUT return turns into cond_wait storms.
-std::uint64_t BoundHostSynchronizationWaitTimeout(
-    std::uint64_t requested_timeout);
-std::uint64_t BoundHostSynchronizationWaitTimeout(
-    std::uint64_t requested_timeout, bool unthrottled);
-bool ShouldContinueHostSynchronizationWait(std::uint64_t requested_timeout,
-                                           VkResult host_result);
-bool ShouldContinueHostSynchronizationWait(std::uint64_t requested_timeout,
-                                           VkResult host_result,
-                                           bool unthrottled);
 
 // Returned storage owns the translated extension names.
 Status TranslateAndroidVulkanInstanceExtensions(
