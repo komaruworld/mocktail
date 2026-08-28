@@ -35,7 +35,11 @@ struct DisplayCall {
   int32_t area_y = 0;
   int32_t area_width = 0;
   int32_t area_height = 0;
+  float font_size = 0.0F;
+  bool multiline = false;
+  int32_t font = 0;
   int32_t text_input_type = 0;
+  bool text_wrapped = false;
   std::string text;
   int32_t cursor_utf16 = 0;
   int32_t selection_begin_utf16 = 0;
@@ -55,7 +59,11 @@ void DisplayUpdate(void* context, const RobloxTextDisplayUpdate& update) {
   call.area_y = update.area_y;
   call.area_width = update.area_width;
   call.area_height = update.area_height;
+  call.font_size = update.font_size;
+  call.multiline = update.multiline;
+  call.font = update.font;
   call.text_input_type = update.text_input_type;
+  call.text_wrapped = update.text_wrapped;
   if (update.utf8 != nullptr) {
     call.text.assign(update.utf8, update.utf8_size);
   }
@@ -631,7 +639,11 @@ TEST(RobloxTextEditorTest,
   EXPECT_EQ(refresh.area_y, 36);
   EXPECT_EQ(refresh.area_width, 633);
   EXPECT_EQ(refresh.area_height, 36);
+  EXPECT_FLOAT_EQ(refresh.font_size, 16.0F);
+  EXPECT_TRUE(refresh.multiline);
+  EXPECT_EQ(refresh.font, 4);
   EXPECT_EQ(refresh.text_input_type, 3);
+  EXPECT_TRUE(refresh.text_wrapped);
   EXPECT_EQ(refresh.text, "unchanged");
   EXPECT_EQ(refresh.cursor_utf16, 9);
   EXPECT_EQ(editor.Snapshot().generation, 7u);
@@ -649,6 +661,10 @@ TEST(RobloxTextEditorTest,
   session.area_y = 34;
   session.area_width = 280;
   session.area_height = 44;
+  session.font_size = 22.0F;
+  session.font = 13;
+  session.multiline = true;
+  session.text_wrapped = true;
   session.text_input_type = 5;
 
   ASSERT_TRUE(editor.BeginFocusSession(std::move(session)).ok());
@@ -659,7 +675,11 @@ TEST(RobloxTextEditorTest,
   EXPECT_EQ(display_probe.calls[0].area_y, 34);
   EXPECT_EQ(display_probe.calls[0].area_width, 280);
   EXPECT_EQ(display_probe.calls[0].area_height, 44);
+  EXPECT_FLOAT_EQ(display_probe.calls[0].font_size, 22.0F);
+  EXPECT_TRUE(display_probe.calls[0].multiline);
+  EXPECT_EQ(display_probe.calls[0].font, 13);
   EXPECT_EQ(display_probe.calls[0].text_input_type, 5);
+  EXPECT_TRUE(display_probe.calls[0].text_wrapped);
   EXPECT_EQ(display_probe.calls[0].text, "initial");
   EXPECT_EQ(display_probe.calls[0].cursor_utf16, 7);
 

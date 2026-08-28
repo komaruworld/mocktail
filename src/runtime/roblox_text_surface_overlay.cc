@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "runtime/roblox_text_font_resolver.h"
+
 namespace mocktail {
 namespace runtime {
 namespace {
@@ -62,9 +64,8 @@ bool IsUtf8Continuation(unsigned char value) {
 }
 
 SensitiveString VisibleTextWindow(
-    const RobloxTextOverlayPresentation& presentation,
-    std::size_t* caret_byte, std::size_t* selection_begin_byte,
-    std::size_t* selection_end_byte) {
+    const RobloxTextOverlayPresentation& presentation, std::size_t* caret_byte,
+    std::size_t* selection_begin_byte, std::size_t* selection_end_byte) {
   SensitiveString result;
   const std::string& text = presentation.display_utf8;
   const std::size_t caret = std::min(presentation.caret_utf8_byte, text.size());
@@ -107,16 +108,18 @@ SensitiveString VisibleTextWindow(
   };
   *selection_begin_byte =
       map_to_window(std::min(selection_begin, selection_end));
-  *selection_end_byte =
-      map_to_window(std::max(selection_begin, selection_end));
+  *selection_end_byte = map_to_window(std::max(selection_begin, selection_end));
   return result;
 }
 
-std::vector<std::string> ResolveFontFiles() {
+std::vector<std::string> ResolveFontFiles(
+    const RobloxTextFontSelection& selection) {
   std::vector<std::string> files;
   const char* configured = std::getenv("MOCKTAIL_TEXT_FONT");
   if (configured != nullptr && configured[0] != '\0') {
     files.emplace_back(configured);
+  } else if (!selection.primary_file.empty()) {
+    files.push_back(selection.primary_file);
   }
   if (!FcInit()) {
     return files;
@@ -234,20 +237,31 @@ SDL_Color ResolveTextColor(std::int32_t packed_color) {
           static_cast<std::uint8_t>(packed), alpha};
 }
 
-int TextByteX(TTF_Text* layout, std::size_t byte_offset, int text_width) {
+struct TextBytePosition {
+  int x = 0;
+  int y = 0;
+  int height = 0;
+};
+
+TextBytePosition TextPosition(TTF_Text* layout, std::size_t byte_offset,
+                              int text_width) {
   if (layout == nullptr) {
-    return 0;
+    return {};
   }
   TTF_SubString substring{};
   const int offset = static_cast<int>(std::min<std::size_t>(
       byte_offset, static_cast<std::size_t>(std::numeric_limits<int>::max())));
   if (!TTF_GetTextSubString(layout, offset, &substring)) {
-    return 0;
+    return {};
   }
+  TextBytePosition position;
+  position.x = substring.rect.x;
+  position.y = substring.rect.y;
+  position.height = substring.rect.h;
   if ((substring.flags & TTF_SUBSTRING_TEXT_END) != 0) {
-    return std::min(text_width, substring.rect.x + substring.rect.w);
+    position.x = std::min(text_width, substring.rect.x + substring.rect.w);
   }
-  return substring.rect.x;
+  return position;
 }
 
 }  // namespace
@@ -337,8 +351,7 @@ void RobloxTextSurfaceOverlay::ApplyUpdate(
     ++state_revision_;
   }
   const RobloxTextOverlayPresentation& presentation = state_.presentation();
-  const bool drawable =
-      presentation.visible && presentation.geometry.valid();
+  const bool drawable = presentation.visible && presentation.geometry.valid();
   if (!drawable) {
     ClearFrameLocked();
   }
@@ -414,18 +427,31 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
 
   std::vector<std::uint8_t> candidate(
       static_cast<std::size_t>(width * height * 4), 0);
+  const int frame_width = static_cast<int>(width);
+  const int frame_height = static_cast<int>(height);
+  const int padding = std::clamp(frame_width / 12, 8, 14);
+  const int clip_left = std::min(padding, frame_width);
+  const int clip_right = std::max(clip_left, frame_width - padding);
+  const int clip_top = 3;
+  const int clip_bottom = std::max(clip_top, frame_height - 3);
+  const int available_width = std::max(1, clip_right - clip_left);
+  const bool wrapped_layout =
+      presentation.multiline || presentation.text_wrapped;
 
   if (!TTF_Init()) {
     SecureClear(&candidate);
     return RasterizationFailure("unable to initialize SDL3_ttf");
   }
+  const RobloxTextFontSelection font_selection =
+      ResolveRobloxTextFont(presentation.font);
   const float native_point_size =
       std::isfinite(presentation.font_size) ? presentation.font_size : 0.0F;
   const float point_size =
       native_point_size > 0.0F
-          ? std::clamp(native_point_size, 8.0F, 96.0F)
+          ? std::clamp(native_point_size * font_selection.size_scale, 1.0F,
+                       512.0F)
           : std::clamp(static_cast<float>(height) * 0.38F, 12.0F, 28.0F);
-  const std::vector<std::string> font_files = ResolveFontFiles();
+  const std::vector<std::string> font_files = ResolveFontFiles(font_selection);
   std::vector<TTF_Font*> fonts;
   fonts.reserve(font_files.size());
   for (const std::string& file : font_files) {
@@ -437,34 +463,46 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
   if (fonts.empty()) {
     TTF_Quit();
     SecureClear(&candidate);
-    return RasterizationFailure("unable to open a Fontconfig sans font");
+    return RasterizationFailure("unable to open a Roblox or fallback font");
   }
   for (std::size_t index = 1; index < fonts.size(); ++index) {
     (void)TTF_AddFallbackFont(fonts.front(), fonts[index]);
+  }
+  if (wrapped_layout) {
+    TTF_HorizontalAlignment alignment = TTF_HORIZONTAL_ALIGN_LEFT;
+    if (presentation.x_alignment == 1) {
+      alignment = TTF_HORIZONTAL_ALIGN_RIGHT;
+    } else if (presentation.x_alignment == 2) {
+      alignment = TTF_HORIZONTAL_ALIGN_CENTER;
+    }
+    TTF_SetFontWrapAlignment(fonts.front(), alignment);
   }
 
   std::size_t caret_byte = 0;
   std::size_t selection_begin_byte = 0;
   std::size_t selection_end_byte = 0;
-  SensitiveString text =
-      VisibleTextWindow(presentation, &caret_byte, &selection_begin_byte,
-                        &selection_end_byte);
+  SensitiveString text = VisibleTextWindow(
+      presentation, &caret_byte, &selection_begin_byte, &selection_end_byte);
   SDL_Surface* rendered = nullptr;
   SDL_Surface* converted = nullptr;
   const SDL_Color text_color = ResolveTextColor(presentation.text_color);
   TTF_Text* layout = TTF_CreateText(nullptr, fonts.front(), text.value.data(),
                                     text.value.size());
+  if (layout != nullptr && wrapped_layout) {
+    (void)TTF_SetTextWrapWidth(layout, available_width);
+  }
   int text_width = 0;
   int text_height = std::max(1, TTF_GetFontHeight(fonts.front()));
-  int caret_x = 0;
-  int selection_begin_x = 0;
-  int selection_end_x = 0;
+  TextBytePosition caret_position;
+  TextBytePosition selection_begin_position;
+  TextBytePosition selection_end_position;
   if (layout != nullptr) {
     (void)TTF_GetTextSize(layout, &text_width, &text_height);
-    caret_x = TextByteX(layout, caret_byte, text_width);
-    selection_begin_x =
-        TextByteX(layout, selection_begin_byte, text_width);
-    selection_end_x = TextByteX(layout, selection_end_byte, text_width);
+    caret_position = TextPosition(layout, caret_byte, text_width);
+    selection_begin_position =
+        TextPosition(layout, selection_begin_byte, text_width);
+    selection_end_position =
+        TextPosition(layout, selection_end_byte, text_width);
   }
   if (!text.value.empty()) {
     // SDL_ttf implementations have historically differed on whether fg.a is
@@ -472,8 +510,12 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
     // Android ARGB opacity explicitly while copying the straight-alpha mask.
     const SDL_Color raster_color = {text_color.r, text_color.g, text_color.b,
                                     255};
-    rendered = TTF_RenderText_Blended(fonts.front(), text.value.data(),
-                                      text.value.size(), raster_color);
+    rendered = wrapped_layout
+                   ? TTF_RenderText_Blended_Wrapped(
+                         fonts.front(), text.value.data(), text.value.size(),
+                         raster_color, available_width)
+                   : TTF_RenderText_Blended(fonts.front(), text.value.data(),
+                                            text.value.size(), raster_color);
     if (rendered != nullptr) {
       converted = SDL_ConvertSurface(rendered, SDL_PIXELFORMAT_RGBA32);
     }
@@ -483,23 +525,15 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
   if (!text.value.empty() && (rendered == nullptr || converted == nullptr)) {
     status = RasterizationFailure("unable to rasterize Unicode text");
   } else {
-    const int frame_width = static_cast<int>(width);
-    const int frame_height = static_cast<int>(height);
-    const int padding = std::clamp(frame_width / 12, 8, 14);
-    const int clip_left = std::min(padding, frame_width);
-    const int clip_right = std::max(clip_left, frame_width - padding);
-    const int clip_top = 3;
-    const int clip_bottom = std::max(clip_top, frame_height - 3);
-    const int available_width = std::max(1, clip_right - clip_left);
     int text_offset = 0;
-    if (text_width <= available_width) {
+    if (!wrapped_layout && text_width <= available_width) {
       if (presentation.x_alignment == 1) {
         text_offset = available_width - text_width;
       } else if (presentation.x_alignment == 2) {
         text_offset = (available_width - text_width) / 2;
       }
-    } else if (caret_x > available_width - 3) {
-      text_offset = available_width - 3 - caret_x;
+    } else if (!wrapped_layout && caret_position.x > available_width - 3) {
+      text_offset = available_width - 3 - caret_position.x;
     }
     int text_y = clip_top;
     if (presentation.y_alignment == 1) {
@@ -507,20 +541,52 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
     } else if (presentation.y_alignment == 2) {
       text_y = std::max(clip_top, clip_bottom - text_height);
     }
-    if (selection_begin_byte != selection_end_byte) {
-      const int selection_left = std::clamp(
-          clip_left + text_offset + std::min(selection_begin_x, selection_end_x),
-          clip_left, clip_right);
-      const int selection_right = std::clamp(
-          clip_left + text_offset + std::max(selection_begin_x, selection_end_x),
-          clip_left, clip_right);
-      const int selection_top = std::clamp(text_y, clip_top, clip_bottom);
-      const int selection_bottom = std::clamp(
-          text_y + text_height, selection_top, clip_bottom);
-      for (int y = selection_top; y < selection_bottom; ++y) {
-        for (int x = selection_left; x < selection_right; ++x) {
+    const auto fill_highlight = [&](int left, int top, int right, int bottom) {
+      const int bounded_left = std::clamp(left, clip_left, clip_right);
+      const int bounded_right = std::clamp(right, bounded_left, clip_right);
+      const int bounded_top = std::clamp(top, clip_top, clip_bottom);
+      const int bounded_bottom = std::clamp(bottom, bounded_top, clip_bottom);
+      for (int y = bounded_top; y < bounded_bottom; ++y) {
+        for (int x = bounded_left; x < bounded_right; ++x) {
           SetPixel(&candidate, frame_width, x, y, 65, 132, 228, 112);
         }
+      }
+    };
+    if (selection_begin_byte != selection_end_byte) {
+      if (wrapped_layout && layout != nullptr) {
+        const std::size_t range_bytes =
+            selection_end_byte - selection_begin_byte;
+        const int range_offset = static_cast<int>(std::min<std::size_t>(
+            selection_begin_byte,
+            static_cast<std::size_t>(std::numeric_limits<int>::max())));
+        const int range_length = static_cast<int>(std::min<std::size_t>(
+            range_bytes,
+            static_cast<std::size_t>(std::numeric_limits<int>::max())));
+        int count = 0;
+        TTF_SubString** substrings = TTF_GetTextSubStringsForRange(
+            layout, range_offset, range_length, &count);
+        if (substrings != nullptr) {
+          for (int index = 0; index < count; ++index) {
+            const TTF_SubString* substring = substrings[index];
+            if (substring == nullptr) {
+              continue;
+            }
+            fill_highlight(
+                clip_left + text_offset + substring->rect.x,
+                text_y + substring->rect.y,
+                clip_left + text_offset + substring->rect.x + substring->rect.w,
+                text_y + substring->rect.y + substring->rect.h);
+          }
+          SDL_free(substrings);
+        }
+      } else {
+        fill_highlight(
+            clip_left + text_offset +
+                std::min(selection_begin_position.x, selection_end_position.x),
+            text_y,
+            clip_left + text_offset +
+                std::max(selection_begin_position.x, selection_end_position.x),
+            text_y + text_height);
       }
     }
     if (converted != nullptr) {
@@ -529,12 +595,17 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
                    &candidate);
     }
     const int caret_screen_x =
-        std::clamp(clip_left + text_offset + caret_x, clip_left,
+        std::clamp(clip_left + text_offset + caret_position.x, clip_left,
                    std::max(clip_left, clip_right - 2));
+    const int caret_line_height =
+        caret_position.height > 0
+            ? caret_position.height
+            : std::max(1, TTF_GetFontHeight(fonts.front()));
     const int caret_height =
-        std::min(std::max(12, text_height), clip_bottom - clip_top);
-    const int caret_y = std::clamp(
-        text_y, clip_top, std::max(clip_top, clip_bottom - caret_height));
+        std::min(std::max(12, caret_line_height), clip_bottom - clip_top);
+    const int caret_y =
+        std::clamp(text_y + caret_position.y, clip_top,
+                   std::max(clip_top, clip_bottom - caret_height));
     for (int y = caret_y; y < caret_y + caret_height; ++y) {
       SetPixel(&candidate, frame_width, caret_screen_x, y, text_color.r,
                text_color.g, text_color.b, text_color.a);

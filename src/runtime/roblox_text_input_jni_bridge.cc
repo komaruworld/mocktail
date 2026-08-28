@@ -21,6 +21,7 @@ namespace {
 
 constexpr std::size_t kMaximumPendingTextCommands = 64;
 constexpr std::size_t kMaximumPendingTextBytes = 4U * 1024U * 1024U;
+constexpr uint32_t kMissingGeometryRetryPumpInterval = 8;
 
 void SecureClear(std::string* value) {
   if (value == nullptr) {
@@ -164,7 +165,13 @@ class ProductionTextInputBackend final
 };
 
 struct RobloxTextInputJniBridge::State {
-  enum class CommandType { kShow, kHide, kReplaceText, kRefreshProperties };
+  enum class CommandType {
+    kShow,
+    kHide,
+    kReplaceText,
+    kRefreshProperties,
+    kRecoverGeometry
+  };
 
   struct Command {
     CommandType type = CommandType::kHide;
@@ -198,6 +205,7 @@ struct RobloxTextInputJniBridge::State {
     desired_active = false;
     active_geometry = {};
     has_active_geometry = false;
+    missing_geometry_retry_pumps = 0;
     ClearCommandsLocked();
   }
 
@@ -321,6 +329,7 @@ struct RobloxTextInputJniBridge::State {
       if (HasUsableGeometry(effective_info)) {
         active_geometry = effective_info;
         has_active_geometry = true;
+        missing_geometry_retry_pumps = 0;
       }
       std::fprintf(stderr,
                    "  [input] TextBox focus snapshot native=%d "
@@ -345,6 +354,7 @@ struct RobloxTextInputJniBridge::State {
       active_generation = generation;
       active_handle = request.text_box;
       desired_active = true;
+      missing_geometry_retry_pumps = 0;
       command.type = CommandType::kShow;
       command.generation = generation;
       command.textbox_handle = request.text_box;
@@ -372,6 +382,7 @@ struct RobloxTextInputJniBridge::State {
     active_info = {};
     active_geometry = {};
     has_active_geometry = false;
+    missing_geometry_retry_pumps = 0;
   }
 
   void ReplaceText(const std::string& text) {
@@ -426,6 +437,41 @@ struct RobloxTextInputJniBridge::State {
     commands.push_back(std::move(command));
   }
 
+  // The first showKeyboard snapshot can precede Roblox's layout pass and
+  // contain a 0x0 rectangle. Keep the editor authoritative, then retry the
+  // typed native query on the main-thread pump until real bounds appear.
+  void AppendMissingGeometryRetry(std::deque<Command>* pending) {
+    if (pending == nullptr) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!accepting || !desired_active || has_active_geometry ||
+        active_generation == 0 || active_handle == 0 || !applied_active ||
+        applied_generation != active_generation ||
+        applied_handle != active_handle) {
+      missing_geometry_retry_pumps = 0;
+      return;
+    }
+    const auto already_refreshing =
+        std::find_if(pending->begin(), pending->end(), [](const Command& item) {
+          return item.type == CommandType::kRefreshProperties ||
+                 item.type == CommandType::kRecoverGeometry;
+        });
+    if (already_refreshing != pending->end()) {
+      return;
+    }
+    ++missing_geometry_retry_pumps;
+    if (missing_geometry_retry_pumps < kMissingGeometryRetryPumpInterval) {
+      return;
+    }
+    missing_geometry_retry_pumps = 0;
+    Command command;
+    command.type = CommandType::kRecoverGeometry;
+    command.generation = active_generation;
+    command.textbox_handle = active_handle;
+    pending->push_back(std::move(command));
+  }
+
   bool IsDesiredFocusCurrent(uint64_t requested_generation,
                              int64_t requested_handle) const {
     std::lock_guard<std::mutex> lock(mutex);
@@ -456,10 +502,23 @@ struct RobloxTextInputJniBridge::State {
     } else {
       active_geometry = candidate;
       has_active_geometry = true;
+      missing_geometry_retry_pumps = 0;
     }
     active_info = candidate;
     *effective_info = candidate;
     return true;
+  }
+
+  void ForgetRecoveredGeometryIfCurrent(uint64_t requested_generation,
+                                        int64_t requested_handle) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (accepting && desired_active &&
+        active_generation == requested_generation &&
+        active_handle == requested_handle) {
+      active_geometry = {};
+      has_active_geometry = false;
+      missing_geometry_retry_pumps = 0;
+    }
   }
 
   bool Drain() {
@@ -479,6 +538,8 @@ struct RobloxTextInputJniBridge::State {
       return CompleteTerminalOnMainThread("queue");
     }
 
+    AppendMissingGeometryRetry(&pending);
+
     bool success = true;
     for (Command& command : pending) {
       if (!CompletionStatus().ok()) {
@@ -490,6 +551,9 @@ struct RobloxTextInputJniBridge::State {
       Status status = Status::Ok();
       const char* failure_message = "Roblox text-input command failed";
       const char* failure_stage = "command";
+      const bool best_effort_geometry_recovery =
+          command.type == CommandType::kRecoverGeometry;
+      bool presentation_properties_updated = false;
       if (command.type == CommandType::kShow) {
         failure_message = "Roblox TextBox focus session failed";
         failure_stage = "begin-focus";
@@ -514,10 +578,13 @@ struct RobloxTextInputJniBridge::State {
         session.area_width = area.width;
         session.area_height = area.height;
         session.font_size = command.info.font_size;
+        session.font = command.info.font;
         session.x_alignment = command.info.x_alignment;
         session.y_alignment = command.info.y_alignment;
         session.text_color = command.info.text_color;
         session.text_input_type = command.info.text_input_type;
+        session.return_key_type = command.info.return_key_type;
+        session.text_wrapped = command.info.text_wrapped;
         status = backend->BeginTextFocusSession(std::move(session));
         const window::TextInputOptions options{command.info.text_input_type,
                                                command.info.multiline};
@@ -581,6 +648,7 @@ struct RobloxTextInputJniBridge::State {
             failure_stage = "update-properties";
             status = backend->UpdateTextFocusProperties(
                 command.generation, ToFocusProperties(effective_info));
+            presentation_properties_updated = status.ok();
             const window::TextInputArea area = ToTextInputArea(effective_info);
             const window::TextInputOptions options{
                 effective_info.text_input_type, effective_info.multiline};
@@ -601,6 +669,20 @@ struct RobloxTextInputJniBridge::State {
             }
           }
         }
+      }
+      if (best_effort_geometry_recovery && !status.ok()) {
+        if (!presentation_properties_updated) {
+          ForgetRecoveredGeometryIfCurrent(command.generation,
+                                           command.textbox_handle);
+        }
+        if (!logged_geometry_retry_error) {
+          logged_geometry_retry_error = true;
+          std::fprintf(stderr,
+                       "  [input] deferred TextBox geometry query failed; "
+                       "typing remains active: %s\n",
+                       status.message().c_str());
+        }
+        status = Status::Ok();
       }
       command.ClearSensitiveData();
       if (status.ok()) {
@@ -664,6 +746,7 @@ struct RobloxTextInputJniBridge::State {
     active_info = {};
     active_geometry = {};
     has_active_geometry = false;
+    missing_geometry_retry_pumps = 0;
     ClearCommandsLocked();
   }
 
@@ -703,12 +786,14 @@ struct RobloxTextInputJniBridge::State {
   jnivm::RobloxTextBoxInfo active_info;
   jnivm::RobloxTextBoxInfo active_geometry;
   bool has_active_geometry = false;
+  uint32_t missing_geometry_retry_pumps = 0;
   bool desired_active = false;
   std::size_t pending_text_bytes = 0;
   bool accepting = true;
   bool terminal_cleanup_completed = false;
   bool logged_missing_overlay_geometry = false;
   bool logged_property_refresh = false;
+  bool logged_geometry_retry_error = false;
   bool applied_active = false;
   uint64_t applied_generation = 0;
   int64_t applied_handle = 0;

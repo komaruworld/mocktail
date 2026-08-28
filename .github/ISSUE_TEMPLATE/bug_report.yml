@@ -1,0 +1,102 @@
+name: Bug report
+description: Report a reproducible problem in Mocktail
+title: "[Bug]: "
+labels:
+  - bug
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please include enough detail for someone else to reproduce the bug.
+
+        Use any language you are comfortable with. The maintainer can read Russian and English directly, so either is preferred. If you are more comfortable in another language, use it.
+
+        Please write issues and pull requests yourself. Do not use AI-generated text.
+
+  - type: input
+    id: version
+    attributes:
+      label: Mocktail version
+      description: Provide the release version, package version, or commit hash.
+      placeholder: "For example: v0.4.0 or 1a2b3c4"
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: System information
+      description: Include your distribution, desktop session, GPU, and graphics driver when relevant.
+      placeholder: "For example: Arch Linux, KDE Plasma 6 on Wayland, AMD RX 6600, Mesa 26.1"
+    validations:
+      required: true
+
+  - type: input
+    id: installation
+    attributes:
+      label: Installation method
+      description: Tell us how Mocktail was installed or built.
+      placeholder: "For example: AppImage, Flatpak, AUR, or built from source"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and its impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest reliable sequence of actions that triggers the problem.
+      placeholder: |
+        1. Start Mocktail with ...
+        2. Open ...
+        3. Select ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Explain what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        Latest log:
+
+        - Flatpak: `~/.var/app/space.bigrat.mocktail/.local/state/mocktail/logs/latest.log`
+        - Other installs: `~/.local/state/mocktail/logs/latest.log`
+
+        Older logs are in the `sessions` directory next to `latest.log`.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste the relevant part of latest.log or the terminal output.
+      render: shell
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add screenshots, videos, workarounds, or any other useful details.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and did not find a duplicate.
+          required: true

@@ -77,17 +77,28 @@ bool HasExpectedFullscreenSetterContract(const std::uint8_t* code,
   constexpr std::array<std::uint8_t, 4> kFramePrologue = {
       0x55, 0x48, 0x89, 0xe5};
   constexpr std::array<std::uint8_t, 2> kCaptureBoolean = {0x89, 0xf3};
-  constexpr std::array<std::uint8_t, 6> kCompareFullscreen = {
+  constexpr std::array<std::uint8_t, 6> kCompareLegacyFullscreen = {
       0x38, 0x98, 0x59, 0x01, 0x00, 0x00};
-  constexpr std::array<std::uint8_t, 6> kStoreFullscreen = {
+  constexpr std::array<std::uint8_t, 6> kStoreLegacyFullscreen = {
       0x88, 0x98, 0x59, 0x01, 0x00, 0x00};
+  constexpr std::array<std::uint8_t, 6> kCompareCurrentFullscreen = {
+      0x38, 0x98, 0x61, 0x01, 0x00, 0x00};
+  constexpr std::array<std::uint8_t, 6> kStoreCurrentFullscreen = {
+      0x88, 0x98, 0x61, 0x01, 0x00, 0x00};
+  const bool has_legacy_fullscreen_field =
+      ContainsBytes(code, size, kCompareLegacyFullscreen.data(),
+                    kCompareLegacyFullscreen.size()) &&
+      ContainsBytes(code, size, kStoreLegacyFullscreen.data(),
+                    kStoreLegacyFullscreen.size());
+  const bool has_current_fullscreen_field =
+      ContainsBytes(code, size, kCompareCurrentFullscreen.data(),
+                    kCompareCurrentFullscreen.size()) &&
+      ContainsBytes(code, size, kStoreCurrentFullscreen.data(),
+                    kStoreCurrentFullscreen.size());
   return std::memcmp(code, kFramePrologue.data(), kFramePrologue.size()) == 0 &&
          ContainsBytes(code, 24, kCaptureBoolean.data(),
                        kCaptureBoolean.size()) &&
-         ContainsBytes(code, size, kCompareFullscreen.data(),
-                       kCompareFullscreen.size()) &&
-         ContainsBytes(code, size, kStoreFullscreen.data(),
-                       kStoreFullscreen.size());
+         (has_legacy_fullscreen_field || has_current_fullscreen_field);
 }
 
 }  // namespace internal

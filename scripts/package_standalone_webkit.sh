@@ -435,12 +435,16 @@ CopyGdkPixbufResources() {
     "${STAGING}/share/glycin-loaders/2+/conf.d"
   local executable config
   while IFS= read -r -d '' executable; do
+    # Arch ships the HEIF loader even when its optional libheif dependency is
+    # absent. Mocktail's WebKit UI does not require HEIF/AVIF decoding.
+    [[ "${executable##*/}" != glycin-heif ]] || continue
     ValidateElf "${executable}" "glycin image loader"
     install -m 0755 -- "${executable}" \
       "${STAGING}/lib/plugins/glycin-loaders/2+/${executable##*/}"
   done < <(find -P "${GLYCIN_BINARY_SOURCE}" -maxdepth 1 -type f \
     -perm -0100 -print0 | sort -z)
   while IFS= read -r -d '' config; do
+    [[ "${config##*/}" != glycin-heif.conf ]] || continue
     sed -E \
       's#^([[:space:]]*Exec=).*/([^/[:space:]]+)[[:space:]]*$#\1lib/plugins/glycin-loaders/2+/\2#' \
       "${config}" \

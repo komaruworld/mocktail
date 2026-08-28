@@ -109,9 +109,6 @@ unzip
 file
 binutils
 jre-openjdk-headless
-python-yaml
-python-requests
-python-capstone
 sdl3
 sdl3_ttf
 libutf8proc
@@ -137,9 +134,6 @@ unzip
 file
 binutils
 openjdk17-jre
-python3-yaml
-python3-requests
-capstone-python3
 SDL3
 SDL3_ttf
 libutf8proc
@@ -168,9 +162,6 @@ unzip
 file
 binutils
 openjdk17-jre-headless
-py3-yaml
-py3-requests
-py3-capstone
 sdl3
 sdl3_ttf
 utf8proc
@@ -201,17 +192,6 @@ PackageInstalled() {
     binutils) command -v readelf >/dev/null 2>&1 && return 0 ;;
     jq|unzip|file) command -v "$package" >/dev/null 2>&1 && return 0 ;;
     util-linux) command -v flock >/dev/null 2>&1 && return 0 ;;
-    python-yaml|python3-yaml|py3-yaml)
-      python3 -c 'import yaml' >/dev/null 2>&1 && return 0
-      ;;
-    python-requests|python3-requests|py3-requests)
-      python3 -c 'import requests' >/dev/null 2>&1 && return 0
-      ;;
-    python-capstone|capstone-python3|py3-capstone)
-      python3 -c 'import capstone; raise SystemExit(capstone.cs_version()[0] != 5)' \
-        >/dev/null 2>&1
-      return $?
-      ;;
   esac
   case $DISTRO in
     arch) pacman -Qq "$package" >/dev/null 2>&1 ;;

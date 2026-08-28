@@ -18,6 +18,7 @@ add_library(mocktail_input_runtime STATIC
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_native_text_box_info_reader.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_text_display_state.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_text_editor.cc
+  ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_text_font_resolver.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_text_surface_overlay.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_window_input_runtime.cc
 )
@@ -36,6 +37,7 @@ target_link_libraries(mocktail_input_runtime PUBLIC
   PRIVATE
     PkgConfig::FONTCONFIG
     SDL3_ttf::SDL3_ttf
+    nlohmann_json::nlohmann_json
 )
 target_compile_features(mocktail_input_runtime PUBLIC cxx_std_17)
 mocktail_apply_compile_options(mocktail_input_runtime)
@@ -68,6 +70,15 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
   )
   mocktail_apply_compile_options(roblox_text_display_state_test)
 
+  add_executable(roblox_text_font_resolver_test
+    ${MOCKTAIL_INPUT_ROOT}/tests/roblox_text_font_resolver_test.cc
+  )
+  target_link_libraries(roblox_text_font_resolver_test PRIVATE
+    Mocktail::InputRuntime
+    GTest::gtest_main
+  )
+  mocktail_apply_compile_options(roblox_text_font_resolver_test)
+
   add_executable(roblox_input_native_adapter_test
     ${MOCKTAIL_INPUT_ROOT}/tests/roblox_input_native_adapter_test.cc
   )
@@ -92,6 +103,7 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
   gtest_discover_tests(roblox_input_router_test)
   gtest_discover_tests(roblox_text_editor_test)
   gtest_discover_tests(roblox_text_display_state_test)
+  gtest_discover_tests(roblox_text_font_resolver_test)
   gtest_discover_tests(roblox_input_native_adapter_test)
   gtest_discover_tests(roblox_native_text_box_info_reader_test)
 endif()

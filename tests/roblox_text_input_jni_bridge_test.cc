@@ -25,8 +25,12 @@ class FakeBackend final : public RobloxTextInputJniBridgeBackend {
     last_area_y = session.area_y;
     last_area_width = session.area_width;
     last_area_height = session.area_height;
+    last_font = session.font;
+    last_font_size = session.font_size;
     last_text_input_type = session.text_input_type;
     last_multiline = session.multiline;
+    last_text_wrapped = session.text_wrapped;
+    last_return_key_type = session.return_key_type;
     last_manual_focus_release = session.manual_focus_release;
     active = true;
     std::fill(session.initial_text.begin(), session.initial_text.end(), '\0');
@@ -124,8 +128,12 @@ class FakeBackend final : public RobloxTextInputJniBridgeBackend {
   int32_t last_area_y = 0;
   int32_t last_area_width = 0;
   int32_t last_area_height = 0;
+  int32_t last_font = 0;
+  float last_font_size = 0.0F;
   int32_t last_text_input_type = 0;
+  int32_t last_return_key_type = 0;
   bool last_multiline = false;
+  bool last_text_wrapped = false;
   bool last_manual_focus_release = false;
   std::string last_initial_text;
   std::vector<std::string> replaced_texts;
@@ -604,6 +612,68 @@ TEST(RobloxTextInputJniBridgeTest,
   EXPECT_TRUE(backend->owner_enabled);
   EXPECT_EQ(backend->last_area_width, 0);
   EXPECT_EQ(backend->last_area_height, 0);
+  EXPECT_TRUE(bridge->Shutdown().ok());
+}
+
+TEST(RobloxTextInputJniBridgeTest,
+     InitialFocusPreservesCompleteRobloxTextPresentation) {
+  jnivm::VM vm;
+  auto backend = std::make_shared<FakeBackend>();
+  std::unique_ptr<RobloxTextInputJniBridge> bridge;
+  ASSERT_TRUE(
+      RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+  jnivm::RobloxTextInputShowRequest request = ShowRequest(43, "styled");
+  request.info.font = 13;
+  request.info.font_size = 21.0F;
+  request.info.multiline = true;
+  request.info.text_wrapped = true;
+  request.info.return_key_type = 4;
+
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(request));
+  ASSERT_TRUE(backend->Pump());
+
+  EXPECT_EQ(backend->last_font, 13);
+  EXPECT_FLOAT_EQ(backend->last_font_size, 21.0F);
+  EXPECT_TRUE(backend->last_multiline);
+  EXPECT_TRUE(backend->last_text_wrapped);
+  EXPECT_EQ(backend->last_return_key_type, 4);
+  EXPECT_TRUE(bridge->Shutdown().ok());
+}
+
+TEST(RobloxTextInputJniBridgeTest,
+     MissingGeometryIsRecoveredWithoutAPropertyCallback) {
+  jnivm::VM vm;
+  auto backend = std::make_shared<FakeBackend>();
+  std::unique_ptr<RobloxTextInputJniBridge> bridge;
+  ASSERT_TRUE(
+      RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+  jnivm::RobloxTextInputShowRequest request = ShowRequest(43, "editable");
+  request.info.width = 0.0F;
+  request.info.height = 0.0F;
+
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(request));
+  ASSERT_TRUE(backend->Pump());
+  backend->calls.clear();
+  backend->query_result.available = true;
+  backend->query_result.info.x = 25.0F;
+  backend->query_result.info.y = 50.0F;
+  backend->query_result.info.width = 420.0F;
+  backend->query_result.info.height = 36.0F;
+  backend->query_result.info.font = 46;
+  backend->query_result.info.font_size = 18.0F;
+
+  for (int pump = 0; pump < 8; ++pump) {
+    ASSERT_TRUE(backend->Pump());
+  }
+
+  EXPECT_EQ(backend->calls,
+            (std::vector<std::string>{"query:1", "properties:1", "show:1"}));
+  EXPECT_EQ(backend->last_properties.area_x, 25);
+  EXPECT_EQ(backend->last_properties.area_y, 50);
+  EXPECT_EQ(backend->last_properties.area_width, 420);
+  EXPECT_EQ(backend->last_properties.area_height, 36);
+  EXPECT_EQ(backend->last_properties.font, 46);
+  EXPECT_FLOAT_EQ(backend->last_properties.font_size, 18.0F);
   EXPECT_TRUE(bridge->Shutdown().ok());
 }
 

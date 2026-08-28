@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest an improvement or a new capability for Mocktail
+title: "[Feature]: "
+labels:
+  - enhancement
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe what you want to change and why it would be useful.
+
+        Use any language you are comfortable with. The maintainer can read Russian and English directly, so either is preferred. If you are more comfortable in another language, use it.
+
+        Please write issues and pull requests yourself. Do not use AI-generated text.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what makes it difficult today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe how you would like Mocktail to behave.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workarounds or alternative designs you have considered.
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add mockups, screenshots, links, or implementation notes if useful.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and did not find a duplicate.
+          required: true

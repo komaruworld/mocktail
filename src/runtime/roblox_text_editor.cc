@@ -725,10 +725,13 @@ void RobloxTextEditor::PublishDisplayLocked(RobloxTextDisplayEvent event) {
   update.area_width = session_.area_width;
   update.area_height = session_.area_height;
   update.font_size = session_.font_size;
+  update.multiline = session_.multiline;
   update.x_alignment = session_.x_alignment;
   update.y_alignment = session_.y_alignment;
   update.text_color = session_.text_color;
+  update.font = session_.font;
   update.text_input_type = session_.text_input_type;
+  update.text_wrapped = session_.text_wrapped;
   if (event != RobloxTextDisplayEvent::kHide) {
     update.utf8 = text_.data();
     update.utf8_size = text_.size();

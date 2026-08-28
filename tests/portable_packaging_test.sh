@@ -128,11 +128,7 @@ for path in \
     mocktail/runtime \
     mocktail/scripts/portable_launcher.sh \
     mocktail/scripts/install_thin_dependencies.sh \
-    mocktail/scripts/auto_update_roblox.sh \
-    mocktail/scripts/derive_roblox_host_abi_profile.py \
     mocktail/scripts/collect_support_bundle.sh \
-    mocktail/scripts/apk_providers/direct_apkpure.py \
-    mocktail/scripts/apk_providers/direct_uptodown.py \
     mocktail/runtime/android-tools/bin/aapt \
     mocktail/runtime/android-tools/bin/apksigner \
     mocktail/runtime/android-tools/lib/apksigner.jar \
@@ -151,6 +147,7 @@ for path in \
   }
 done
 [[ ! -e "${runtime}/scripts/mocktail_login_webview.py" ]]
+! find "${bundle}" -type f -name '*.py' -print -quit | grep -q .
 
 root_entries="$(find "${bundle}" -mindepth 1 -maxdepth 1 \
   -printf '%f\n' | LC_ALL=C sort)"
@@ -374,24 +371,22 @@ RunThinLauncher MOCKTAIL_SKIP_HOST_CHECK=1 \
 # input validation, without trying to create rbx_bin beside the launcher.
 chmod -R a-w -- "${relocated}"
 set +e
-"${relocated}/mocktail/scripts/update_roblox_payload.sh" \
-  --base "${TEMP_DIR}/missing-base.apk" \
-  --x86-64 "${TEMP_DIR}/missing-split.apk" \
-  --store-root "${TEMP_DIR}/readonly-store" \
+"${relocated}/mocktail/bin/mocktail_updater" prepare-apks \
+  "${TEMP_DIR}/readonly-store/payload" \
+  "${TEMP_DIR}/missing-base.apk" \
   >"${TEMP_DIR}/readonly.stdout" 2>"${TEMP_DIR}/readonly.stderr"
 readonly_status=$?
 set -e
+chmod -R u+w -- "${relocated}"
 [[ "${readonly_status}" -ne 0 ]]
-grep -Fq 'base APK is not readable' "${TEMP_DIR}/readonly.stderr"
+grep -Fq 'ZIP archive is not a regular file' "${TEMP_DIR}/readonly.stderr"
 [[ ! -e "${relocated}/rbx_bin" ]]
 
 # AppImage bundle payloads never ship Cargo sources or an Android SDK
-# development tree. Direct HTTPS providers remain available without either.
+# development tree. The native updater owns the direct HTTPS provider.
 [[ ! -e "${relocated}/mocktail/tools" ]]
 [[ ! -e "${relocated}/mocktail/runtime/android-tools/sdk" ]]
-[[ -x "${relocated}/mocktail/scripts/apk_providers/direct_apkpure.sh" ]]
-[[ -x "${relocated}/mocktail/scripts/apk_providers/direct_uptodown.sh" ]]
-chmod -R u+w -- "${relocated}"
+[[ ! -e "${relocated}/mocktail/scripts/apk_providers" ]]
 
 standalone_bundle="${TEMP_DIR}/standalone/mocktail-linux-x86_64-glibc-standalone"
 "${PACKAGER}" --build-dir "${BUILD_DIR}" --libc glibc --mode full \
@@ -414,8 +409,12 @@ for path in runtime libexec share; do
      ! -L "${standalone_runtime}/${path}" ]]
 done
 [[ -x "${standalone_runtime}/runtime/bin/bash" ]]
-PYTHONNOUSERSITE=1 "${standalone_runtime}/runtime/bin/python3" -s -c \
-  'import capstone; assert capstone.cs_version()[0] == 5'
+[[ ! -e "${standalone_runtime}/runtime/bin/python3" ]]
+[[ ! -e "${standalone_runtime}/runtime/python" ]]
+! find "${standalone_runtime}/runtime/jre" -name 'libjsound*.so' \
+  -print -quit | grep -q .
+[[ ! -e "${standalone_runtime}/lib/plugins/glycin-loaders/2+/glycin-heif" ]]
+[[ ! -e "${standalone_runtime}/share/glycin-loaders/2+/conf.d/glycin-heif.conf" ]]
 [[ -s "${standalone_runtime}/webkit.env" ]]
 [[ ! -e "${standalone_runtime}/scripts/mocktail_login_webview.py" ]]
 [[ ! -e "${standalone_runtime}/libexec/webkit2gtk-4.1" ]]

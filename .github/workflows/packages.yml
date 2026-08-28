@@ -56,9 +56,7 @@ jobs:
                 libadwaita webkitgtk-6.0 libutf8proc fontconfig libglvnd \
                 vulkan-headers zlib libplacebo bubblewrap xdg-dbus-proxy \
                 patchelf jq unzip file ca-certificates jdk-openjdk giflib \
-                python python-capstone python-yaml python-requests \
-                python-urllib3 python-certifi python-charset-normalizer \
-                python-idna dbus
+                dbus
 
               export JAVA_HOME=/usr/lib/jvm/default
               export PATH="${JAVA_HOME}/bin:${PATH}"

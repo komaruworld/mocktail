@@ -131,6 +131,25 @@ TEST(RobloxTextDisplayStateTest, MapsUtf16CursorToUnicodeByteBoundary) {
   EXPECT_EQ(presentation.caret_utf8_byte, std::string(u8"A😀").size());
 }
 
+TEST(RobloxTextDisplayStateTest, PreservesRobloxFontAndWrappingProperties) {
+  const std::string text = "styled";
+  RobloxTextDisplayUpdate update = Show(7, text, 6);
+  update.font_size = 21.0F;
+  update.font = 13;
+  update.multiline = true;
+  update.text_wrapped = true;
+  RobloxTextOverlayPresentation presentation;
+
+  ASSERT_TRUE(BuildRobloxTextOverlayPresentation(update, {1280, 720},
+                                                 &presentation)
+                  .ok());
+
+  EXPECT_FLOAT_EQ(presentation.font_size, 21.0F);
+  EXPECT_EQ(presentation.font, 13);
+  EXPECT_TRUE(presentation.multiline);
+  EXPECT_TRUE(presentation.text_wrapped);
+}
+
 TEST(RobloxTextDisplayStateTest, MapsUnicodeSelectionToVisibleByteRange) {
   const std::string text = u8"A😀Б";
   RobloxTextDisplayUpdate update = Show(7, text, 3);
@@ -138,9 +157,9 @@ TEST(RobloxTextDisplayStateTest, MapsUnicodeSelectionToVisibleByteRange) {
   update.selection_end_utf16 = 3;
   RobloxTextOverlayPresentation presentation;
 
-  ASSERT_TRUE(BuildRobloxTextOverlayPresentation(update, {1280, 720},
-                                                 &presentation)
-                  .ok());
+  ASSERT_TRUE(
+      BuildRobloxTextOverlayPresentation(update, {1280, 720}, &presentation)
+          .ok());
 
   EXPECT_EQ(presentation.selection_begin_utf8_byte, std::string("A").size());
   EXPECT_EQ(presentation.selection_end_utf8_byte,
@@ -382,6 +401,37 @@ TEST(RobloxTextDisplayStateTest, RasterizesSelectionHighlightBehindText) {
          rgba[offset + 2] == 228U && rgba[offset + 3] == 112U);
   }
   EXPECT_TRUE(found_highlight);
+  EXPECT_TRUE(overlay.Shutdown().ok());
+}
+
+TEST(RobloxTextDisplayStateTest, WrapsMultilineTextInsideNativeTextBox) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({800, 600}).ok());
+  const std::string text =
+      "one two three four five six seven eight nine ten eleven twelve";
+  RobloxTextDisplayUpdate show = Show(1, text, 0);
+  show.area_width = 150;
+  show.area_height = 140;
+  show.font_size = 20.0F;
+  show.y_alignment = 0;
+  show.text_wrapped = true;
+  RobloxTextDisplaySink sink = overlay.sink();
+  sink.update(sink.context, show);
+
+  MocktailTextOverlayFrameInfo frame;
+  ASSERT_TRUE(overlay.QueryFrame(&frame));
+  std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+  ASSERT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+  bool has_lower_line_pixel = false;
+  for (std::uint32_t y = 40; y < frame.height; ++y) {
+    for (std::uint32_t x = 0; x < frame.width; ++x) {
+      const std::size_t alpha =
+          (static_cast<std::size_t>(y) * frame.width + x) * 4 + 3;
+      has_lower_line_pixel =
+          has_lower_line_pixel || (alpha < rgba.size() && rgba[alpha] != 0);
+    }
+  }
+  EXPECT_TRUE(has_lower_line_pixel);
   EXPECT_TRUE(overlay.Shutdown().ok());
 }
 

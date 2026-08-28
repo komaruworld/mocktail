@@ -106,10 +106,13 @@ RobloxTextOverlayPresentation::RobloxTextOverlayPresentation(
       generation(other.generation),
       geometry(other.geometry),
       font_size(other.font_size),
+      multiline(other.multiline),
       x_alignment(other.x_alignment),
       y_alignment(other.y_alignment),
       text_color(other.text_color),
+      font(other.font),
       text_input_type(other.text_input_type),
+      text_wrapped(other.text_wrapped),
       display_utf8(other.display_utf8),
       caret_utf8_byte(other.caret_utf8_byte),
       selection_begin_utf8_byte(other.selection_begin_utf8_byte),
@@ -127,10 +130,13 @@ RobloxTextOverlayPresentation& RobloxTextOverlayPresentation::operator=(
   generation = other.generation;
   geometry = other.geometry;
   font_size = other.font_size;
+  multiline = other.multiline;
   x_alignment = other.x_alignment;
   y_alignment = other.y_alignment;
   text_color = other.text_color;
+  font = other.font;
   text_input_type = other.text_input_type;
+  text_wrapped = other.text_wrapped;
   display_utf8 = other.display_utf8;
   caret_utf8_byte = other.caret_utf8_byte;
   selection_begin_utf8_byte = other.selection_begin_utf8_byte;
@@ -145,10 +151,13 @@ void RobloxTextOverlayPresentation::ClearSensitive() {
   generation = 0;
   geometry = {};
   font_size = 0.0F;
+  multiline = false;
   x_alignment = 0;
   y_alignment = 1;
   text_color = 0;
+  font = 0;
   text_input_type = 0;
+  text_wrapped = false;
   caret_utf8_byte = 0;
   selection_begin_utf8_byte = 0;
   selection_end_utf8_byte = 0;
@@ -208,10 +217,13 @@ Status BuildRobloxTextOverlayPresentation(
   candidate.generation = update.generation;
   candidate.geometry = ResolveRobloxTextOverlayGeometry(update, viewport);
   candidate.font_size = update.font_size;
+  candidate.multiline = update.multiline;
   candidate.x_alignment = update.x_alignment;
   candidate.y_alignment = update.y_alignment;
   candidate.text_color = update.text_color;
+  candidate.font = update.font;
   candidate.text_input_type = update.text_input_type;
+  candidate.text_wrapped = update.text_wrapped;
 
   std::size_t codepoints_before_cursor = 0;
   const std::size_t caret_source_byte = Utf8ByteForUtf16Cursor(

@@ -57,10 +57,13 @@ struct RobloxTextOverlayPresentation {
   uint64_t generation = 0;
   RobloxTextOverlayGeometry geometry;
   float font_size = 0.0F;
+  bool multiline = false;
   int32_t x_alignment = 0;
   int32_t y_alignment = 1;
   int32_t text_color = 0;
+  int32_t font = 0;
   int32_t text_input_type = 0;
+  bool text_wrapped = false;
   std::string display_utf8;
   std::size_t caret_utf8_byte = 0;
   std::size_t selection_begin_utf8_byte = 0;

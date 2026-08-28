@@ -52,7 +52,16 @@
       "allow_legacy_binary_patches": false,
       "allow_host_abi_bridges": true,
       "allow_host_constructor_replay": true,
-      "reason": "Verified 2026-08-14 on the current host: the machine-derived exact-Build-ID profile passed two isolated no-recovery Tier C Vulkan canaries; legacy executable patches and signal recovery remain disabled."
+      "user_game_settings_fullscreen_setter_rva": "0x44fee64",
+      "fmod_output_device_bridge": {
+        "vtable_rva": "0x6b7eee8",
+        "string_constructor_rva": "0x1cfd5ec",
+        "count_method_rva": "0x32736d2",
+        "info_method_rva": "0x3273772",
+        "current_method_rva": "0x3273722",
+        "select_method_rva": "0x32734a6"
+      },
+      "reason": "Verified 2026-08-28 on the current host: the machine-derived exact-Build-ID profile passed two isolated no-recovery Tier C Vulkan canaries; fullscreen state synchronization and Build-ID-scoped FmodAudioDevice output interposition were re-derived for the current payload; legacy executable patches and signal recovery remain disabled."
     }
   ]
 }

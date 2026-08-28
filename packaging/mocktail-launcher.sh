@@ -219,12 +219,8 @@ ConfigureStandaloneEnvironment() {
     Die "standalone WebKit environment is incomplete"
   [[ "${WEBKITGTK6_NAMESPACE_DIR}" =~ ^/usr/(lib|lib64|libexec|lib/x86_64-linux-gnu)/webkitgtk-6\.0$ ]] ||
     Die "standalone WebKitGTK 6 namespace path is invalid"
-  export PYTHONHOME="${SUPPORT_ROOT}/python"
-  unset PYTHONPATH PYTHONUSERBASE
-  export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
   export JAVA_HOME="${SUPPORT_ROOT}/jre"
   export SSL_CERT_FILE="${SUPPORT_ROOT}/share/ca-certificates/ca-bundle.crt"
-  export REQUESTS_CA_BUNDLE="${SSL_CERT_FILE}"
   if [[ -n "${ANYLINUX_BIN_DIR}" ]]; then
     export WEBKIT_EXEC_PATH="${ANYLINUX_BIN_DIR}"
     export GST_PLUGIN_SCANNER="${ANYLINUX_BIN_DIR}/gst-plugin-scanner"
@@ -403,15 +399,6 @@ CheckCommand() {
   return 1
 }
 
-CheckPythonModule() {
-  local name="$1"
-  if python3 -c "import ${name}" >/dev/null 2>&1; then
-    return 0
-  fi
-  printf '  missing Python module: %s\n' "${name}" >&2
-  return 1
-}
-
 CheckElfDependencies() {
   local executable="$1"
   local label="$2"
@@ -441,19 +428,10 @@ CheckSystem() {
   fi
 
   local command_name
-  for command_name in bash python3 java jq unzip aapt apksigner file flock \
+  for command_name in bash java jq unzip aapt apksigner file flock \
       timeout readelf sha256sum; do
     CheckCommand "${command_name}" || status=1
   done
-  if command -v python3 >/dev/null 2>&1; then
-    CheckPythonModule yaml || status=1
-    CheckPythonModule requests || status=1
-    if ! python3 -c 'import capstone; raise SystemExit(capstone.cs_version()[0] != 5)' \
-        >/dev/null 2>&1; then
-      printf '  missing Python module: capstone 5\n' >&2
-      status=1
-    fi
-  fi
   if ! "${ANDROID_TOOL_EXEC_DIR}/aapt" version >/dev/null 2>&1; then
     printf '  bundled Android APK analyzer cannot execute\n' >&2
     status=1
@@ -487,12 +465,12 @@ CheckSystem() {
   if (( status != 0 )); then
     if [[ "${ABI_LIBC}" == glibc ]]; then
       printf '\nArch example:\n' >&2
-      printf '  sudo pacman -S --needed vulkan-icd-loader libadwaita webkitgtk-6.0 jq unzip file binutils jre-openjdk-headless python-yaml python-requests python-capstone\n' >&2
+      printf '  sudo pacman -S --needed vulkan-icd-loader libadwaita webkitgtk-6.0 jq unzip file binutils jre-openjdk-headless\n' >&2
       printf '\nVoid x86_64-glibc example:\n' >&2
     else
       printf '\nVoid x86_64-musl example:\n' >&2
     fi
-    printf '  sudo xbps-install -S vulkan-loader libadwaita libwebkitgtk60 jq unzip file binutils openjdk17-jre python3-yaml python3-requests capstone-python3\n' >&2
+    printf '  sudo xbps-install -S vulkan-loader libadwaita libwebkitgtk60 jq unzip file binutils openjdk17-jre\n' >&2
     printf 'Install the Vulkan ICD matching the GPU (for example vulkan-radeon, nvidia-utils, or vulkan-intel).\n' >&2
     return "${status}"
   fi
@@ -546,7 +524,6 @@ export MOCKTAIL_UPDATE_HOST_ABI_REFERENCE="${METADATA_DIR}/roblox_host_abi_refer
 export MOCKTAIL_BOOTSTRAP_SOURCES_PATH="${METADATA_DIR}/roblox_bootstrap_sources.json"
 export MOCKTAIL_UPDATE_HELPER="${UPDATE_HELPER}"
 export MOCKTAIL_UPDATE_CANARY_BIN="${MAIN_BINARY}"
-export MOCKTAIL_UPDATE_SMOKE_SCRIPT="${RUNTIME_ROOT}/scripts/real_bringup_smoke.sh"
 export MOCKTAIL_BIN="${MAIN_BINARY}"
 export MOCKTAIL_PORTABLE_MODE="${ABI_MODE}"
 

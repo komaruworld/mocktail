@@ -75,6 +75,23 @@ TEST(BuildProfileTest, Payload2908IsSupportedWithoutBinaryPatches) {
   EXPECT_FALSE(result.profile->allow_legacy_binary_patches);
   EXPECT_TRUE(result.profile->allow_host_abi_bridges);
   EXPECT_TRUE(result.profile->allow_host_constructor_replay);
+  ASSERT_TRUE(
+      result.profile->user_game_settings_fullscreen_setter_rva.has_value());
+  EXPECT_EQ(*result.profile->user_game_settings_fullscreen_setter_rva,
+            0x44fee64U);
+  ASSERT_TRUE(result.profile->fmod_output_device_bridge.has_value());
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->vtable_rva,
+            0x6b7eee8U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->string_constructor_rva,
+            0x1cfd5ecU);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->count_method_rva,
+            0x32736d2U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->info_method_rva,
+            0x3273772U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->current_method_rva,
+            0x3273722U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->select_method_rva,
+            0x32734a6U);
 }
 
 TEST(BuildProfileTest, ReportsUnknownBuildWithoutInventingProfile) {

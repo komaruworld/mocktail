@@ -56,19 +56,7 @@ readonly -a PROJECT_ARTIFACTS=(
 readonly FREEBSD_SOCKET_HELPER="mocktail_freebsd_socket_helper"
 
 readonly -a RUNTIME_SCRIPTS=(
-  auto_update_roblox.sh
-  derive_roblox_host_abi_profile.py
-  fetch_roblox_apks.sh
-  update_roblox_payload.sh
-  payload_store.sh
-  payload_integrity.sh
-  real_bringup_smoke.sh
-  audio_readiness_gate.sh
-  input_readiness_gate.sh
-  resize_readiness_gate.sh
-  network_readiness_gate.sh
   collect_support_bundle.sh
-  read_update_config.py
 )
 
 readonly STANDALONE_SUPPORT_PACKAGER="${PROJECT_ROOT}/scripts/package_standalone_support.sh"
@@ -487,8 +475,8 @@ AuditThinDependencies() {
 CopyRuntimeTree() {
   local runtime_root="${STAGING}/mocktail"
   mkdir -p -- "${runtime_root}/bin" "${runtime_root}/lib" \
-    "${runtime_root}/scripts/apk_providers" \
-    "${runtime_root}/metadata" "${runtime_root}/runtime"
+    "${runtime_root}/scripts" "${runtime_root}/metadata" \
+    "${runtime_root}/runtime"
   chmod 0755 -- "${STAGING}"
 
   local artifact mode
@@ -516,11 +504,6 @@ CopyRuntimeTree() {
     install -m 0755 -- "${PROJECT_ROOT}/scripts/${script}" \
       "${runtime_root}/scripts/${script}"
   done
-  install -m 0755 -- "${PROJECT_ROOT}/scripts/apk_providers/direct_apkpure.py" \
-    "${PROJECT_ROOT}/scripts/apk_providers/direct_apkpure.sh" \
-    "${PROJECT_ROOT}/scripts/apk_providers/direct_uptodown.py" \
-    "${PROJECT_ROOT}/scripts/apk_providers/direct_uptodown.sh" \
-    "${runtime_root}/scripts/apk_providers/"
 }
 
 CopyApkAnalyzerClasspath() {
@@ -881,7 +864,7 @@ VerifyBundle() {
   if [[ "${MODE}" == standalone ]]; then
     local support_elf
     for support_elf in \
-        runtime/bin/bash runtime/bin/python3 runtime/jre/bin/java \
+        runtime/bin/bash runtime/jre/bin/java \
         runtime/bin/bwrap runtime/bin/xdg-dbus-proxy \
         libexec/webkitgtk-6.0/WebKitWebProcess \
         libexec/gstreamer-1.0/gst-plugin-scanner; do

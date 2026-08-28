@@ -67,10 +67,13 @@ struct RobloxTextDisplayUpdate {
   int32_t area_width = 0;
   int32_t area_height = 0;
   float font_size = 0.0F;
+  bool multiline = false;
   int32_t x_alignment = 0;
   int32_t y_alignment = 1;
   int32_t text_color = 0;
+  int32_t font = 0;
   int32_t text_input_type = 0;
+  bool text_wrapped = false;
   const char* utf8 = nullptr;
   std::size_t utf8_size = 0;
   int32_t cursor_utf16 = 0;
