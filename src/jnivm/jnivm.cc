@@ -344,9 +344,67 @@ void Trace(const char* name) {
   }
 }
 
+enum class JniMethodTag : uint16_t {
+  kUnknown = 0,
+  kMessageBusRun,
+  kOnAppBridgeNotificationA,
+  kEngineJavaCallbackF,
+  kSetBaseUrl,
+  kSetCookie,
+  kBootstrapTheApp,
+  kReportNativeCrash,
+  kSyncCookiesFromEngine,
+  kGameActivityOnDidLogInReceived,
+  kGameActivityOnLuaAppDidReturn,
+  kFmodAudioDeviceInit,
+  kFmodAudioDeviceClose,
+  kFmodAudioDeviceStart,
+  kFmodAudioDeviceStop,
+  kWebRtcRecordInit,
+  kWebRtcRecordStart,
+  kWebRtcRecordStop,
+  kWebRtcTrackInit,
+  kWebRtcTrackStart,
+  kWebRtcTrackStop,
+  kWebRtcTrackSetVolume,
+  kShowKeyboard,
+  kHideKeyboard,
+  kSetKeyboardText,
+};
+
+inline JniMethodTag ResolveMethodTag(const char* name, const char* sig) {
+  if (!name) return JniMethodTag::kUnknown;
+  if (std::strcmp(name, "run") == 0) return JniMethodTag::kMessageBusRun;
+  if (std::strcmp(name, "a") == 0) return JniMethodTag::kOnAppBridgeNotificationA;
+  if (std::strcmp(name, "f") == 0) return JniMethodTag::kEngineJavaCallbackF;
+  if (std::strcmp(name, "setBaseUrl") == 0) return JniMethodTag::kSetBaseUrl;
+  if (std::strcmp(name, "setCookie") == 0) return JniMethodTag::kSetCookie;
+  if (std::strcmp(name, "bootstrapTheApp") == 0) return JniMethodTag::kBootstrapTheApp;
+  if (std::strcmp(name, "reportNativeCrash") == 0) return JniMethodTag::kReportNativeCrash;
+  if (std::strcmp(name, "syncCookiesFromEngine") == 0) return JniMethodTag::kSyncCookiesFromEngine;
+  if (std::strcmp(name, "gameActivity_onDidLogInReceived") == 0) return JniMethodTag::kGameActivityOnDidLogInReceived;
+  if (std::strcmp(name, "gameActivity_onLuaAppDidReturn") == 0) return JniMethodTag::kGameActivityOnLuaAppDidReturn;
+  if (std::strcmp(name, "init") == 0) return JniMethodTag::kFmodAudioDeviceInit;
+  if (std::strcmp(name, "close") == 0) return JniMethodTag::kFmodAudioDeviceClose;
+  if (std::strcmp(name, "start") == 0) return JniMethodTag::kFmodAudioDeviceStart;
+  if (std::strcmp(name, "stop") == 0) return JniMethodTag::kFmodAudioDeviceStop;
+  if (std::strcmp(name, "InitRecording") == 0) return JniMethodTag::kWebRtcRecordInit;
+  if (std::strcmp(name, "StartRecording") == 0) return JniMethodTag::kWebRtcRecordStart;
+  if (std::strcmp(name, "StopRecording") == 0) return JniMethodTag::kWebRtcRecordStop;
+  if (std::strcmp(name, "InitPlayout") == 0) return JniMethodTag::kWebRtcTrackInit;
+  if (std::strcmp(name, "StartPlayout") == 0) return JniMethodTag::kWebRtcTrackStart;
+  if (std::strcmp(name, "StopPlayout") == 0) return JniMethodTag::kWebRtcTrackStop;
+  if (std::strcmp(name, "SetSpeakerVolume") == 0) return JniMethodTag::kWebRtcTrackSetVolume;
+  if (std::strcmp(name, "gameActivity_showKeyboard") == 0) return JniMethodTag::kShowKeyboard;
+  if (std::strcmp(name, "gameActivity_hideKeyboard") == 0) return JniMethodTag::kHideKeyboard;
+  if (std::strcmp(name, "gameActivity_setKeyboardText") == 0) return JniMethodTag::kSetKeyboardText;
+  return JniMethodTag::kUnknown;
+}
+
 struct JniMethodDescriptor {
   const char* name = nullptr;
   const char* signature = nullptr;
+  JniMethodTag tag = JniMethodTag::kUnknown;
 };
 
 static std::list<JniMethodDescriptor> g_method_descriptors;
@@ -393,7 +451,8 @@ jmethodID StoreMethodId(const char* name, const char* sig) {
   g_method_signature_storage.emplace_back(sig ? sig : "");
   const char* stored_name = g_method_name_storage.back().c_str();
   const char* stored_signature = g_method_signature_storage.back().c_str();
-  g_method_descriptors.push_back({stored_name, stored_signature});
+  g_method_descriptors.push_back(
+      {stored_name, stored_signature, ResolveMethodTag(stored_name, stored_signature)});
   jmethodID method_id =
       reinterpret_cast<jmethodID>(&g_method_descriptors.back());
   g_method_ids[key] = method_id;
@@ -1812,72 +1871,83 @@ bool HandleAndroidSetWindowFlagsMethodV(jobject obj, jmethodID method_id,
                                         va_list args);
 
 void HandleVoidMethod(jobject obj, jmethodID method_id, va_list args) {
-  const char *name = MethodName(method_id);
-  if (!name) {
+  if (__builtin_expect(method_id == nullptr, 0)) {
     return;
   }
+  const auto *desc = reinterpret_cast<const JniMethodDescriptor *>(method_id);
+  const JniMethodTag tag = desc ? desc->tag : JniMethodTag::kUnknown;
+
   if (HandleAndroidSetWindowFlagsMethodV(obj, method_id, args)) {
     return;
   }
-  const std::string_view class_name = ObjectClassName(obj);
-  if (std::strcmp(name, "run") == 0 &&
-      class_name == "com/roblox/universalapp/messagebus/RawCallback") {
-    jstring message = va_arg(args, jstring);
-    VM *vm = CurrentVM();
-    if (vm != nullptr) {
-      vm->DispatchMessageBusRawCallback(obj, vm->GetJNIEnv(), message);
-    }
-    return;
-  }
-  if (std::strcmp(name, "a") == 0) {
-    if (class_name !=
-        "com/roblox/engine/jni/OnAppBridgeNotificationListener") {
+
+  switch (tag) {
+    case JniMethodTag::kMessageBusRun: {
+      if (ObjectClassName(obj) ==
+          "com/roblox/universalapp/messagebus/RawCallback") {
+        jstring message = va_arg(args, jstring);
+        VM *vm = CurrentVM();
+        if (vm != nullptr) {
+          vm->DispatchMessageBusRawCallback(obj, vm->GetJNIEnv(), message);
+        }
+      }
       return;
     }
-    auto type = va_arg(args, jstring);
-    auto data = va_arg(args, jstring);
-    RecordAppBridgeNotification(obj, type, data);
-    return;
+    case JniMethodTag::kOnAppBridgeNotificationA: {
+      if (ObjectClassName(obj) ==
+          "com/roblox/engine/jni/OnAppBridgeNotificationListener") {
+        auto type = va_arg(args, jstring);
+        auto data = va_arg(args, jstring);
+        RecordAppBridgeNotification(obj, type, data);
+      }
+      return;
+    }
+    case JniMethodTag::kEngineJavaCallbackF: {
+      if (std::strcmp(MethodSignature(method_id),
+                      "(Ljava/lang/String;Ljava/lang/String;)V") == 0 &&
+          ObjectClassName(obj) == "com/roblox/engine/jni/EngineJavaCallback2") {
+        auto type = va_arg(args, jstring);
+        auto data = va_arg(args, jstring);
+        RecordDataModelNotification(obj, type, data);
+      }
+      return;
+    }
+    case JniMethodTag::kSetBaseUrl: {
+      auto value = va_arg(args, jstring);
+      std::string base_url = StringFromJString(value);
+      if (base_url.empty()) {
+        base_url = "https://www.roblox.com";
+      }
+      SetStringFieldRaw(obj, "baseUrl", base_url.c_str());
+      if (TraceEnabled()) {
+        std::cout << "  [JNI] setBaseUrl value=" << base_url << '\n';
+      }
+      return;
+    }
+    case JniMethodTag::kSetCookie: {
+      auto first = va_arg(args, jstring);
+      auto second = va_arg(args, jstring);
+      SetStringFieldRaw(obj, "cookieName", StringFromJString(first).c_str());
+      SetStringFieldRaw(obj, "cookieValue", StringFromJString(second).c_str());
+      StoreCookieHeader(StringFromJString(second));
+      return;
+    }
+    case JniMethodTag::kBootstrapTheApp: {
+      SetBooleanFieldRaw(obj, "bootstrapStarted", JNI_TRUE);
+      if (TraceEnabled()) {
+        std::cout << "  [JNI] MainGameActivity.bootstrapTheApp no-op; "
+                  << "native bootstrap is driven by Mocktail\n";
+      }
+      return;
+    }
+    default:
+      break;
   }
-  if (std::strcmp(name, "f") == 0 &&
-      std::strcmp(MethodSignature(method_id),
-                  "(Ljava/lang/String;Ljava/lang/String;)V") == 0 &&
-      class_name == "com/roblox/engine/jni/EngineJavaCallback2") {
-    auto type = va_arg(args, jstring);
-    auto data = va_arg(args, jstring);
-    RecordDataModelNotification(obj, type, data);
-    return;
-  }
+
+  const char *name = desc ? desc->name : MethodName(method_id);
+  const std::string_view class_name = ObjectClassName(obj);
   if (class_name == "com/roblox/engine/jni/EngineJavaCallback2" &&
       std::strlen(name) == 1 && name[0] >= 'b' && name[0] <= 'o') {
-    return;
-  }
-  if (std::strcmp(name, "setBaseUrl") == 0) {
-    auto value = va_arg(args, jstring);
-    std::string base_url = StringFromJString(value);
-    if (base_url.empty()) {
-      base_url = "https://www.roblox.com";
-    }
-    SetStringFieldRaw(obj, "baseUrl", base_url.c_str());
-    if (TraceEnabled()) {
-      std::cout << "  [JNI] setBaseUrl value=" << base_url << '\n';
-    }
-    return;
-  }
-  if (std::strcmp(name, "setCookie") == 0) {
-    auto first = va_arg(args, jstring);
-    auto second = va_arg(args, jstring);
-    SetStringFieldRaw(obj, "cookieName", StringFromJString(first).c_str());
-    SetStringFieldRaw(obj, "cookieValue", StringFromJString(second).c_str());
-    StoreCookieHeader(StringFromJString(second));
-    return;
-  }
-  if (std::strcmp(name, "bootstrapTheApp") == 0) {
-    SetBooleanFieldRaw(obj, "bootstrapStarted", JNI_TRUE);
-    if (TraceEnabled()) {
-      std::cout << "  [JNI] MainGameActivity.bootstrapTheApp no-op; "
-                << "native bootstrap is driven by Mocktail\n";
-    }
     return;
   }
   if (std::strcmp(name, "setImeEditorInfoFields") == 0 ||

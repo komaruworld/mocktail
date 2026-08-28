@@ -3221,30 +3221,21 @@ void PumpRobloxMainThreadMessagesOnce() {
   if (pump_limit > 0 && pump_count > pump_limit) {
     return;
   }
-  if (trace_pump) {
+  if (__builtin_expect(trace_pump, 0)) {
     if (pump_count <= 10 || pump_count % 100 == 0) {
       std::cerr << "  [main] nativeCallMessagesFromMainThread pump #"
                 << pump_count << " env=" << static_cast<void*>(env) << '\n'
                 << std::flush;
     }
   }
-  if (sigsetjmp(g_call_messages_from_main_thread_jmp_buf, 0) == 0) {
-    g_call_messages_from_main_thread_recovery_in_progress = 1;
-    g_stage6_empty_gl_helper_returns = 0;
-    g_native_call_messages_from_main_thread(
-        env, g_native_gl_class_for_main_thread);
-    g_call_messages_from_main_thread_recovery_in_progress = 0;
-    if (trace_pump) {
-      if (pump_count <= 10 || pump_count % 100 == 0) {
-        std::cerr << "  [main] nativeCallMessagesFromMainThread returned #"
-                  << pump_count << '\n'
-                  << std::flush;
-      }
+  g_native_call_messages_from_main_thread(
+      env, g_native_gl_class_for_main_thread);
+  if (__builtin_expect(trace_pump, 0)) {
+    if (pump_count <= 10 || pump_count % 100 == 0) {
+      std::cerr << "  [main] nativeCallMessagesFromMainThread returned #"
+                << pump_count << '\n'
+                << std::flush;
     }
-  } else {
-    g_call_messages_from_main_thread_recovery_in_progress = 0;
-    std::cerr << "  [main] nativeCallMessagesFromMainThread recovered\n"
-              << std::flush;
   }
 }
 
