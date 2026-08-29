@@ -90,6 +90,7 @@ add_library(mocktail_graphics_foundation STATIC
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/graphics_backend.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/angle_probe.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/bionic_egl_bridge.cc
+  ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/system_egl_probe.cc
 )
 target_include_directories(mocktail_graphics_foundation
   PUBLIC ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/include
@@ -97,6 +98,7 @@ target_include_directories(mocktail_graphics_foundation
 )
 target_link_libraries(mocktail_graphics_foundation PRIVATE
   Mocktail::AngleHeaders
+  SDL3::SDL3
   ${CMAKE_DL_LIBS}
 )
 target_compile_features(mocktail_graphics_foundation PUBLIC cxx_std_17)
@@ -131,6 +133,14 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
   add_executable(platform_graphics_foundation_test
     ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/tests/platform_graphics_foundation_test.cc
   )
+  add_executable(system_egl_probe_test
+    ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/tests/system_egl_probe_test.cc
+  )
+  target_link_libraries(system_egl_probe_test PRIVATE
+    Mocktail::GraphicsFoundation
+    SDL3::SDL3
+    GTest::gtest_main
+  )
   add_executable(display_refresh_capabilities_test
     ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/tests/display_refresh_capabilities_test.cc
   )
@@ -154,6 +164,7 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(bionic_egl_bridge_test)
   gtest_discover_tests(platform_graphics_foundation_test)
+  gtest_discover_tests(system_egl_probe_test)
   gtest_discover_tests(display_refresh_capabilities_test)
   gtest_discover_tests(present_mode_policy_test)
 endif()

@@ -61,6 +61,10 @@ graphics:
   # Supported values: display, unlimited, 30, 60, 120, 144, 240. Unlimited
   # selects Roblox's unmodified 240-FPS scheduler maximum.
   frame_rate_limit: display
+  # String/integer (default: auto): pin the OpenGL ES client version for the
+  # system-egl (OpenGL) backend. Supported: auto, 3.0, 3.1, 3.2 (or 30/31/32).
+  # auto lets the driver and Roblox negotiate the highest compatible version.
+  gles_version: auto
   # String (default: auto): presentation synchronization: auto, on, or off.
   vsync: auto
 

@@ -64,6 +64,7 @@
 #include "libc_shim/libc_shim.h"
 #include "linker/linker.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
+#include "mocktail/graphics/system_egl_probe.h"
 #include "runtime/discord_rpc.h"
 #include "runtime/environment.h"
 #include "runtime/jnivm_platform_web_callbacks.h"

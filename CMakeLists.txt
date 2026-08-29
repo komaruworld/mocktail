@@ -658,6 +658,7 @@ target_compile_definitions(mocktail_legacy_runtime PRIVATE
 add_executable(mocktail src/main.cc)
 target_include_directories(mocktail PRIVATE include src)
 mocktail_apply_compile_options(mocktail)
+
 target_compile_definitions(mocktail PRIVATE
   "MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=\"${MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST}\""
 )

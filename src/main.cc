@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -13,6 +14,9 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <unistd.h>
+#include <limits.h>
+#include <sys/resource.h>
 #include <vector>
 
 #include "compat/elf_build_id.h"
@@ -212,6 +216,52 @@ void PromptFirstLaunchSignIn(
     }
   } else {
     std::cout << "  [auth] desktop sign-in window closed; continuing as guest\n";
+  }
+}
+
+}  // namespace
+
+namespace {
+// Process-local NVIDIA driver environment hints. Applied only for the system
+// OpenGL backend and each is set only when the user has not already provided a
+// value. Deliberately limited to environment hints: no nvidia-settings /
+// nvidia-smi invocations, no sysfs writes and no automatic renicing.
+void ApplyNvidiaProcessHints(const mocktail::runtime::RuntimeConfig& config) {
+  if (config.graphics_backend() !=
+      mocktail::runtime::GraphicsBackend::kSystem) {
+    return;
+  }
+  if (access("/proc/driver/nvidia/version", R_OK) != 0) {
+    return;
+  }
+  std::cerr << "[runtime] NVIDIA GPU detected; applying process-local GL hints\n";
+
+  auto set_if_unset = [](const char* name, const char* value) {
+    if (std::getenv(name) == nullptr) {
+      setenv(name, value, 1);
+    }
+  };
+
+  // USLEEP yield is the documented fix for the 1-2s periodic stutter on
+  // NVIDIA's OpenGL path (avoids busy-spin waits that desync vsync).
+  set_if_unset("__GL_YIELD", "USLEEP");
+  // Multi-threaded GL command submission.
+  set_if_unset("__GL_THREADED_OPTIMIZATIONS", "1");
+  // Let SDL bypass the X11 compositor for our window (fewer present hops).
+  set_if_unset("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "1");
+  // Allow adaptive sync (G-Sync/FreeSync) when the display supports it.
+  set_if_unset("__GL_VRR_ALLOWED", "1");
+  // Persist compiled shaders to disk so the "stutter when something new loads"
+  // is a one-time cost, reused across sessions for the same binary.
+  set_if_unset("__GL_SHADER_DISK_CACHE", "1");
+  set_if_unset("__GL_SHADER_DISK_CACHE_SIZE", "2147483648");
+  // Honour graphics.vsync ("off" uncaps the frame rate; anything else syncs to
+  // the display vblank). Only set the driver-level hint when the user has not
+  // already overridden it.
+  if (std::getenv("__GL_SYNC_TO_VBLANK") == nullptr) {
+    const char* vsync = std::getenv("MOCKTAIL_VSYNC");
+    const bool vsync_off = vsync != nullptr && std::strcmp(vsync, "off") == 0;
+    setenv("__GL_SYNC_TO_VBLANK", vsync_off ? "0" : "1", 1);
   }
 }
 
@@ -469,6 +519,14 @@ int main(int argc, char* argv[]) {
                       : "")
               << '\n';
   }
+  if (const int gles_version =
+          runtime_config.config.system_egl_gles_version();
+      gles_version != 0 &&
+      std::getenv("MOCKTAIL_SYSTEM_GLES_VERSION") == nullptr) {
+    const char* value =
+        gles_version == 32 ? "32" : gles_version == 31 ? "31" : "30";
+    setenv("MOCKTAIL_SYSTEM_GLES_VERSION", value, 1);
+  }
 
   // Register before starting helper processes or loading the Android payload.
   // libgamemode caches its shared
@@ -681,6 +739,7 @@ int main(int argc, char* argv[]) {
     std::cerr << command_line_error << '\n';
     return EXIT_FAILURE;
   }
+  ApplyNvidiaProcessHints(runtime_config.config);
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       !environment.HasNonEmpty("MOCKTAIL_NATIVE_SET_DEFAULT_POLICY_FILE") &&
       setenv("MOCKTAIL_NATIVE_SET_DEFAULT_POLICY_FILE", "1", 1) != 0) {

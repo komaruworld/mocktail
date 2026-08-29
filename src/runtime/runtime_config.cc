@@ -176,6 +176,18 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       "MOCKTAIL_GRAPHICS_BACKEND", config.graphics_backend_name_);
   config.graphics_backend_ =
       ParseGraphicsBackend(config.graphics_backend_name_);
+  if (const auto gles_version =
+          environment.Get("MOCKTAIL_SYSTEM_GLES_VERSION");
+      gles_version.has_value()) {
+    const std::string& v = *gles_version;
+    if (v == "30" || v == "3.0") {
+      config.system_egl_gles_version_ = 30;
+    } else if (v == "31" || v == "3.1") {
+      config.system_egl_gles_version_ = 31;
+    } else if (v == "32" || v == "3.2") {
+      config.system_egl_gles_version_ = 32;
+    }
+  }
   config.window_.width =
       ReadPositiveInt(environment, "MOCKTAIL_WIN_WIDTH", config.window_.width);
   config.window_.height = ReadPositiveInt(environment, "MOCKTAIL_WIN_HEIGHT",

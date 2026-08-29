@@ -50,10 +50,6 @@ bool SetDefault(const char* name, const std::string& value,
   return SetValue(name, value, error);
 }
 
-bool IsStrictOpenGlName(const std::string& name) {
-  return name == "opengl" || name == "gles";
-}
-
 bool EnvIsOff(const char* name) {
   const char* value = std::getenv(name);
   return value != nullptr &&
@@ -225,7 +221,7 @@ bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
     return false;
   }
 
-  if (IsStrictOpenGlName(config.graphics_backend_name()) &&
+  if (config.graphics_backend() == GraphicsBackend::kSystem &&
       (!SetValue("MOCKTAIL_DISABLE_AUTO_ANGLE_FALLBACK", "1", error) ||
        !SetValue("MOCKTAIL_SOFTWARE_WINDOW_FALLBACK", "0", error))) {
     return false;

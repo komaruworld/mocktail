@@ -80,6 +80,8 @@ class RuntimeConfig {
   const std::string& graphics_backend_name() const {
     return graphics_backend_name_;
   }
+  // system-egl (OpenGL) backend GLES version pin: 0 = auto, 30/31/32 = force.
+  int system_egl_gles_version() const { return system_egl_gles_version_; }
   const WindowConfig& window() const { return window_; }
   const std::string& theme_mode() const { return theme_mode_; }
   bool theme_mode_valid() const {
@@ -134,6 +136,7 @@ class RuntimeConfig {
   std::filesystem::path roblox_library_path_ = "rbx_bin/libroblox.so";
   GraphicsBackend graphics_backend_ = GraphicsBackend::kVulkan;
   std::string graphics_backend_name_ = "direct-vulkan";
+  int system_egl_gles_version_ = 0;
   WindowConfig window_;
   std::string theme_mode_ = "system";
   InputCapabilityConfig input_capabilities_;

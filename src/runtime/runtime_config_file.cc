@@ -171,6 +171,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "appearance.theme",
       "graphics.backend",
       "graphics.frame_rate_limit",
+      "graphics.gles_version",
       "graphics.vsync",
       "performance.multithreaded_rendering",
       "performance.physics_worker_mode",
@@ -321,6 +322,24 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_FRAME_RATE_LIMIT"] = *frame_rate;
+  }
+  if (const auto gles_version = value("graphics.gles_version");
+      gles_version.has_value()) {
+    const std::string& v = *gles_version;
+    if (v == "auto" || v == "0" || v.empty()) {
+      // auto: leave MOCKTAIL_SYSTEM_GLES_VERSION unset so the driver and
+      // Roblox negotiate the highest compatible OpenGL ES version.
+    } else if (v == "3.0" || v == "30") {
+      (*environment)["MOCKTAIL_SYSTEM_GLES_VERSION"] = "30";
+    } else if (v == "3.1" || v == "31") {
+      (*environment)["MOCKTAIL_SYSTEM_GLES_VERSION"] = "31";
+    } else if (v == "3.2" || v == "32") {
+      (*environment)["MOCKTAIL_SYSTEM_GLES_VERSION"] = "32";
+    } else {
+      *error = "graphics.gles_version is not supported: " + v +
+               " (use auto, 3.0, 3.1, 3.2, or 30/31/32)";
+      return false;
+    }
   }
   if (const auto vsync = value("graphics.vsync"); vsync.has_value()) {
     if (*vsync != "auto" && *vsync != "on" && *vsync != "off") {
