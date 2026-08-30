@@ -443,6 +443,15 @@ target_link_libraries(window_surface_lifecycle_test PRIVATE
 )
 mocktail_apply_compile_options(window_surface_lifecycle_test)
 
+add_executable(window_creation_policy_test
+  window_creation_policy_test.cc
+)
+target_link_libraries(window_creation_policy_test PRIVATE
+  mocktail_window
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(window_creation_policy_test)
+
 add_executable(window_game_surface_bridge_test
   window_game_surface_bridge_test.cc
 )
@@ -878,6 +887,7 @@ gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
 gtest_discover_tests(video_driver_policy_test)
 gtest_discover_tests(window_surface_lifecycle_test)
+gtest_discover_tests(window_creation_policy_test)
 gtest_discover_tests(window_game_surface_bridge_test)
 gtest_discover_tests(window_resize_readiness_gate_test)
 gtest_discover_tests(window_fullscreen_request_gate_test)

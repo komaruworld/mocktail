@@ -29,6 +29,7 @@
 #include "window/vulkan_surface_recovery_gate.h"
 #include "window/window_fullscreen_request_gate.h"
 #include "window/window_fullscreen_state_sync.h"
+#include "window/window_creation_policy.h"
 #include "window/window_pointer_capture_owner.h"
 #include "window/window_resize_readiness_gate.h"
 #include "window/window_state_store.h"
@@ -801,10 +802,8 @@ bool CreateSoftwareWaitingWindow(int width, int height, const char* title) {
   fprintf(stderr,
           "  [window] TEST-ONLY graphics stubs explicitly enabled; creating "
           "a non-rendering waiting window\n");
-  SDL_WindowFlags window_flags = 0;
-  if (!IsEnabledEnv("MOCKTAIL_DISABLE_HIGH_DPI")) {
-    window_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
-  }
+  SDL_WindowFlags window_flags = ApplyHighPixelDensityWindowFlag(
+      0, IsEnabledEnv("MOCKTAIL_WIN_HIGH_DPI"));
   if (g_state.state_persistence_active && g_state.persisted_window.fullscreen) {
     window_flags |= SDL_WINDOW_FULLSCREEN;
   } else if (g_state.state_persistence_active &&
@@ -941,10 +940,9 @@ bool Init(int width, int height, const char* title) {
       fprintf(stderr, "  [window] SDL_Init failed: %s\n", SDL_GetError());
       return false;
     }
-    SDL_WindowFlags window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
-    if (!IsEnabledEnv("MOCKTAIL_DISABLE_HIGH_DPI")) {
-      window_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    }
+    SDL_WindowFlags window_flags = ApplyHighPixelDensityWindowFlag(
+        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE,
+        IsEnabledEnv("MOCKTAIL_WIN_HIGH_DPI"));
     if (g_state.state_persistence_active &&
         g_state.persisted_window.fullscreen) {
       window_flags |= SDL_WINDOW_FULLSCREEN;
@@ -1085,10 +1083,9 @@ bool Init(int width, int height, const char* title) {
   SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-  SDL_WindowFlags window_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
-  if (!IsEnabledEnv("MOCKTAIL_DISABLE_HIGH_DPI")) {
-    window_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
-  }
+  SDL_WindowFlags window_flags = ApplyHighPixelDensityWindowFlag(
+      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE,
+      IsEnabledEnv("MOCKTAIL_WIN_HIGH_DPI"));
   if (g_state.state_persistence_active && g_state.persisted_window.fullscreen) {
     window_flags |= SDL_WINDOW_FULLSCREEN;
   } else if (g_state.state_persistence_active &&

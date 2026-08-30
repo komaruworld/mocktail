@@ -28,6 +28,10 @@ struct WindowConfig {
   int width = 1280;
   int height = 720;
   std::string title = "Roblox";
+  // GNOME desktop dimensions are logical units; keep the render surface at
+  // that size unless the user explicitly requests high-density rendering.
+  bool high_dpi = false;
+  bool high_dpi_valid = true;
 };
 
 struct InputCapabilityConfig {

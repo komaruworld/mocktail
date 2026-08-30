@@ -178,10 +178,11 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "performance.gamemode",
       "audio.output_device",
       "audio.input_device",
-      "window.width",
-      "window.height",
-      "window.title",
-      "input.touch_enabled",
+       "window.width",
+       "window.height",
+       "window.title",
+       "window.high_dpi",
+       "input.touch_enabled",
       "compatibility.desktop_playability",
       "network.use_system_proxy",
       "network.proxy_host",
@@ -410,6 +411,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_WIN_TITLE"] = *title;
+  }
+  if (const auto high_dpi = value("window.high_dpi"); high_dpi.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*high_dpi, &parsed)) {
+      *error = "window.high_dpi must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_WIN_HIGH_DPI"] = parsed ? "1" : "0";
   }
   if (const auto touch = value("input.touch_enabled"); touch.has_value()) {
     bool parsed = false;
@@ -722,6 +731,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     result.error = "graphics backend is invalid";
   } else if (!result.config.theme_mode_valid()) {
     result.error = "theme mode is invalid";
+  } else if (!result.config.window().high_dpi_valid) {
+    result.error = "window high-DPI policy is invalid";
   } else if (result.config.vsync_mode() != "auto" &&
              result.config.vsync_mode() != "on" &&
              result.config.vsync_mode() != "off") {
@@ -829,6 +840,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_WIN_HEIGHT",
                           std::to_string(config.window().height), error) &&
       SetEnvironmentValue("MOCKTAIL_WIN_TITLE", config.window().title, error) &&
+      SetEnvironmentValue("MOCKTAIL_WIN_HIGH_DPI",
+                          config.window().high_dpi ? "1" : "0", error) &&
       SetEnvironmentValue(
           "MOCKTAIL_TOUCH_MODE",
           config.input_capabilities().touch_enabled ? "on" : "off", error) &&

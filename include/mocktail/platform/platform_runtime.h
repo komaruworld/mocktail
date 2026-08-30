@@ -26,7 +26,7 @@ struct WindowOptions {
   int height = 720;
   std::string title = "Roblox";
   WindowSurfaceApi surface_api = WindowSurfaceApi::kAngleEgl;
-  bool high_pixel_density = true;
+  bool high_pixel_density = false;
   bool initially_hidden = true;
 
   // Production callers should keep this true. Tests using SDL's dummy driver

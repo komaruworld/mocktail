@@ -98,12 +98,15 @@ integrations:
     # application_id: 123456789012345678
 
 window:
-  # Integer (default: 1280): initial window width in pixels.
+  # Integer (default: 1280): initial window width in logical desktop units.
   width: 1280
-  # Integer (default: 720): initial window height in pixels.
+  # Integer (default: 720): initial window height in logical desktop units.
   height: 720
   # String (default: Roblox): window title.
   title: Roblox
+  # Boolean (default: false): render at physical display-pixel density instead
+  # of the logical desktop resolution. Enable only for sharper high-DPI output.
+  high_dpi: false
 
 network:
   # Boolean (default: false): follow the host HTTP/SOCKS5 proxy and

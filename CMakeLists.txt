@@ -455,6 +455,7 @@ add_library(mocktail_window STATIC
   src/window/roblox_fullscreen_menu_request_gate.cc
   src/window/video_driver_policy.cc
   src/window/window.cc
+  src/window/window_creation_policy.cc
   src/window/window_fullscreen_request_gate.cc
   src/window/window_game_surface_bridge.cc
   src/window/window_pointer_capture_owner.cc

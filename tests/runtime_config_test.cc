@@ -43,6 +43,8 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_EQ(config.window().width, 1280);
   EXPECT_EQ(config.window().height, 720);
   EXPECT_EQ(config.window().title, "Roblox");
+  EXPECT_FALSE(config.window().high_dpi);
+  EXPECT_TRUE(config.window().high_dpi_valid);
   EXPECT_FALSE(config.input_capabilities().touch_enabled);
   EXPECT_TRUE(config.input_capabilities().mouse_enabled);
   EXPECT_TRUE(config.input_capabilities().keyboard_enabled);
@@ -94,6 +96,7 @@ TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
       {"MOCKTAIL_WIN_WIDTH", "1920"},
       {"MOCKTAIL_WIN_HEIGHT", "1080"},
       {"MOCKTAIL_WIN_TITLE", "Mocktail Test"},
+      {"MOCKTAIL_WIN_HIGH_DPI", "true"},
       {"MOCKTAIL_TOUCH_MODE", "on"},
       {"MOCKTAIL_DESKTOP_PLAYABILITY", "0"},
       {"MOCKTAIL_FRAME_RATE_LIMIT", "144"},
@@ -122,6 +125,8 @@ TEST(RuntimeConfigTest, ReadsTypedRuntimeValues) {
   EXPECT_EQ(config.window().width, 1920);
   EXPECT_EQ(config.window().height, 1080);
   EXPECT_EQ(config.window().title, "Mocktail Test");
+  EXPECT_TRUE(config.window().high_dpi);
+  EXPECT_TRUE(config.window().high_dpi_valid);
   EXPECT_TRUE(config.input_capabilities().touch_enabled);
   EXPECT_FALSE(config.desktop_playability());
   EXPECT_FALSE(config.roblox_http_user_agent().has_value());
