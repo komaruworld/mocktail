@@ -2616,7 +2616,7 @@ bool IsEnabled(const char* name) {
     return false;
   }
   const char* value = std::getenv(name);
-  return value != nullptr && value[0] != '\0' && std::string(value) != "0";
+  return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 }
 
 bool IsDisabled(const char* name) {
@@ -2749,6 +2749,7 @@ void EnableFullTraceIfRequested() {
   for (const char* name : kTraceEnvNames) {
     setenv(name, "1", 1);
   }
+  jnivm::RefreshJniTraceFlags();
 }
 
 void SetEnvDefault(const char* name, const char* value) {
@@ -30085,6 +30086,7 @@ void* DelayedStartLuaAppThread(void* arg) {
 
   if (IsEnabled("MOCKTAIL_TRACE_START_LUA_JNI")) {
     setenv("MOCKTAIL_JNI_TRACE", "1", 1);
+    jnivm::RefreshJniTraceFlags();
   }
 
   std::cout << "  [engine] delayed nativeAppBridgeStartLuaAppDM\n"
@@ -30866,6 +30868,7 @@ void* EngineStartupThread(void* arg) {
               << std::flush;
     if (IsEnabled("MOCKTAIL_TRACE_POST_CLIENT_SETTINGS_JNI")) {
       setenv("MOCKTAIL_JNI_TRACE", "1", 1);
+      jnivm::RefreshJniTraceFlags();
     }
     if (sigsetjmp(g_post_client_settings_jmp_buf, 1) == 0) {
       g_post_client_settings_recovery_in_progress = 1;
@@ -30958,6 +30961,7 @@ void* EngineStartupThread(void* arg) {
     env = ensure_env();
     if (IsEnabled("MOCKTAIL_TRACE_APP_BRIDGE_APP_START_JNI")) {
       setenv("MOCKTAIL_JNI_TRACE", "1", 1);
+      jnivm::RefreshJniTraceFlags();
     }
     if (context->native_set_is_first_install) {
       std::cout << "  [engine] NativeAppBridgeInterface.setIsFirstInstall\n"
@@ -31366,6 +31370,7 @@ void* EngineStartupThread(void* arg) {
       env = ensure_env();
       if (IsEnabled("MOCKTAIL_TRACE_START_LUA_JNI")) {
         setenv("MOCKTAIL_JNI_TRACE", "1", 1);
+        jnivm::RefreshJniTraceFlags();
       }
       std::cout << "  [engine] nativeAppBridgeStartLuaAppDM\n"
                 << std::flush;
@@ -31675,6 +31680,7 @@ void* EngineStartupThread(void* arg) {
     env = ensure_env();
     if (IsEnabled("MOCKTAIL_TRACE_START_LUA_JNI")) {
       setenv("MOCKTAIL_JNI_TRACE", "1", 1);
+      jnivm::RefreshJniTraceFlags();
     }
     std::cout << "  [engine] post-StartApp nativeAppBridgeStartLuaAppDM\n"
               << std::flush;
@@ -34362,6 +34368,9 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       return true;
     };
     int main_loop_ticks = 0;
+    // Sampled once: std::getenv rescans the whole environment and this runs on
+    // every pump iteration.
+    const bool trace_main_loop = IsEnabled("MOCKTAIL_TRACE_MAIN_LOOP");
     while (true) {
       const bool keep_window_open = mocktail::window::PumpEvents();
       game_surface_events_completed = drain_game_surface_events();
@@ -34369,7 +34378,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         break;
       }
       ++main_loop_ticks;
-      if (IsEnabled("MOCKTAIL_TRACE_MAIN_LOOP") &&
+      if (trace_main_loop &&
           (main_loop_ticks <= 10 || main_loop_ticks % 100 == 0)) {
         std::cerr << "  [main] SDL event loop tick #" << main_loop_ticks
                   << '\n'
@@ -34388,6 +34397,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         }
         if (IsEnabled("MOCKTAIL_TRACE_START_LUA_JNI")) {
           setenv("MOCKTAIL_JNI_TRACE", "1", 1);
+          jnivm::RefreshJniTraceFlags();
         }
         std::cout << "  [main] delayed nativeAppBridgeStartLuaAppDM\n"
                   << std::flush;

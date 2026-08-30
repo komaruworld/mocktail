@@ -1,6 +1,7 @@
 #include "jnivm/jnivm.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cstdarg>
@@ -295,19 +296,40 @@ std::shared_ptr<Class> FallbackClassForName(const std::string& class_name) {
   return cls;
 }
 
-bool TraceEnabled() {
-  return std::getenv("MOCKTAIL_JNI_TRACE") != nullptr;
-}
-
 bool EnvironmentTraceEnabled(const char* name) {
   const char* value = std::getenv(name);
   return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 }
 
+// These toggles sit on the per-call JNI dispatch path, where std::getenv costs
+// hundreds of nanoseconds because it rescans the whole environment. The value
+// is sampled on first use -- which happens long after startup has finished
+// writing the environment -- and cached until a runtime toggle overrides it.
+constexpr int kTraceStateUnknown = -1;
+std::atomic<int> g_jni_trace_state{kTraceStateUnknown};
+std::atomic<int> g_jni_string_trace_state{kTraceStateUnknown};
+
+bool CachedTraceState(std::atomic<int>* state, bool (*sample)()) {
+  int cached = state->load(std::memory_order_relaxed);
+  if (cached == kTraceStateUnknown) {
+    cached = sample() ? 1 : 0;
+    state->store(cached, std::memory_order_relaxed);
+  }
+  return cached != 0;
+}
+
+bool TraceEnabled() {
+  return CachedTraceState(&g_jni_trace_state, [] {
+    return std::getenv("MOCKTAIL_JNI_TRACE") != nullptr;
+  });
+}
+
 bool StringTraceEnabled() {
-  return EnvironmentTraceEnabled("MOCKTAIL_JNI_STRING_TRACE") ||
-         EnvironmentTraceEnabled("MOCKTAIL_TRACE_ALL") ||
-         EnvironmentTraceEnabled("MOCKTAIL_FULL_TRACE");
+  return CachedTraceState(&g_jni_string_trace_state, [] {
+    return EnvironmentTraceEnabled("MOCKTAIL_JNI_STRING_TRACE") ||
+           EnvironmentTraceEnabled("MOCKTAIL_TRACE_ALL") ||
+           EnvironmentTraceEnabled("MOCKTAIL_FULL_TRACE");
+  });
 }
 
 void Trace(const char* name) {
@@ -1711,8 +1733,8 @@ void HandleVoidMethod(jobject obj, jmethodID method_id, va_list args) {
     RecordDataModelNotification(obj, type, data);
     return;
   }
-  if (ObjectClassName(obj) == "com/roblox/engine/jni/EngineJavaCallback2" &&
-      std::strlen(name) == 1 && name[0] >= 'b' && name[0] <= 'o') {
+  if (std::strlen(name) == 1 && name[0] >= 'b' && name[0] <= 'o' &&
+      ObjectClassName(obj) == "com/roblox/engine/jni/EngineJavaCallback2") {
     return;
   }
   if (std::strcmp(name, "setBaseUrl") == 0) {
@@ -4015,8 +4037,8 @@ void HandleVoidMethodA(jobject obj, jmethodID method_id, const jvalue *args) {
                                 static_cast<jstring>(args[1].l));
     return;
   }
-  if (ObjectClassName(obj) == "com/roblox/engine/jni/EngineJavaCallback2" &&
-      std::strlen(name) == 1 && name[0] >= 'a' && name[0] <= 'o') {
+  if (std::strlen(name) == 1 && name[0] >= 'a' && name[0] <= 'o' &&
+      ObjectClassName(obj) == "com/roblox/engine/jni/EngineJavaCallback2") {
     return;
   }
   if (std::strcmp(name, "setBaseUrl") == 0) {
@@ -4242,16 +4264,16 @@ jboolean JNICALL CallBooleanMethod(JNIEnv* /*env*/, jobject obj,
     handled =
         PackageManagerBooleanResultForMethodV(obj, methodID, args, &result);
   }
+  const char* const method_name = handled ? nullptr : MethodName(methodID);
   if (!handled) {
-    handled =
-        LocalStorageBooleanResultForMethodV(MethodName(methodID), args, &result);
+    handled = LocalStorageBooleanResultForMethodV(method_name, args, &result);
   }
   if (!handled) {
-    handled = CookieBooleanResultForMethod(MethodName(methodID), &result);
+    handled = CookieBooleanResultForMethod(method_name, &result);
   }
   va_end(args);
   return handled ? result
-                 : BooleanResultForReceiverMethod(obj, MethodName(methodID));
+                 : BooleanResultForReceiverMethod(obj, method_name);
 }
 
 jint JNICALL CallIntMethod(JNIEnv* /*env*/, jobject obj, jmethodID methodID, ...) {
@@ -4277,10 +4299,11 @@ jlong JNICALL CallLongMethod(JNIEnv* /*env*/, jobject obj,
     std::cout << "  [JNI] CallLongMethod: " << MethodName(methodID) << '\n';
   }
   jlong result = 0;
-  if (LocalStorageLongResultForMethod(MethodName(methodID), &result)) {
+  const char* const method_name = MethodName(methodID);
+  if (LocalStorageLongResultForMethod(method_name, &result)) {
     return result;
   }
-  return LongResultForReceiverMethod(obj, MethodName(methodID));
+  return LongResultForReceiverMethod(obj, method_name);
 }
 
 jobject ConstructObjectV(jclass clazz, jmethodID methodID, va_list args) {
@@ -4289,28 +4312,29 @@ jobject ConstructObjectV(jclass clazz, jmethodID methodID, va_list args) {
   if (object_class == nullptr) {
     return object;
   }
+  // Resolved once: every branch below asks for the same name and signature, and
+  // each lookup takes the global JNI state lock.
+  const bool long_handle_constructor =
+      std::strcmp(MethodName(methodID), "<init>") == 0 &&
+      std::strcmp(MethodSignature(methodID), "(J)V") == 0;
   if (object_class->GetName() ==
           "com/roblox/universalapp/messagebus/Connection" &&
-      std::strcmp(MethodName(methodID), "<init>") == 0 &&
-      std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+      long_handle_constructor) {
     const jlong handle = va_arg(args, jlong);
     SetLongFieldRaw(object, "a", handle);
     SetLongFieldRaw(object, "f10205a", handle);
     SetLongFieldRaw(object, "nativePtr", handle);
   } else if (object_class->GetName() ==
                  "com/roblox/engine/jni/memstorage/Connection" &&
-             std::strcmp(MethodName(methodID), "<init>") == 0 &&
-             std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+             long_handle_constructor) {
     SetLongFieldRaw(object, "ref", va_arg(args, jlong));
   } else if (object_class->GetName() ==
                  "org/webrtc/voiceengine/WebRtcAudioRecord" &&
-             std::strcmp(MethodName(methodID), "<init>") == 0 &&
-             std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+             long_handle_constructor) {
     SetLongFieldRaw(object, "nativeAudioRecord", va_arg(args, jlong));
   } else if (object_class->GetName() ==
                  "org/webrtc/voiceengine/WebRtcAudioTrack" &&
-             std::strcmp(MethodName(methodID), "<init>") == 0 &&
-             std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+             long_handle_constructor) {
     SetLongFieldRaw(object, "nativeAudioTrack", va_arg(args, jlong));
   } else if (object_class->GetName() ==
                  "com/roblox/engine/jni/model/NativeTextBoxInfo" &&
@@ -4372,27 +4396,28 @@ jobject ConstructObjectA(jclass clazz, jmethodID methodID, const jvalue *args) {
   if (object_class == nullptr || args == nullptr) {
     return object;
   }
+  // Resolved once: every branch below asks for the same name and signature, and
+  // each lookup takes the global JNI state lock.
+  const bool long_handle_constructor =
+      std::strcmp(MethodName(methodID), "<init>") == 0 &&
+      std::strcmp(MethodSignature(methodID), "(J)V") == 0;
   if (object_class->GetName() ==
           "com/roblox/universalapp/messagebus/Connection" &&
-      std::strcmp(MethodName(methodID), "<init>") == 0 &&
-      std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+      long_handle_constructor) {
     SetLongFieldRaw(object, "a", args[0].j);
     SetLongFieldRaw(object, "f10205a", args[0].j);
     SetLongFieldRaw(object, "nativePtr", args[0].j);
   } else if (object_class->GetName() ==
                  "com/roblox/engine/jni/memstorage/Connection" &&
-             std::strcmp(MethodName(methodID), "<init>") == 0 &&
-             std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+             long_handle_constructor) {
     SetLongFieldRaw(object, "ref", args[0].j);
   } else if (object_class->GetName() ==
                  "org/webrtc/voiceengine/WebRtcAudioRecord" &&
-             std::strcmp(MethodName(methodID), "<init>") == 0 &&
-             std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+             long_handle_constructor) {
     SetLongFieldRaw(object, "nativeAudioRecord", args[0].j);
   } else if (object_class->GetName() ==
                  "org/webrtc/voiceengine/WebRtcAudioTrack" &&
-             std::strcmp(MethodName(methodID), "<init>") == 0 &&
-             std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+             long_handle_constructor) {
     SetLongFieldRaw(object, "nativeAudioTrack", args[0].j);
   } else if (object_class->GetName() ==
                  "com/roblox/engine/jni/model/NativeTextBoxInfo" &&
@@ -7014,6 +7039,11 @@ void VM::InitJNIFunctionTables() {
 
   jni_env_ = &jni_env_storage_;
   jni_env_->functions = &native_interface_;
+}
+
+void RefreshJniTraceFlags() {
+  g_jni_trace_state.store(kTraceStateUnknown, std::memory_order_relaxed);
+  g_jni_string_trace_state.store(kTraceStateUnknown, std::memory_order_relaxed);
 }
 
 }  // namespace jnivm

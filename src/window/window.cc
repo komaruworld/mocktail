@@ -2100,7 +2100,9 @@ bool PumpEvents() {
   MaybePersistWindowState();
   MaybeRecoverVulkanSurface();
   MaybeReportVulkanPresentStall();
-  const char* auto_exit_value =
+  // Sampled once: PumpEvents runs at the input-pump rate and std::getenv
+  // rescans the whole environment on every call.
+  static const char* const auto_exit_value =
       GetEnvNonEmpty("MOCKTAIL_AUTO_EXIT_AFTER_PRESENT_MS");
   if (!g_state.quit_requested && auto_exit_value != nullptr) {
     char* end = nullptr;
@@ -2128,7 +2130,12 @@ void PaceInputPump() {
   const uint64_t delay_ns =
       g_input_pump_pacer.DelayBeforeNextPump(SDL_GetTicksNS());
   if (delay_ns != 0) {
-    SDL_DelayPrecise(delay_ns);
+    // SDL_DelayPrecise busy-spins the tail of the interval to land on an exact
+    // deadline. At the input-pump rate that burns a measurable slice of a core
+    // for the whole session. The pacer already rebases a missed deadline
+    // instead of issuing catch-up pumps, so only the average rate matters here
+    // and an ordinary sleep is enough.
+    SDL_DelayNS(delay_ns);
   }
 }
 

@@ -13,13 +13,16 @@ PresentModePolicy ResolvePresentModePolicy(std::string_view vsync_value,
   if (vsync_value == "off" || vsync_value == "0") {
     return PresentModePolicy::kUnthrottled;
   }
-  if (frame_rate_value.empty() || frame_rate_value == "display") {
-    return PresentModePolicy::kVsync;
-  }
+  // VSync `auto` means Mocktail chooses. Only an explicit `unlimited` frame
+  // rate asks for an unthrottled presentation; every other request -- including
+  // a fixed cap such as 60 or 120 -- is a request to render *less*, so the
+  // swapchain stays on FIFO. Leaving the host list unfiltered here let Roblox
+  // pick MAILBOX/IMMEDIATE and render frames the display never shows, which
+  // burns GPU and CPU for no visible benefit.
   if (frame_rate_value == "unlimited") {
     return PresentModePolicy::kUnthrottled;
   }
-  return PresentModePolicy::kHostDefault;
+  return PresentModePolicy::kVsync;
 }
 
 std::vector<VkPresentModeKHR>

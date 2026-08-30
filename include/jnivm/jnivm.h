@@ -508,6 +508,12 @@ private:
   void InitJNIFunctionTables();
 };
 
+// The JNI trace toggles are sampled from the environment once and then cached,
+// because they are read on every JNI dispatch. Code that flips one of the
+// MOCKTAIL_*_TRACE variables after startup must call this so the next dispatch
+// re-samples them.
+void RefreshJniTraceFlags();
+
 } // namespace jnivm
 
 #endif  // MOCKTAIL_JNIVM_JNIVM_H_
