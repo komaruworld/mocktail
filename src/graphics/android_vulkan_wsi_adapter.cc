@@ -27,7 +27,7 @@ Status AppendUniqueExtension(const std::string& extension,
 }  // namespace
 
 VkResult NormalizeAndroidSwapchainResult(VkResult result) {
-  return result == VK_SUBOPTIMAL_KHR ? VK_ERROR_OUT_OF_DATE_KHR : result;
+  return result == VK_SUBOPTIMAL_KHR ? VK_SUCCESS : result;
 }
 
 Status TranslateAndroidVulkanInstanceExtensions(

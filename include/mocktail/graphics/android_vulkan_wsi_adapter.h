@@ -23,8 +23,8 @@ inline constexpr AndroidVulkanResult kAndroidVulkanErrorInitializationFailed =
 inline constexpr char kAndroidSurfaceExtension[] =
     "VK_KHR_android_surface";
 
-// Roblox treats VK_SUBOPTIMAL_KHR as a hard error. Map it to OUT_OF_DATE so
-// the guest recreates the swapchain instead of presenting an obsolete surface.
+// VK_SUBOPTIMAL_KHR still returns a usable image. Roblox handles it as a fatal
+// error, so accept it until the host reports a real out-of-date surface.
 VkResult NormalizeAndroidSwapchainResult(VkResult result);
 
 // Returned storage owns the translated extension names.
