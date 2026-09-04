@@ -58,7 +58,8 @@ std::filesystem::path ExecutablePath() {
   return path.data();
 }
 
-std::filesystem::path InstalledMetadata(std::string_view filename) {
+std::filesystem::path InstalledMetadataEntry(std::string_view name,
+                                             bool directory_entry) {
   const std::filesystem::path executable = ExecutablePath();
   if (!executable.empty()) {
     const std::filesystem::path directory = executable.parent_path();
@@ -66,12 +67,34 @@ std::filesystem::path InstalledMetadata(std::string_view filename) {
         directory.parent_path().filename() == "lib") {
       const std::filesystem::path candidate =
           directory.parent_path().parent_path() / "share/mocktail/metadata" /
-          std::string(filename);
+          std::string(name);
       std::error_code error;
-      if (std::filesystem::is_regular_file(candidate, error)) return candidate;
+      if (directory_entry ? std::filesystem::is_directory(candidate, error)
+                          : std::filesystem::is_regular_file(candidate, error)) {
+        return candidate;
+      }
     }
   }
   return {};
+}
+
+std::filesystem::path InstalledMetadata(std::string_view filename) {
+  return InstalledMetadataEntry(filename, false);
+}
+
+// A directory of per-Build-ID sidecars wins over the single legacy file.
+std::filesystem::path DefaultHostAbiReference() {
+  const std::filesystem::path installed_directory =
+      InstalledMetadataEntry("host_abi", true);
+  if (!installed_directory.empty()) return installed_directory;
+  const std::filesystem::path installed_file =
+      InstalledMetadata("roblox_host_abi_reference.json");
+  if (!installed_file.empty()) return installed_file;
+  std::error_code error;
+  if (std::filesystem::is_directory("config/host_abi", error)) {
+    return "config/host_abi";
+  }
+  return "config/roblox_host_abi_reference.json";
 }
 
 mocktail::update::UpdatePaths ResolvePaths() {
@@ -96,8 +119,8 @@ mocktail::update::UpdatePaths ResolvePaths() {
       InstalledMetadata("roblox_compatibility.json");
   const std::filesystem::path installed_trust =
       InstalledMetadata("roblox_signing_certificates.json");
-  const std::filesystem::path installed_host_abi_reference =
-      InstalledMetadata("roblox_host_abi_reference.json");
+  const std::filesystem::path default_host_abi_reference =
+      DefaultHostAbiReference();
   paths.compatibility_manifest =
       Environment("MOCKTAIL_UPDATE_COMPATIBILITY_PATH")
           .value_or(installed_compatibility.empty()
@@ -110,9 +133,7 @@ mocktail::update::UpdatePaths ResolvePaths() {
                         : installed_trust.string());
   paths.host_abi_reference_profile =
       Environment("MOCKTAIL_UPDATE_HOST_ABI_REFERENCE")
-          .value_or(installed_host_abi_reference.empty()
-                        ? "config/roblox_host_abi_reference.json"
-                        : installed_host_abi_reference.string());
+          .value_or(default_host_abi_reference.string());
   const std::filesystem::path executable = ExecutablePath();
   std::filesystem::path runtime = executable.parent_path() / "mocktail";
   if (executable.parent_path().filename() == "mocktail" &&
@@ -343,6 +364,12 @@ int main(int argc, char** argv) {
   }
   if (!updated.message.empty()) {
     std::cerr << "[native-updater] " << updated.message << '\n';
+  }
+  // Still exits zero so the session launches, but the user has to be told:
+  // it is the Roblox servers, not Mocktail, that will refuse the join.
+  if (updated.stale) {
+    std::cerr << "[native-updater] warning: the active Roblox payload is out "
+                 "of date and joining an experience can be refused\n";
   }
   if (!updated.payload_id.empty()) std::cout << updated.payload_id << '\n';
   return 0;

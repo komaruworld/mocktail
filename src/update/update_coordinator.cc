@@ -5,12 +5,14 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -107,6 +109,25 @@ class StageTimer final {
   std::string name_;
   std::chrono::steady_clock::time_point start_;
 };
+
+// The update lock is held, so no live run owns one of these.
+void RemoveStaleWorkspaces(const std::filesystem::path& parent) {
+  std::error_code filesystem_error;
+  std::vector<std::filesystem::path> stale;
+  std::filesystem::directory_iterator iterator(
+      parent, std::filesystem::directory_options::none, filesystem_error);
+  const std::filesystem::directory_iterator end;
+  while (!filesystem_error && iterator != end) {
+    if (iterator->path().filename().string().rfind(".update-", 0) == 0) {
+      stale.push_back(iterator->path());
+    }
+    iterator.increment(filesystem_error);
+  }
+  for (const std::filesystem::path& entry : stale) {
+    std::error_code ignored;
+    std::filesystem::remove_all(entry, ignored);
+  }
+}
 
 std::filesystem::path UniqueDirectory(const std::filesystem::path& parent,
                                       std::string* error) {
@@ -287,18 +308,48 @@ struct ReferenceProfile {
   }
 };
 
-ReferenceProfile ResolveReference(const UpdatePaths& paths,
-                                  const PayloadStoreResult& installed,
-                                  const SupportedPayloadProfile& preferred,
-                                  const ApkProvider* provider,
-                                  PayloadStore* store,
-                                  const std::filesystem::path& workspace,
-                                  int progress_fd) {
+// `location` is one sidecar or a directory of them.
+std::map<std::string, std::filesystem::path> CollectReferenceSidecars(
+    const std::filesystem::path& location) {
+  std::map<std::string, std::filesystem::path> sidecars;
+  std::error_code filesystem_error;
+  std::vector<std::filesystem::path> files;
+  if (std::filesystem::is_directory(location, filesystem_error)) {
+    std::filesystem::directory_iterator iterator(
+        location, std::filesystem::directory_options::none, filesystem_error);
+    const std::filesystem::directory_iterator end;
+    while (!filesystem_error && iterator != end) {
+      if (iterator->path().extension() == ".json") {
+        files.push_back(iterator->path());
+      }
+      iterator.increment(filesystem_error);
+    }
+  } else if (std::filesystem::is_regular_file(location, filesystem_error)) {
+    files.push_back(location);
+  }
+  for (const std::filesystem::path& file : files) {
+    const HostAbiSidecarIdentity identity = ReadHostAbiSidecarIdentity(file);
+    if (identity) sidecars.emplace(identity.elf_build_id, file);
+  }
+  return sidecars;
+}
+
+// Library and sidecar are one unit: choosing the library by catalog order
+// let the two drift apart as soon as a newer profile was added, and the pair
+// then failed every derivation.
+ReferenceProfile ResolveReference(
+    const UpdatePaths& paths, const PayloadStoreResult& installed,
+    const std::vector<SupportedPayloadProfile>& profiles,
+    const ApkProvider* provider, PayloadStore* store,
+    const std::filesystem::path& workspace, int progress_fd) {
   ReferenceProfile result;
+  // An approved probation payload carries the sidecar derived for its own
+  // bytes, and is the closest reference to whatever Roblox ships next.
   if (installed && !installed.host_abi_profile.empty()) {
     std::error_code filesystem_error;
-    if (std::filesystem::is_regular_file(installed.host_abi_profile,
-                                         filesystem_error) &&
+    const HostAbiSidecarIdentity identity =
+        ReadHostAbiSidecarIdentity(installed.host_abi_profile);
+    if (identity && identity.elf_build_id == installed.build_id &&
         std::filesystem::is_regular_file(
             installed.payload_directory / "libroblox.so", filesystem_error)) {
       result.library = installed.payload_directory / "libroblox.so";
@@ -319,36 +370,38 @@ ReferenceProfile ResolveReference(const UpdatePaths& paths,
       return result;
     }
   }
-  const std::string preferred_id =
-      std::to_string(preferred.version_code) + "-" + preferred.elf_build_id;
-  const std::filesystem::path preferred_directory =
-      paths.data_root / "payloads" / preferred_id;
+  std::filesystem::path sidecar;
+  const std::optional<SupportedPayloadProfile> selected =
+      ResolveReferenceProfile(paths.host_abi_reference_profile, profiles,
+                              &sidecar);
+  if (!selected.has_value()) {
+    result.error =
+        "no HostAbi reference sidecar matches a supported Roblox profile";
+    return result;
+  }
+  const SupportedPayloadProfile& reference = *selected;
+  const std::string reference_id =
+      std::to_string(reference.version_code) + "-" + reference.elf_build_id;
+  const std::filesystem::path reference_directory =
+      paths.data_root / "payloads" / reference_id;
   const PayloadIntegrityResult reference_payload =
-      InspectPreparedPayload(preferred_directory);
-  std::error_code filesystem_error;
-  if (reference_payload && reference_payload.payload_id == preferred_id &&
-      std::filesystem::is_regular_file(paths.host_abi_reference_profile,
-                                       filesystem_error)) {
-    result.library = preferred_directory / "libroblox.so";
-    result.profile = paths.host_abi_reference_profile;
+      InspectPreparedPayload(reference_directory);
+  if (reference_payload && reference_payload.payload_id == reference_id) {
+    result.library = reference_directory / "libroblox.so";
+    result.profile = sidecar;
     result.compatibility_manifests.push_back(paths.compatibility_manifest);
     return result;
   }
   Candidate downloaded =
-      DownloadCandidate(provider, store, ExactPayloadIdentity(preferred), true,
+      DownloadCandidate(provider, store, ExactPayloadIdentity(reference), true,
                         paths, workspace / "reference", progress_fd);
   if (!downloaded) {
-    result.error =
-        "cannot obtain HostAbi derivation reference: " + downloaded.error;
-    return result;
-  }
-  if (!std::filesystem::is_regular_file(paths.host_abi_reference_profile,
-                                        filesystem_error)) {
-    result.error = "HostAbi reference profile is unavailable";
+    result.error = "cannot obtain HostAbi derivation reference " +
+                   reference.version_name + ": " + downloaded.error;
     return result;
   }
   result.library = downloaded.staged.payload_directory / "libroblox.so";
-  result.profile = paths.host_abi_reference_profile;
+  result.profile = sidecar;
   result.compatibility_manifests.push_back(paths.compatibility_manifest);
   return result;
 }
@@ -356,7 +409,6 @@ ReferenceProfile ResolveReference(const UpdatePaths& paths,
 UpdateResult RunUnsafeLatest(
     const UpdatePaths& paths, const UpdateRequest& request,
     const std::vector<SupportedPayloadProfile>& profiles,
-    const SupportedPayloadProfile& preferred,
     const PayloadStoreResult& installed, PayloadStore* store) {
   UpdateResult result;
   if (request.startup_preflight || !request.check_latest) {
@@ -410,7 +462,7 @@ UpdateResult RunUnsafeLatest(
 
   if (!candidate.exact_supported) {
     const ReferenceProfile reference = ResolveReference(
-        paths, installed, preferred, &provider, store, workspace,
+        paths, installed, profiles, &provider, store, workspace,
         request.progress_fd);
     if (!reference) {
       result.error = "cannot prepare latest Roblox for unsafe launch: " +
@@ -532,7 +584,97 @@ PayloadStoreResult PromoteCandidate(const UpdatePaths& paths,
   return promoted;
 }
 
+std::string PlanDescription(const UpdateCandidatePlan& plan) {
+  return "Roblox " + plan.identity.version_name + " (" +
+         std::to_string(plan.identity.version_code) + ")";
+}
+
+// No manifest points at the derivation reference, so the collector below has
+// to be told about it or the next Tier C update downloads it again.
+std::vector<std::string> ReferencePayloadIds(
+    const UpdatePaths& paths,
+    const std::vector<SupportedPayloadProfile>& profiles) {
+  const std::optional<SupportedPayloadProfile> reference =
+      ResolveReferenceProfile(paths.host_abi_reference_profile, profiles,
+                              nullptr);
+  if (!reference.has_value()) return {};
+  return {std::to_string(reference->version_code) + "-" +
+          reference->elf_build_id};
+}
+
+// Called only once an install is known good; keeps the rollback target.
+std::string CollectSupersededPayloads(PayloadStore* store,
+                                      const std::vector<std::string>& keep) {
+  if (TraceFlagEnabled("MOCKTAIL_KEEP_OLD_PAYLOADS")) return {};
+  const PayloadGarbageResult collected = store->CollectGarbage(keep);
+  if (!collected || collected.removed.empty()) return {};
+  return "; freed " +
+         std::to_string(collected.freed_bytes / (1024ULL * 1024ULL)) +
+         " MiB from " + std::to_string(collected.removed.size()) +
+         " superseded payload" + (collected.removed.size() == 1 ? "" : "s");
+}
+
 }  // namespace
+
+std::optional<SupportedPayloadProfile> ResolveReferenceProfile(
+    const std::filesystem::path& location,
+    const std::vector<SupportedPayloadProfile>& profiles,
+    std::filesystem::path* sidecar) {
+  const std::map<std::string, std::filesystem::path> sidecars =
+      CollectReferenceSidecars(location);
+  // Newest one available: the shorter the distance to the candidate, the more
+  // signatures survive derivation.
+  std::optional<SupportedPayloadProfile> selected;
+  for (const SupportedPayloadProfile& profile : profiles) {
+    const auto found = sidecars.find(profile.elf_build_id);
+    if (found == sidecars.end()) continue;
+    if (!selected.has_value() ||
+        selected->version_code < profile.version_code) {
+      selected = profile;
+      if (sidecar != nullptr) *sidecar = found->second;
+    }
+  }
+  return selected;
+}
+
+std::vector<UpdateCandidatePlan> PlanUpdateCandidates(
+    const std::vector<SupportedPayloadProfile>& profiles,
+    const SupportedPayloadProfile& preferred, const ProviderVersion* latest,
+    const PayloadStoreResult& current, const PayloadStoreResult& installed) {
+  std::vector<UpdateCandidatePlan> plans;
+  const bool runnable = static_cast<bool>(current);
+  const std::uint64_t runnable_code = runnable ? current.version_code : 0;
+  if (latest != nullptr && *latest &&
+      (!runnable || latest->version_code > runnable_code)) {
+    UpdateCandidatePlan plan;
+    plan.identity.version_name = latest->version_name;
+    plan.identity.version_code = latest->version_code;
+    const std::optional<SupportedPayloadProfile> exact = FindSupportedProfile(
+        profiles, latest->version_name, latest->version_code);
+    if (exact.has_value()) plan.identity.exact_build_id = exact->elf_build_id;
+    plan.exact_supported = exact.has_value();
+    plan.reuse_installed = installed &&
+                           installed.version_name == latest->version_name &&
+                           installed.version_code == latest->version_code &&
+                           !installed.host_abi_profile.empty() &&
+                           !installed.compatibility_manifest.empty();
+    plan.origin = "provider latest";
+    plans.push_back(std::move(plan));
+  }
+  // Without this step a rejected latest candidate leaves the user on whatever
+  // ancient payload they had, fixable only by deleting the store by hand.
+  if (!runnable || preferred.version_code > runnable_code) {
+    if (plans.empty() ||
+        plans.front().identity.version_code != preferred.version_code) {
+      UpdateCandidatePlan plan;
+      plan.identity = ExactPayloadIdentity(preferred);
+      plan.exact_supported = true;
+      plan.origin = "supported catalog";
+      plans.push_back(std::move(plan));
+    }
+  }
+  return plans;
+}
 
 UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   UpdateResult result;
@@ -578,8 +720,8 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     installed = store.InspectCurrent();
   }
   if (request.force_run_latest) {
-    UpdateResult unsafe = RunUnsafeLatest(paths, request, catalog.profiles,
-                                          *preferred, installed, &store);
+    UpdateResult unsafe =
+        RunUnsafeLatest(paths, request, catalog.profiles, installed, &store);
     unsafe.warnings = std::move(result.warnings);
     return unsafe;
   }
@@ -608,6 +750,8 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
         result.message = "latest Roblox " + latest.version_name + " (" +
                          std::to_string(latest.version_code) +
                          ") is already canary-approved";
+        result.message += CollectSupersededPayloads(
+            &store, ReferencePayloadIds(paths, catalog.profiles));
         return result;
       }
       if (current && current.version_code > latest.version_code) {
@@ -624,6 +768,22 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
       }
     }
   }
+  const std::vector<UpdateCandidatePlan> plans = PlanUpdateCandidates(
+      catalog.profiles, *preferred,
+      latest_version.has_value() ? &*latest_version : nullptr, current,
+      installed);
+  if (plans.empty()) {
+    if (!current) {
+      result.error = "no Roblox payload is available to install";
+      return result;
+    }
+    result.payload_id = current.payload_id;
+    result.message = "installed Roblox " + current.version_name + " (" +
+                     std::to_string(current.version_code) + ") is current";
+    return result;
+  }
+
+  RemoveStaleWorkspaces(paths.cache_root / "downloads/native-updater");
   const std::filesystem::path workspace = UniqueDirectory(
       paths.cache_root / "downloads/native-updater", &result.error);
   if (!result.error.empty()) return result;
@@ -631,153 +791,123 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   const auto cleanup = [&]() {
     std::filesystem::remove_all(workspace, filesystem_error);
   };
-  Candidate candidate;
-  if (latest_version.has_value() && installed &&
-      SameVersion(installed, *latest_version) &&
-      !installed.host_abi_profile.empty() &&
-      !installed.compatibility_manifest.empty()) {
-    candidate.staged = installed;
-    candidate.identity = {installed.version_name, installed.version_code,
-                          installed.build_id};
-    candidate.profile = installed.host_abi_profile;
-    candidate.compatibility = installed.compatibility_manifest;
-  } else {
-    ExpectedPayloadIdentity identity;
-    std::optional<SupportedPayloadProfile> exact;
-    if (latest_version.has_value()) {
-      identity.version_name = latest_version->version_name;
-      identity.version_code = latest_version->version_code;
-      exact = FindSupportedProfile(catalog.profiles, identity.version_name,
-                                   identity.version_code);
-      if (exact.has_value()) identity.exact_build_id = exact->elf_build_id;
-    } else {
-      exact = preferred;
-      identity = ExactPayloadIdentity(*preferred);
-    }
-    candidate = FindStagedCandidate(paths, identity, exact.has_value());
-    if (!candidate) {
-      candidate = DownloadCandidate(
-          &provider, &store, identity, exact.has_value(), paths,
-          workspace / "candidate", request.progress_fd);
-    }
-  }
 
-  if (request.startup_preflight && current && candidate &&
-      RejectedForRuntime(paths, candidate,
-                         request.canary_graphics_backend)) {
-    result.payload_id = current.payload_id;
-    result.message = "latest Roblox " + candidate.staged.version_name + " (" +
-                     std::to_string(candidate.staged.version_code) +
-                     ") already failed probation with this runtime; kept " +
-                     current.version_name;
-    cleanup();
-    return result;
-  }
-
-  std::string candidate_error = candidate.error;
-  bool candidate_rejected = false;
-  if (candidate && !candidate.exact_supported && candidate.profile.empty()) {
-    const ReferenceProfile reference =
-        ResolveReference(paths, installed, *preferred, &provider, &store,
-                         workspace, request.progress_fd);
-    if (!reference) {
-      candidate_error = reference.error;
+  std::string blocked;
+  std::size_t attempt = 0;
+  // Includes a rejected payload: it stays staged so the next launch
+  // recognises it instead of downloading it again.
+  std::vector<std::string> examined =
+      ReferencePayloadIds(paths, catalog.profiles);
+  for (const UpdateCandidatePlan& plan : plans) {
+    const std::string description = PlanDescription(plan);
+    ++attempt;
+    Candidate candidate;
+    if (plan.reuse_installed) {
+      candidate.staged = installed;
+      candidate.identity = plan.identity;
+      candidate.exact_supported = plan.exact_supported;
+      candidate.profile = installed.host_abi_profile;
+      candidate.compatibility = installed.compatibility_manifest;
     } else {
-      HostAbiDerivationOptions derivation;
-      derivation.reference_library = reference.library;
-      derivation.reference_profile = reference.profile;
-      derivation.reference_compatibility_manifests =
-          reference.compatibility_manifests;
-      derivation.candidate_payload_directory =
-          candidate.staged.payload_directory;
-      derivation.output_directory = workspace / "derived";
-      Progress(request.progress_fd, "Checking latest Roblox compatibility...");
-      const HostAbiDerivationResult derived = [&] {
-        StageTimer timer("derive-host-abi");
-        return DeriveHostAbiProfile(derivation);
-      }();
-      if (!derived) {
-        candidate_error = derived.error;
-        candidate_rejected = true;
-      } else {
-        candidate.profile = derived.profile;
-        candidate.compatibility = derived.compatibility_manifest;
+      candidate =
+          FindStagedCandidate(paths, plan.identity, plan.exact_supported);
+      if (!candidate) {
+        candidate = DownloadCandidate(
+            &provider, &store, plan.identity, plan.exact_supported, paths,
+            workspace / ("candidate-" + std::to_string(attempt)),
+            request.progress_fd);
       }
     }
-  }
-  PayloadStoreResult promoted;
-  if (candidate_error.empty()) {
-    promoted =
-        PromoteCandidate(paths, request, candidate, &store, &candidate_error);
-    candidate_rejected = !candidate_error.empty();
-  }
-  if (candidate_error.empty() && promoted) {
-    result.changed = !current || current.payload_id != promoted.payload_id;
-    result.payload_id = promoted.payload_id;
-    result.message = candidate.exact_supported
-                         ? "installed exact-supported Roblox " +
-                               promoted.version_name + " (" +
-                               std::to_string(promoted.version_code) + ")"
-                         : "latest Roblox " + promoted.version_name + " (" +
-                               std::to_string(promoted.version_code) +
-                               ") passed two " +
-                               std::string(CanaryGraphicsBackendName(
-                                   request.canary_graphics_backend)) +
-                               " graphics canaries and is current";
-    cleanup();
-    return result;
+    if (!candidate) {
+      blocked = description + " could not be prepared: " + candidate.error;
+      continue;
+    }
+    examined.push_back(candidate.staged.payload_id);
+    if (request.startup_preflight && current &&
+        RejectedForRuntime(paths, candidate,
+                           request.canary_graphics_backend)) {
+      blocked = description + " already failed probation with this runtime";
+      continue;
+    }
+
+    std::string candidate_error;
+    bool candidate_rejected = false;
+    if (!candidate.exact_supported && candidate.profile.empty()) {
+      const ReferenceProfile reference =
+          ResolveReference(paths, installed, catalog.profiles, &provider,
+                           &store, workspace, request.progress_fd);
+      if (!reference) {
+        candidate_error = reference.error;
+      } else {
+        HostAbiDerivationOptions derivation;
+        derivation.reference_library = reference.library;
+        derivation.reference_profile = reference.profile;
+        derivation.reference_compatibility_manifests =
+            reference.compatibility_manifests;
+        derivation.candidate_payload_directory =
+            candidate.staged.payload_directory;
+        derivation.output_directory =
+            workspace / ("derived-" + std::to_string(attempt));
+        Progress(request.progress_fd,
+                 "Checking latest Roblox compatibility...");
+        const HostAbiDerivationResult derived = [&] {
+          StageTimer timer("derive-host-abi");
+          return DeriveHostAbiProfile(derivation);
+        }();
+        if (!derived) {
+          candidate_error = derived.error;
+          candidate_rejected = true;
+        } else {
+          candidate.profile = derived.profile;
+          candidate.compatibility = derived.compatibility_manifest;
+        }
+      }
+    }
+    PayloadStoreResult promoted;
+    if (candidate_error.empty()) {
+      promoted =
+          PromoteCandidate(paths, request, candidate, &store, &candidate_error);
+      candidate_rejected = !candidate_error.empty();
+    }
+    if (candidate_error.empty() && promoted) {
+      result.changed = !current || current.payload_id != promoted.payload_id;
+      result.payload_id = promoted.payload_id;
+      result.message =
+          candidate.exact_supported
+              ? "installed exact-supported Roblox " + promoted.version_name +
+                    " (" + std::to_string(promoted.version_code) + ")"
+              : "Roblox " + promoted.version_name + " (" +
+                    std::to_string(promoted.version_code) + ") passed two " +
+                    std::string(CanaryGraphicsBackendName(
+                        request.canary_graphics_backend)) +
+                    " graphics canaries and is current";
+      if (!blocked.empty()) result.message += "; " + blocked;
+      result.message += CollectSupersededPayloads(&store, examined);
+      cleanup();
+      return result;
+    }
+    if (candidate_rejected) {
+      RecordRejection(paths, candidate, request.canary_graphics_backend,
+                      candidate_error);
+    }
+    blocked = description + " was rejected: " + candidate_error;
   }
 
-  if (candidate && candidate_rejected) {
-    RecordRejection(paths, candidate, request.canary_graphics_backend,
-                    candidate_error);
-  }
-
-  if (current) {
-    result.payload_id = current.payload_id;
-    result.message = "latest Roblox candidate was rejected; kept " +
-                     current.version_name + ": " + candidate_error;
-    cleanup();
-    return result;
-  }
-
-  Candidate fallback;
-  const std::string preferred_id =
-      std::to_string(preferred->version_code) + "-" + preferred->elf_build_id;
-  const PayloadIntegrityResult staged_fallback =
-      VerifyPreparedPayload(paths.data_root / "payloads" / preferred_id);
-  if (staged_fallback && staged_fallback.payload_id == preferred_id) {
-    fallback.staged.payload_id = preferred_id;
-    fallback.staged.payload_directory =
-        paths.data_root / "payloads" / preferred_id;
-    fallback.staged.version_name = staged_fallback.metadata.version_name;
-    fallback.staged.version_code = staged_fallback.metadata.version_code;
-    fallback.staged.build_id = staged_fallback.metadata.build_id;
-    fallback.identity = ExactPayloadIdentity(*preferred);
-    fallback.exact_supported = true;
-  } else {
-    fallback = DownloadCandidate(&provider, &store,
-                                 ExactPayloadIdentity(*preferred), true, paths,
-                                 workspace / "fallback", request.progress_fd);
-  }
-  std::string fallback_error = fallback.error;
-  PayloadStoreResult fallback_promoted;
-  if (fallback_error.empty()) {
-    fallback_promoted =
-        PromoteCandidate(paths, request, fallback, &store, &fallback_error);
-  }
-  if (!fallback_error.empty() || !fallback_promoted) {
-    result.error = "latest Roblox failed probation (" + candidate_error +
-                   "); supported fallback also failed: " + fallback_error;
-    cleanup();
-    return result;
-  }
-  result.changed = true;
-  result.payload_id = fallback_promoted.payload_id;
-  result.message = "latest Roblox failed probation (" + candidate_error +
-                   "); installed supported fallback " +
-                   fallback_promoted.version_name;
   cleanup();
+  if (!current) {
+    result.error = "no Roblox payload could be installed; " + blocked;
+    return result;
+  }
+  result.payload_id = current.payload_id;
+  result.stale = latest_version.has_value() &&
+                 current.version_code < latest_version->version_code;
+  result.message = "kept Roblox " + current.version_name + " (" +
+                   std::to_string(current.version_code) + "); " + blocked;
+  if (result.stale) {
+    result.message += "; Roblox " + latest_version->version_name +
+                      " is published, so this session can be rejected as "
+                      "outdated";
+  }
   return result;
 }
 

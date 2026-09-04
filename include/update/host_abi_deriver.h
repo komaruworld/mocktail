@@ -25,6 +25,22 @@ struct HostAbiDerivationResult {
   }
 };
 
+// Identity an exact HostAbi sidecar was derived for. It only validates
+// against the one library whose bytes it describes, so the reference payload
+// has to be selected by this Build ID rather than by catalog order.
+struct HostAbiSidecarIdentity {
+  std::string elf_build_id;
+  std::string payload_id;
+  std::string error;
+
+  explicit operator bool() const {
+    return error.empty() && !elf_build_id.empty() && !payload_id.empty();
+  }
+};
+
+HostAbiSidecarIdentity ReadHostAbiSidecarIdentity(
+    const std::filesystem::path& sidecar);
+
 // Derives an exact candidate HostAbi profile by matching normalized x86-64
 // instruction signatures against one already approved reference payload. This
 // is static analysis only; the result still requires two real Tier C canaries

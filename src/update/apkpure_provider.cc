@@ -251,7 +251,10 @@ ProviderDownloadResult ApkPureProvider::DownloadExact(
     request.url = urls[index];
     request.allowed_hosts = kDownloadHosts;
     request.maximum_bytes = kMaximumArchiveBytes;
-    request.transfer_timeout_ms = 15L * 60L * 1000L;
+    // Several hundred MiB over a slow link is not a failed transfer; the
+    // quarter-hour cap failed those users outright. Stalls are caught by the
+    // low-speed guard instead.
+    request.transfer_timeout_ms = 0;
     const HttpDownloadResult downloaded =
         DownloadFile(request, destination, progress_fd);
     if (!downloaded || !ZipMagic(destination)) {

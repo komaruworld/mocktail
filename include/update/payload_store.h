@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace mocktail::update {
 
@@ -24,6 +25,14 @@ struct PayloadStoreResult {
   }
 };
 
+struct PayloadGarbageResult {
+  std::vector<std::string> removed;
+  std::uintmax_t freed_bytes = 0;
+  std::string error;
+
+  explicit operator bool() const { return error.empty(); }
+};
+
 class PayloadStore final {
  public:
   PayloadStore(std::filesystem::path root,
@@ -41,6 +50,10 @@ class PayloadStore final {
   PayloadStoreResult InspectCurrent() const;
   PayloadStoreResult VerifyCurrent();
   PayloadStoreResult Rollback();
+  // Deletes payload trees nothing points at any more. The active payload, the
+  // rollback target, and every ID in `keep` survive; a payload tree is around
+  // 600 MiB, so without this the store grows by one release forever.
+  PayloadGarbageResult CollectGarbage(const std::vector<std::string>& keep);
   std::string StatusJson(std::string* error = nullptr) const;
 
  private:

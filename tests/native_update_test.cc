@@ -13,12 +13,15 @@
 #include <vector>
 
 #include "update/apkpure_provider.h"
+#include "update/compatibility_catalog.h"
+#include "update/host_abi_deriver.h"
 #include "update/http_download.h"
 #include "update/payload_integrity.h"
 #include "update/payload_store.h"
 #include "update/readiness_canary.h"
 #include "update/unsafe_latest_runner.h"
 #include "update/update_config.h"
+#include "update/update_coordinator.h"
 #include "update/zip_archive.h"
 
 namespace mocktail::update {
@@ -320,6 +323,253 @@ TEST(ZipArchiveTest, ExtractsSelectedPrefixInOneSequentialPass) {
   EXPECT_EQ(ReadFile(output / "content/first.txt"), "first");
   EXPECT_EQ(ReadFile(output / "nested/second.txt"), "second");
   EXPECT_FALSE(std::filesystem::exists(output / "ignored.txt"));
+}
+
+std::vector<SupportedPayloadProfile> CatalogFixture() {
+  return {
+      {"2.725.1142", 2546, "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21"},
+      {"2.727.1199", 2628, "1686400865ae0e408cd7bd67de7a439625c6fd13"},
+      {"2.734.917", 2908, "63c5109637b7d7b2bdb8ed8f858023ff5ef49326"},
+  };
+}
+
+PayloadStoreResult InstalledFixture(std::string_view version_name,
+                                    std::uint64_t version_code) {
+  PayloadStoreResult installed;
+  installed.payload_id = std::to_string(version_code) + "-" +
+                         std::string(40, 'a');
+  installed.version_name = version_name;
+  installed.version_code = version_code;
+  return installed;
+}
+
+// A rejected candidate used to end the update, leaving the user on whatever
+// was installed.
+TEST(UpdateCandidatePlanTest, FallsBackToTheNewestSupportedProfile) {
+  const auto profiles = CatalogFixture();
+  const ProviderVersion latest{"2.736.1408", 2998, {}};
+  const PayloadStoreResult current = InstalledFixture("2.725.1142", 2546);
+
+  const std::vector<UpdateCandidatePlan> plans =
+      PlanUpdateCandidates(profiles, profiles.back(), &latest, current,
+                           current);
+
+  ASSERT_EQ(plans.size(), 2U);
+  EXPECT_EQ(plans[0].identity.version_code, 2998U);
+  EXPECT_FALSE(plans[0].exact_supported);
+  EXPECT_EQ(plans[1].identity.version_code, 2908U);
+  EXPECT_TRUE(plans[1].exact_supported);
+  EXPECT_EQ(plans[1].identity.exact_build_id,
+            "63c5109637b7d7b2bdb8ed8f858023ff5ef49326");
+}
+
+TEST(UpdateCandidatePlanTest, OffersTheLatestOnceWhenItIsExactSupported) {
+  const auto profiles = CatalogFixture();
+  const ProviderVersion latest{"2.734.917", 2908, {}};
+  const PayloadStoreResult current = InstalledFixture("2.725.1142", 2546);
+
+  const std::vector<UpdateCandidatePlan> plans =
+      PlanUpdateCandidates(profiles, profiles.back(), &latest, current,
+                           current);
+
+  ASSERT_EQ(plans.size(), 1U);
+  EXPECT_EQ(plans[0].identity.version_code, 2908U);
+  EXPECT_TRUE(plans[0].exact_supported);
+}
+
+TEST(UpdateCandidatePlanTest, NeverDowngradesARunnablePayload) {
+  const auto profiles = CatalogFixture();
+  const ProviderVersion latest{"2.736.1408", 2998, {}};
+  const PayloadStoreResult current = InstalledFixture("2.736.1408", 2998);
+
+  EXPECT_TRUE(
+      PlanUpdateCandidates(profiles, profiles.back(), &latest, current, current)
+          .empty());
+  // The same holds when the provider cannot be reached at all.
+  EXPECT_TRUE(PlanUpdateCandidates(profiles, profiles.back(), nullptr, current,
+                                   current)
+                  .empty());
+}
+
+TEST(UpdateCandidatePlanTest, InstallsTheSupportedProfileWithoutAProvider) {
+  const auto profiles = CatalogFixture();
+  const PayloadStoreResult current = InstalledFixture("2.725.1142", 2546);
+
+  const std::vector<UpdateCandidatePlan> plans =
+      PlanUpdateCandidates(profiles, profiles.back(), nullptr, current,
+                           current);
+
+  ASSERT_EQ(plans.size(), 1U);
+  EXPECT_EQ(plans[0].identity.version_code, 2908U);
+}
+
+TEST(UpdateCandidatePlanTest, ReusesAnApprovedPayloadForTheSameVersion) {
+  const auto profiles = CatalogFixture();
+  const ProviderVersion latest{"2.736.1408", 2998, {}};
+  PayloadStoreResult installed = InstalledFixture("2.736.1408", 2998);
+  installed.host_abi_profile = "host_abi_profiles/2998.json";
+  installed.compatibility_manifest = "compatibility_profiles/2998.json";
+
+  const std::vector<UpdateCandidatePlan> plans = PlanUpdateCandidates(
+      profiles, profiles.back(), &latest, PayloadStoreResult{}, installed);
+
+  ASSERT_FALSE(plans.empty());
+  EXPECT_EQ(plans[0].identity.version_code, 2998U);
+  EXPECT_TRUE(plans[0].reuse_installed);
+}
+
+TEST(HostAbiSidecarTest, RejectsAnIdentityThatDoesNotDescribeItsOwnPayload) {
+  TemporaryDirectory temporary;
+  const std::string build_id = "1686400865ae0e408cd7bd67de7a439625c6fd13";
+  const std::filesystem::path consistent = temporary.root() / "good.json";
+  Write(consistent, nlohmann::json({{"schema_version", 1},
+                                    {"elf_build_id", build_id},
+                                    {"payload_id", "2628-" + build_id},
+                                    {"payload_path",
+                                     "payloads/2628-" + build_id}})
+                            .dump(2) +
+                        "\n");
+  const HostAbiSidecarIdentity identity =
+      ReadHostAbiSidecarIdentity(consistent);
+  ASSERT_TRUE(identity) << identity.error;
+  EXPECT_EQ(identity.elf_build_id, build_id);
+  EXPECT_EQ(identity.payload_id, "2628-" + build_id);
+
+  const std::filesystem::path mismatched = temporary.root() / "bad.json";
+  const std::string other = "2908-" + std::string(40, 'b');
+  Write(mismatched,
+        nlohmann::json({{"schema_version", 1},
+                        {"elf_build_id", build_id},
+                        {"payload_id", other},
+                        {"payload_path", "payloads/" + other}})
+                .dump(2) +
+            "\n");
+  EXPECT_FALSE(ReadHostAbiSidecarIdentity(mismatched));
+}
+
+// The regression: the library used to be the newest supported profile while
+// the sidecar stayed whatever file shipped, and the pair failed every
+// derivation.
+TEST(ReferenceProfileTest, FollowsTheSidecarRatherThanTheNewestProfile) {
+  const std::filesystem::path root = MOCKTAIL_TEST_SOURCE_DIR;
+  const CompatibilityCatalogResult catalog =
+      LoadCompatibilityCatalog(root / "config/roblox_compatibility.json");
+  ASSERT_TRUE(catalog) << catalog.error;
+  const auto preferred = PreferredSupportedProfile(catalog.profiles);
+  ASSERT_TRUE(preferred.has_value());
+
+  std::filesystem::path sidecar;
+  const auto reference = ResolveReferenceProfile(
+      root / "config/roblox_host_abi_reference.json", catalog.profiles,
+      &sidecar);
+  ASSERT_TRUE(reference.has_value());
+  EXPECT_EQ(sidecar, root / "config/roblox_host_abi_reference.json");
+  EXPECT_EQ(reference->elf_build_id,
+            ReadHostAbiSidecarIdentity(sidecar).elf_build_id);
+  EXPECT_NE(reference->elf_build_id, "")
+      << "the shipped sidecar must describe a supported profile";
+}
+
+TEST(ReferenceProfileTest, PicksTheNewestSidecarInADirectory) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path directory = temporary.root() / "host_abi";
+  const auto profiles = CatalogFixture();
+  for (const SupportedPayloadProfile& profile : {profiles[1], profiles[2]}) {
+    const std::string payload_id =
+        std::to_string(profile.version_code) + "-" + profile.elf_build_id;
+    Write(directory / (profile.elf_build_id + ".json"),
+          nlohmann::json({{"schema_version", 1},
+                          {"elf_build_id", profile.elf_build_id},
+                          {"payload_id", payload_id},
+                          {"payload_path", "payloads/" + payload_id}})
+                  .dump(2) +
+              "\n");
+  }
+
+  std::filesystem::path sidecar;
+  const auto reference =
+      ResolveReferenceProfile(directory, profiles, &sidecar);
+  ASSERT_TRUE(reference.has_value());
+  EXPECT_EQ(reference->version_code, 2908U);
+  EXPECT_EQ(sidecar, directory / (profiles[2].elf_build_id + ".json"));
+
+  // A sidecar for a Build ID no supported profile owns is not a reference.
+  const auto orphaned = ResolveReferenceProfile(
+      directory, {{"2.740.0", 3100, std::string(40, 'c')}}, &sidecar);
+  EXPECT_FALSE(orphaned.has_value());
+}
+
+// A sidecar for a Build ID the catalog does not carry disables Tier C.
+TEST(ShippedMetadataTest, ReferenceSidecarDescribesASupportedProfile) {
+  const std::filesystem::path root = MOCKTAIL_TEST_SOURCE_DIR;
+  const CompatibilityCatalogResult catalog =
+      LoadCompatibilityCatalog(root / "config/roblox_compatibility.json");
+  ASSERT_TRUE(catalog) << catalog.error;
+  const HostAbiSidecarIdentity identity = ReadHostAbiSidecarIdentity(
+      root / "config/roblox_host_abi_reference.json");
+  ASSERT_TRUE(identity) << identity.error;
+
+  const auto supported = std::find_if(
+      catalog.profiles.begin(), catalog.profiles.end(),
+      [&](const SupportedPayloadProfile& profile) {
+        return profile.elf_build_id == identity.elf_build_id;
+      });
+  ASSERT_NE(supported, catalog.profiles.end())
+      << "no supported profile owns reference Build ID "
+      << identity.elf_build_id;
+  EXPECT_EQ(identity.payload_id,
+            std::to_string(supported->version_code) + "-" +
+                supported->elf_build_id);
+}
+
+std::string ActivationManifestFixture(const std::string& payload_id) {
+  return nlohmann::json({{"schema_version", 1},
+                         {"payload_id", payload_id},
+                         {"payload_path", "payloads/" + payload_id}})
+             .dump(2) +
+         "\n";
+}
+
+TEST(PayloadStoreTest, CollectsSupersededPayloadsAndKeepsTheRollbackTarget) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path root = temporary.root() / "store";
+  const std::string active = "2998-" + std::string(40, 'a');
+  const std::string rollback = "2908-" + std::string(40, 'b');
+  const std::string reference = "2628-" + std::string(40, 'c');
+  const std::string superseded = "2546-" + std::string(40, 'd');
+  const std::string abandoned = ".stage-" + superseded + "-4242";
+  for (const std::string& id : {active, rollback, reference, superseded,
+                                abandoned}) {
+    Write(root / "payloads" / id / "libroblox.so", "payload bytes");
+  }
+  // Payloads are published read-only; the collector has to cope.
+  ASSERT_EQ(chmod((root / "payloads" / superseded).c_str(), 0555), 0);
+  Write(root / "current.json", ActivationManifestFixture(active));
+  Write(root / "previous_good.json", ActivationManifestFixture(rollback));
+
+  PayloadStore store(root, temporary.root() / "compatibility.json");
+  const PayloadGarbageResult collected = store.CollectGarbage({reference});
+  ASSERT_TRUE(collected) << collected.error;
+  EXPECT_EQ(collected.removed.size(), 2U);
+  EXPECT_GT(collected.freed_bytes, 0U);
+  EXPECT_TRUE(std::filesystem::exists(root / "payloads" / active));
+  EXPECT_TRUE(std::filesystem::exists(root / "payloads" / rollback));
+  EXPECT_TRUE(std::filesystem::exists(root / "payloads" / reference));
+  EXPECT_FALSE(std::filesystem::exists(root / "payloads" / superseded));
+  EXPECT_FALSE(std::filesystem::exists(root / "payloads" / abandoned));
+}
+
+TEST(PayloadStoreTest, CollectsNothingWhileTheStoreIsUnreadable) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path root = temporary.root() / "store";
+  const std::string superseded = "2546-" + std::string(40, 'd');
+  Write(root / "payloads" / superseded / "libroblox.so", "payload bytes");
+  Write(root / "current.json", "{not json\n");
+
+  PayloadStore store(root, temporary.root() / "compatibility.json");
+  const PayloadGarbageResult collected = store.CollectGarbage({});
+  EXPECT_FALSE(collected);
+  EXPECT_TRUE(std::filesystem::exists(root / "payloads" / superseded));
 }
 
 TEST(PayloadStoreTest, StagesAndPromotesVerifiedExactPayload) {

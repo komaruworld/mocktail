@@ -15,7 +15,18 @@ struct HttpTransferRequest {
   std::vector<std::string> allowed_hosts;
   std::size_t maximum_bytes = 0;
   long connect_timeout_ms = 10000;
+  // Hard ceiling for one attempt; zero means none. A several hundred MiB
+  // archive over a slow link is not a failed transfer, so the ceiling is the
+  // wrong tool for it - a transfer that actually stops is caught by the
+  // low-speed guard below, in a minute rather than in a quarter of an hour.
   long transfer_timeout_ms = 120000;
+  long low_speed_bytes_per_second = 1024;
+  long low_speed_seconds = 60;
+  // Transient failures - a provider 503, a dropped connection, a stall - are
+  // retried. A file transfer resumes from the bytes already on disk instead
+  // of pulling the whole archive again.
+  int maximum_attempts = 3;
+  long retry_delay_ms = 2000;
   int maximum_redirects = 5;
 };
 

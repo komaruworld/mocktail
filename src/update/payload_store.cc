@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -157,6 +158,39 @@ bool WriteAtomic(const std::filesystem::path& root,
     (void)fsync(root_descriptor);
     close(root_descriptor);
   }
+  return true;
+}
+
+// CopyTree publishes payloads read-only, so the directories have to be made
+// writable again before anything in them can be unlinked.
+bool RemovePayloadTree(const std::filesystem::path& payload,
+                       std::uintmax_t* freed_bytes) {
+  std::error_code error;
+  std::filesystem::permissions(payload, std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::add, error);
+  std::filesystem::recursive_directory_iterator iterator(
+      payload, std::filesystem::directory_options::none, error);
+  const std::filesystem::recursive_directory_iterator end;
+  std::uintmax_t bytes = 0;
+  while (!error && iterator != end) {
+    std::error_code entry_error;
+    const auto status = iterator->symlink_status(entry_error);
+    if (!entry_error) {
+      if (std::filesystem::is_directory(status)) {
+        std::filesystem::permissions(iterator->path(),
+                                     std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::add,
+                                     entry_error);
+      } else if (std::filesystem::is_regular_file(status)) {
+        bytes += std::filesystem::file_size(iterator->path(), entry_error);
+      }
+    }
+    iterator.increment(error);
+  }
+  std::error_code removal;
+  std::filesystem::remove_all(payload, removal);
+  if (removal) return false;
+  if (freed_bytes != nullptr) *freed_bytes += bytes;
   return true;
 }
 
@@ -824,6 +858,54 @@ PayloadStoreResult PayloadStore::Rollback() {
   if (!WriteAtomic(root_, root_ / "current.json", previous.contents,
                    &result.error)) {
     return result;
+  }
+  return result;
+}
+
+PayloadGarbageResult PayloadStore::CollectGarbage(
+    const std::vector<std::string>& keep) {
+  PayloadGarbageResult result;
+  StoreLock lock(root_, &result.error);
+  if (!lock) return result;
+  std::set<std::string> retained(keep.begin(), keep.end());
+  for (const char* manifest : {"current.json", "previous_good.json"}) {
+    const ManifestIdentity identity = ReadManifest(root_ / manifest, true);
+    if (!identity.error.empty()) {
+      // Nothing is deleted from a store whose own manifests cannot be read.
+      result.error = identity.error;
+      return result;
+    }
+    if (!identity.payload_id.empty()) retained.insert(identity.payload_id);
+  }
+  std::error_code filesystem_error;
+  std::vector<std::filesystem::path> superseded;
+  std::filesystem::directory_iterator iterator(
+      root_ / "payloads", std::filesystem::directory_options::none,
+      filesystem_error);
+  const std::filesystem::directory_iterator end;
+  while (!filesystem_error && iterator != end) {
+    const std::filesystem::path entry = iterator->path();
+    const std::string name = entry.filename().string();
+    const auto status = iterator->symlink_status(filesystem_error);
+    if (filesystem_error) break;
+    // Also the workspace a killed Stage left behind, just as large.
+    const bool collectable =
+        (ValidPayloadId(name) && retained.find(name) == retained.end()) ||
+        name.rfind(".stage-", 0) == 0;
+    if (std::filesystem::is_directory(status) &&
+        !std::filesystem::is_symlink(status) && collectable) {
+      superseded.push_back(entry);
+    }
+    iterator.increment(filesystem_error);
+  }
+  if (filesystem_error) {
+    result.error = "cannot inspect the payload store";
+    return result;
+  }
+  for (const std::filesystem::path& payload : superseded) {
+    if (RemovePayloadTree(payload, &result.freed_bytes)) {
+      result.removed.push_back(payload.filename().string());
+    }
   }
   return result;
 }

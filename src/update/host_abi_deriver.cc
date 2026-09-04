@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -2091,6 +2092,35 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
 }
 
 }  // namespace
+
+HostAbiSidecarIdentity ReadHostAbiSidecarIdentity(
+    const std::filesystem::path& sidecar) {
+  HostAbiSidecarIdentity result;
+  const auto document = ReadJson(sidecar, &result.error);
+  if (!document.has_value()) return result;
+  if (document->value("schema_version", 0) != 1) {
+    result.error =
+        "HostAbi sidecar has an unsupported schema: " + sidecar.string();
+    return result;
+  }
+  std::string build_id = document->value("elf_build_id", "");
+  std::transform(build_id.begin(), build_id.end(), build_id.begin(),
+                 [](unsigned char value) {
+                   return static_cast<char>(std::tolower(value));
+                 });
+  const std::string payload_id = document->value("payload_id", "");
+  // What ValidateReferenceIdentity enforces, without opening the library.
+  if (build_id.size() != 40 || payload_id.size() <= 41 ||
+      payload_id.substr(payload_id.size() - 40) != build_id ||
+      document->value("payload_path", "") != "payloads/" + payload_id) {
+    result.error =
+        "HostAbi sidecar identity is inconsistent: " + sidecar.string();
+    return result;
+  }
+  result.elf_build_id = std::move(build_id);
+  result.payload_id = payload_id;
+  return result;
+}
 
 HostAbiDerivationResult DeriveHostAbiProfile(
     const HostAbiDerivationOptions& options) {

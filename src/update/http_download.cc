@@ -7,7 +7,9 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -68,11 +70,89 @@ bool RedirectStatus(long status) {
          status == 308;
 }
 
-void PublishProgress(int descriptor, std::size_t bytes) {
+bool RetryableTransport(CURLcode status) {
+  switch (status) {
+    case CURLE_COULDNT_CONNECT:
+    case CURLE_COULDNT_RESOLVE_HOST:
+    case CURLE_COULDNT_RESOLVE_PROXY:
+    case CURLE_OPERATION_TIMEDOUT:
+    case CURLE_PARTIAL_FILE:
+    case CURLE_RECV_ERROR:
+    case CURLE_SEND_ERROR:
+    case CURLE_GOT_NOTHING:
+    case CURLE_SSL_CONNECT_ERROR:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool RetryableStatus(long status) {
+  return status == 408 || status == 425 || status == 429 || status >= 500;
+}
+
+void Sleep(long milliseconds) {
+  if (milliseconds <= 0) return;
+  struct timespec delay = {milliseconds / 1000,
+                           (milliseconds % 1000) * 1000000L};
+  while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {
+  }
+}
+
+void PublishMessage(int descriptor, const std::string& message) {
   if (descriptor < 0) return;
-  const std::string packet = "PDownloading Roblox... " +
-                             std::to_string(bytes / (1024U * 1024U)) + " MiB";
+  const std::string packet = "P" + message;
   (void)send(descriptor, packet.data(), packet.size(), MSG_NOSIGNAL);
+}
+
+constexpr curl_off_t kMebibyte = 1024 * 1024;
+
+struct TransferProgress {
+  int descriptor = -1;
+  curl_off_t resumed_bytes = 0;
+  std::chrono::steady_clock::time_point reported_at{};
+  curl_off_t reported_bytes = 0;
+  bool started = false;
+};
+
+// One decimal place without dragging in a stream: 1536 KiB/s reads as 1.5.
+std::string Rate(curl_off_t bytes, std::chrono::milliseconds elapsed) {
+  if (elapsed.count() <= 0) return {};
+  const curl_off_t per_second = bytes * 1000 / elapsed.count();
+  if (per_second < kMebibyte) {
+    return " at " + std::to_string(per_second / 1024) + " KiB/s";
+  }
+  const curl_off_t tenths = per_second * 10 / kMebibyte;
+  return " at " + std::to_string(tenths / 10) + "." +
+         std::to_string(tenths % 10) + " MiB/s";
+}
+
+// Refreshed once a second: a dialog that only moves every 64 MiB looks frozen.
+int ReportTransferProgress(void* opaque, curl_off_t expected, curl_off_t now,
+                           curl_off_t, curl_off_t) {
+  auto* progress = static_cast<TransferProgress*>(opaque);
+  if (progress == nullptr || progress->descriptor < 0) return 0;
+  const auto moment = std::chrono::steady_clock::now();
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      moment - progress->reported_at);
+  if (progress->started && elapsed < std::chrono::seconds(1)) return 0;
+  const curl_off_t received = progress->resumed_bytes + now;
+  const curl_off_t total =
+      expected > 0 ? progress->resumed_bytes + expected : 0;
+  std::string message =
+      "Downloading Roblox... " + std::to_string(received / kMebibyte) + " MiB";
+  if (total > 0) {
+    message += " / " + std::to_string(total / kMebibyte) + " MiB (" +
+               std::to_string(received * 100 / total) + "%)";
+  }
+  if (progress->started && received > progress->reported_bytes) {
+    message += Rate(received - progress->reported_bytes, elapsed);
+  }
+  progress->started = true;
+  progress->reported_at = moment;
+  progress->reported_bytes = received;
+  PublishMessage(progress->descriptor, message);
+  return 0;
 }
 
 struct BytesWriter {
@@ -101,9 +181,9 @@ std::size_t WriteBytes(char* data, std::size_t size, std::size_t count,
 struct FileWriter {
   int descriptor = -1;
   std::size_t maximum = 0;
+  // Includes any resumed prefix, so the limit covers the whole file.
   std::size_t written = 0;
-  std::size_t next_progress = 64U * 1024U * 1024U;
-  int progress_fd = -1;
+  // Null while resuming; the digest is then taken in one pass at the end.
   foundation::Sha256* sha256 = nullptr;
   bool exceeded = false;
   bool write_failed = false;
@@ -113,7 +193,6 @@ std::size_t WriteFileBytes(char* data, std::size_t size, std::size_t count,
                            void* opaque) {
   auto* writer = static_cast<FileWriter*>(opaque);
   if (writer == nullptr || writer->descriptor < 0 || data == nullptr ||
-      writer->sha256 == nullptr ||
       (count != 0 && size > std::numeric_limits<std::size_t>::max() / count)) {
     return 0;
   }
@@ -133,13 +212,31 @@ std::size_t WriteFileBytes(char* data, std::size_t size, std::size_t count,
     }
     offset += static_cast<std::size_t>(result);
   }
-  writer->sha256->Update(reinterpret_cast<unsigned char*>(data), bytes);
-  writer->written += bytes;
-  if (writer->written >= writer->next_progress) {
-    PublishProgress(writer->progress_fd, writer->written);
-    writer->next_progress += 64U * 1024U * 1024U;
+  if (writer->sha256 != nullptr) {
+    writer->sha256->Update(reinterpret_cast<unsigned char*>(data), bytes);
   }
+  writer->written += bytes;
   return bytes;
+}
+
+std::string HashCompletedFile(const std::filesystem::path& path) {
+  const int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) return {};
+  foundation::Sha256 sha256;
+  std::array<char, 256U * 1024U> buffer{};
+  while (true) {
+    const ssize_t bytes = read(descriptor, buffer.data(), buffer.size());
+    if (bytes == 0) break;
+    if (bytes < 0) {
+      if (errno == EINTR) continue;
+      close(descriptor);
+      return {};
+    }
+    sha256.Update(reinterpret_cast<unsigned char*>(buffer.data()),
+                  static_cast<std::size_t>(bytes));
+  }
+  close(descriptor);
+  return sha256.FinalHex();
 }
 
 bool Configure(CURL* handle, const HttpTransferRequest& request,
@@ -157,6 +254,10 @@ bool Configure(CURL* handle, const HttpTransferRequest& request,
                           request.connect_timeout_ms) == CURLE_OK &&
          curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS,
                           request.transfer_timeout_ms) == CURLE_OK &&
+         curl_easy_setopt(handle, CURLOPT_LOW_SPEED_LIMIT,
+                          request.low_speed_bytes_per_second) == CURLE_OK &&
+         curl_easy_setopt(handle, CURLOPT_LOW_SPEED_TIME,
+                          request.low_speed_seconds) == CURLE_OK &&
          curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "") == CURLE_OK &&
          curl_easy_setopt(handle, CURLOPT_USERAGENT,
                           "Mocktail-native-updater/1") == CURLE_OK &&
@@ -220,6 +321,188 @@ std::string StatusFailure(std::string_view action, std::string_view url,
          " returned status " + std::to_string(status_code);
 }
 
+HttpBytesResult DownloadBytesAttempt(const HttpTransferRequest& request,
+                                     bool* retryable) {
+  HttpBytesResult result;
+  std::string current = request.url;
+  for (int redirect = 0; redirect <= request.maximum_redirects; ++redirect) {
+    std::unique_ptr<CURL, CurlHandleDeleter> handle(curl_easy_init());
+    if (!handle) {
+      result.error = "curl_easy_init failed";
+      return result;
+    }
+    auto headers = BuildHeaders(request.headers, &result.error);
+    if (!request.headers.empty() && !headers) return result;
+    std::array<char, CURL_ERROR_SIZE> error_buffer{};
+    if (!Configure(handle.get(), request, current, headers.get(),
+                   &error_buffer)) {
+      result.error = "cannot configure HTTPS request";
+      return result;
+    }
+    result.bytes.clear();
+    BytesWriter writer{&result.bytes, request.maximum_bytes, false};
+    curl_easy_setopt(handle.get(), CURLOPT_WRITEFUNCTION, WriteBytes);
+    curl_easy_setopt(handle.get(), CURLOPT_WRITEDATA, &writer);
+    const CURLcode status = curl_easy_perform(handle.get());
+    if (status != CURLE_OK) {
+      result.error = writer.exceeded ? "HTTPS response exceeds its size limit"
+                                     : CurlFailure(status, error_buffer);
+      *retryable = !writer.exceeded && RetryableTransport(status);
+      return result;
+    }
+    curl_easy_getinfo(handle.get(), CURLINFO_RESPONSE_CODE,
+                      &result.status_code);
+    if (RedirectStatus(result.status_code)) {
+      const std::string next = RedirectUrl(handle.get());
+      if (next.empty() || redirect == request.maximum_redirects ||
+          !IsTrustedHttpsUrl(next, request.allowed_hosts, &result.error)) {
+        if (result.error.empty()) result.error = "invalid HTTPS redirect";
+        return result;
+      }
+      current = next;
+      continue;
+    }
+    if (result.status_code < 200 || result.status_code >= 300) {
+      result.error = StatusFailure("request", current, result.status_code);
+      *retryable = RetryableStatus(result.status_code);
+      return result;
+    }
+    result.final_url = current;
+    return result;
+  }
+  result.error = "too many HTTPS redirects";
+  return result;
+}
+
+// Leaves the transferred bytes in `temporary`: they survive a retryable
+// failure so the next attempt resumes instead of pulling the archive again.
+HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
+                                       const std::filesystem::path& temporary,
+                                       int progress_fd, bool* retryable) {
+  HttpDownloadResult result;
+  std::error_code filesystem_error;
+  std::uintmax_t existing = std::filesystem::file_size(temporary,
+                                                       filesystem_error);
+  if (filesystem_error || existing > request.maximum_bytes) {
+    std::filesystem::remove(temporary, filesystem_error);
+    existing = 0;
+  }
+  // Outlives the redirect hops, or the count restarts at zero on each one.
+  TransferProgress progress;
+  progress.descriptor = progress_fd;
+  progress.resumed_bytes = static_cast<curl_off_t>(existing);
+  std::string current = request.url;
+  for (int redirect = 0; redirect <= request.maximum_redirects; ++redirect) {
+    const bool resuming = existing > 0;
+    const int descriptor =
+        open(temporary.c_str(),
+             O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW |
+                 (resuming ? 0 : O_TRUNC),
+             0600);
+    if (descriptor < 0) {
+      result.error = "cannot create temporary download: " +
+                     std::string(std::strerror(errno));
+      return result;
+    }
+    if (resuming && lseek(descriptor, 0, SEEK_END) < 0) {
+      close(descriptor);
+      std::filesystem::remove(temporary, filesystem_error);
+      result.error = "cannot resume temporary download: " +
+                     std::string(std::strerror(errno));
+      return result;
+    }
+    std::unique_ptr<CURL, CurlHandleDeleter> handle(curl_easy_init());
+    auto headers = BuildHeaders(request.headers, &result.error);
+    if (!handle || (!request.headers.empty() && !headers)) {
+      close(descriptor);
+      std::filesystem::remove(temporary, filesystem_error);
+      if (result.error.empty()) result.error = "curl_easy_init failed";
+      return result;
+    }
+    std::array<char, CURL_ERROR_SIZE> error_buffer{};
+    if (!Configure(handle.get(), request, current, headers.get(),
+                   &error_buffer)) {
+      close(descriptor);
+      std::filesystem::remove(temporary, filesystem_error);
+      result.error = "cannot configure HTTPS download";
+      return result;
+    }
+    foundation::Sha256 sha256;
+    FileWriter writer{descriptor, request.maximum_bytes,
+                      static_cast<std::size_t>(existing),
+                      resuming ? nullptr : &sha256, false, false};
+    curl_easy_setopt(handle.get(), CURLOPT_WRITEFUNCTION, WriteFileBytes);
+    curl_easy_setopt(handle.get(), CURLOPT_WRITEDATA, &writer);
+    curl_easy_setopt(handle.get(), CURLOPT_NOPROGRESS,
+                     progress_fd < 0 ? 1L : 0L);
+    curl_easy_setopt(handle.get(), CURLOPT_XFERINFOFUNCTION,
+                     ReportTransferProgress);
+    curl_easy_setopt(handle.get(), CURLOPT_XFERINFODATA, &progress);
+    if (resuming) {
+      curl_easy_setopt(handle.get(), CURLOPT_RESUME_FROM_LARGE,
+                       static_cast<curl_off_t>(existing));
+    }
+    const CURLcode status = curl_easy_perform(handle.get());
+    long http_status = 0;
+    curl_easy_getinfo(handle.get(), CURLINFO_RESPONSE_CODE, &http_status);
+    const bool synced = fsync(descriptor) == 0;
+    close(descriptor);
+    if (status != CURLE_OK || writer.write_failed || !synced) {
+      if (writer.exceeded) {
+        result.error = "HTTPS download exceeds its size limit";
+      } else if (writer.write_failed || !synced) {
+        result.error = "cannot persist HTTPS download";
+      } else {
+        result.error = CurlFailure(status, error_buffer);
+        *retryable = RetryableTransport(status);
+      }
+      if (!*retryable) std::filesystem::remove(temporary, filesystem_error);
+      return result;
+    }
+    if (RedirectStatus(http_status)) {
+      // The redirect body was appended to the file; drop it, keep the prefix.
+      if (truncate(temporary.c_str(), static_cast<off_t>(existing)) != 0) {
+        std::filesystem::remove(temporary, filesystem_error);
+        existing = 0;
+      }
+      const std::string next = RedirectUrl(handle.get());
+      if (next.empty() || redirect == request.maximum_redirects ||
+          !IsTrustedHttpsUrl(next, request.allowed_hosts, &result.error)) {
+        std::filesystem::remove(temporary, filesystem_error);
+        if (result.error.empty()) result.error = "invalid HTTPS redirect";
+        return result;
+      }
+      current = next;
+      continue;
+    }
+    // The range was ignored or the offset refused; either way the partial
+    // file is unusable now.
+    if (resuming && (http_status == 200 || http_status == 416)) {
+      std::filesystem::remove(temporary, filesystem_error);
+      result.error = http_status == 416
+                         ? "HTTPS server rejected the resume offset"
+                         : "HTTPS server ignored the resume request";
+      *retryable = true;
+      return result;
+    }
+    if (http_status < 200 || http_status >= 300 || writer.written == 0) {
+      result.error = writer.written == 0
+                         ? "HTTPS download is empty"
+                         : StatusFailure("download", current, http_status);
+      *retryable = RetryableStatus(http_status);
+      if (!*retryable) std::filesystem::remove(temporary, filesystem_error);
+      return result;
+    }
+    result.bytes_written = writer.written;
+    result.sha256 = resuming ? HashCompletedFile(temporary) : sha256.FinalHex();
+    result.final_url = current;
+    return result;
+  }
+  std::filesystem::remove(temporary, filesystem_error);
+  result.error = "too many HTTPS redirects";
+  return result;
+}
+
 }  // namespace
 
 bool IsTrustedHttpsUrl(std::string_view url,
@@ -279,52 +562,14 @@ HttpBytesResult DownloadBytes(const HttpTransferRequest& request) {
     result.error = curl_easy_strerror(g_curl_status);
     return result;
   }
-  std::string current = request.url;
-  for (int redirect = 0; redirect <= request.maximum_redirects; ++redirect) {
-    std::unique_ptr<CURL, CurlHandleDeleter> handle(curl_easy_init());
-    if (!handle) {
-      result.error = "curl_easy_init failed";
-      return result;
-    }
-    auto headers = BuildHeaders(request.headers, &result.error);
-    if (!request.headers.empty() && !headers) return result;
-    std::array<char, CURL_ERROR_SIZE> error_buffer{};
-    if (!Configure(handle.get(), request, current, headers.get(),
-                   &error_buffer)) {
-      result.error = "cannot configure HTTPS request";
-      return result;
-    }
-    result.bytes.clear();
-    BytesWriter writer{&result.bytes, request.maximum_bytes, false};
-    curl_easy_setopt(handle.get(), CURLOPT_WRITEFUNCTION, WriteBytes);
-    curl_easy_setopt(handle.get(), CURLOPT_WRITEDATA, &writer);
-    const CURLcode status = curl_easy_perform(handle.get());
-    if (status != CURLE_OK) {
-      result.error = writer.exceeded ? "HTTPS response exceeds its size limit"
-                                     : CurlFailure(status, error_buffer);
-      return result;
-    }
-    curl_easy_getinfo(handle.get(), CURLINFO_RESPONSE_CODE,
-                      &result.status_code);
-    if (RedirectStatus(result.status_code)) {
-      const std::string next = RedirectUrl(handle.get());
-      if (next.empty() || redirect == request.maximum_redirects ||
-          !IsTrustedHttpsUrl(next, request.allowed_hosts, &result.error)) {
-        if (result.error.empty()) result.error = "invalid HTTPS redirect";
-        return result;
-      }
-      current = next;
-      continue;
-    }
-    if (result.status_code < 200 || result.status_code >= 300) {
-      result.error = StatusFailure("request", current, result.status_code);
-      return result;
-    }
-    result.final_url = current;
-    return result;
+  const int attempts =
+      request.maximum_attempts > 0 ? request.maximum_attempts : 1;
+  for (int attempt = 1;; ++attempt) {
+    bool retryable = false;
+    result = DownloadBytesAttempt(request, &retryable);
+    if (result || !retryable || attempt >= attempts) return result;
+    Sleep(request.retry_delay_ms * attempt);
   }
-  result.error = "too many HTTPS redirects";
-  return result;
 }
 
 HttpDownloadResult DownloadFile(const HttpTransferRequest& request,
@@ -352,85 +597,24 @@ HttpDownloadResult DownloadFile(const HttpTransferRequest& request,
       destination.parent_path() / ("." + destination.filename().string() +
                                    ".part-" + std::to_string(getpid()));
   std::filesystem::remove(temporary, filesystem_error);
-  std::string current = request.url;
-  for (int redirect = 0; redirect <= request.maximum_redirects; ++redirect) {
-    const int descriptor =
-        open(temporary.c_str(),
-             O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (descriptor < 0) {
-      result.error = "cannot create temporary download: " +
-                     std::string(std::strerror(errno));
+  const int attempts =
+      request.maximum_attempts > 0 ? request.maximum_attempts : 1;
+  for (int attempt = 1;; ++attempt) {
+    bool retryable = false;
+    result = DownloadFileAttempt(request, temporary, progress_fd, &retryable);
+    if (result) break;
+    if (!retryable || attempt >= attempts) {
+      std::filesystem::remove(temporary, filesystem_error);
       return result;
     }
-    std::unique_ptr<CURL, CurlHandleDeleter> handle(curl_easy_init());
-    auto headers = BuildHeaders(request.headers, &result.error);
-    if (!handle || (!request.headers.empty() && !headers)) {
-      close(descriptor);
-      std::filesystem::remove(temporary, filesystem_error);
-      if (result.error.empty()) result.error = "curl_easy_init failed";
-      return result;
-    }
-    std::array<char, CURL_ERROR_SIZE> error_buffer{};
-    if (!Configure(handle.get(), request, current, headers.get(),
-                   &error_buffer)) {
-      close(descriptor);
-      std::filesystem::remove(temporary, filesystem_error);
-      result.error = "cannot configure HTTPS download";
-      return result;
-    }
-    foundation::Sha256 sha256;
-    FileWriter writer{descriptor,  request.maximum_bytes,
-                      0,           64U * 1024U * 1024U,
-                      progress_fd, &sha256,
-                      false,       false};
-    curl_easy_setopt(handle.get(), CURLOPT_WRITEFUNCTION, WriteFileBytes);
-    curl_easy_setopt(handle.get(), CURLOPT_WRITEDATA, &writer);
-    const CURLcode status = curl_easy_perform(handle.get());
-    long http_status = 0;
-    curl_easy_getinfo(handle.get(), CURLINFO_RESPONSE_CODE, &http_status);
-    const bool synced = fsync(descriptor) == 0;
-    close(descriptor);
-    if (status != CURLE_OK || writer.write_failed || !synced) {
-      std::filesystem::remove(temporary, filesystem_error);
-      if (writer.exceeded) {
-        result.error = "HTTPS download exceeds its size limit";
-      } else if (writer.write_failed || !synced) {
-        result.error = "cannot persist HTTPS download";
-      } else {
-        result.error = CurlFailure(status, error_buffer);
-      }
-      return result;
-    }
-    if (RedirectStatus(http_status)) {
-      const std::string next = RedirectUrl(handle.get());
-      std::filesystem::remove(temporary, filesystem_error);
-      if (next.empty() || redirect == request.maximum_redirects ||
-          !IsTrustedHttpsUrl(next, request.allowed_hosts, &result.error)) {
-        if (result.error.empty()) result.error = "invalid HTTPS redirect";
-        return result;
-      }
-      current = next;
-      continue;
-    }
-    if (http_status < 200 || http_status >= 300 || writer.written == 0) {
-      std::filesystem::remove(temporary, filesystem_error);
-      result.error = writer.written == 0
-                         ? "HTTPS download is empty"
-                         : StatusFailure("download", current, http_status);
-      return result;
-    }
-    std::filesystem::rename(temporary, destination, filesystem_error);
-    if (filesystem_error) {
-      std::filesystem::remove(temporary, filesystem_error);
-      result.error = "cannot publish completed download";
-      return result;
-    }
-    result.bytes_written = writer.written;
-    result.sha256 = sha256.FinalHex();
-    result.final_url = current;
-    return result;
+    PublishMessage(progress_fd, "Retrying Roblox download...");
+    Sleep(request.retry_delay_ms * attempt);
   }
-  result.error = "too many HTTPS redirects";
+  std::filesystem::rename(temporary, destination, filesystem_error);
+  if (filesystem_error) {
+    std::filesystem::remove(temporary, filesystem_error);
+    result.error = "cannot publish completed download";
+  }
   return result;
 }
 

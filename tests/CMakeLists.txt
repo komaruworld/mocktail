@@ -55,6 +55,9 @@ target_link_libraries(native_update_test PRIVATE
   Mocktail::Update
   GTest::gtest_main
 )
+target_compile_definitions(native_update_test PRIVATE
+  MOCKTAIL_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
 
 add_executable(apk_provider_test apk_provider_test.cc)
 target_link_libraries(apk_provider_test PRIVATE
