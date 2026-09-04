@@ -286,8 +286,8 @@ void NoteSuboptimalTranslation() {
   static std::atomic<bool> logged{false};
   if (!logged.exchange(true, std::memory_order_relaxed)) {
     std::fprintf(stderr,
-                 "  [vulkan] mapped VK_SUBOPTIMAL_KHR to OUT_OF_DATE so the "
-                 "swapchain can rebuild\n");
+                 "  [vulkan] accepted VK_SUBOPTIMAL_KHR; the acquired image "
+                 "remains usable\n");
   }
 }
 
@@ -1569,8 +1569,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(
   if (fps_trace) {
     AcquireWaitTrace().Record(acquire_start_ns);
   }
-  const VkResult result =
-      mocktail::graphics::NormalizeAndroidSwapchainResult(host_result);
+  const VkResult result = NormalizeSwapchainResult(host_result);
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     const NoteSurfaceOutOfDateFn note_surface_out_of_date =
         State().note_surface_out_of_date.load(std::memory_order_acquire);
@@ -1594,8 +1593,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImage2KHR(
   }
   const VkResult host_result =
       host_acquire(device, acquire_info, image_index);
-  const VkResult result =
-      mocktail::graphics::NormalizeAndroidSwapchainResult(host_result);
+  const VkResult result = NormalizeSwapchainResult(host_result);
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     const NoteSurfaceOutOfDateFn note_surface_out_of_date =
         State().note_surface_out_of_date.load(std::memory_order_acquire);

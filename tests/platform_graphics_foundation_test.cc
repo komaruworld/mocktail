@@ -274,12 +274,12 @@ TEST(AndroidVulkanWsiAdapterTest, LeavesNonSurfaceExtensionsUnchanged) {
             (std::vector<std::string>{"VK_EXT_debug_utils"}));
 }
 
-TEST(AndroidVulkanWsiAdapterTest, MapsSuboptimalToOutOfDateForSwapchainRebuild) {
-  constexpr VkResult kOutOfDate = static_cast<VkResult>(-1000001004);
+TEST(AndroidVulkanWsiAdapterTest, AcceptsSuboptimalSwapchainImages) {
   EXPECT_EQ(graphics::NormalizeAndroidSwapchainResult(VK_SUBOPTIMAL_KHR),
-            kOutOfDate);
+            VK_SUCCESS);
   EXPECT_EQ(graphics::NormalizeAndroidSwapchainResult(VK_SUCCESS),
             VK_SUCCESS);
+  constexpr VkResult kOutOfDate = static_cast<VkResult>(-1000001004);
   EXPECT_EQ(graphics::NormalizeAndroidSwapchainResult(kOutOfDate), kOutOfDate);
 }
 
