@@ -559,6 +559,58 @@ TEST(PayloadStoreTest, CollectsSupersededPayloadsAndKeepsTheRollbackTarget) {
   EXPECT_FALSE(std::filesystem::exists(root / "payloads" / abandoned));
 }
 
+// #110: the metadata carries the moment of preparation, so restaging the same
+// bytes quarantined the running payload, took it out of payloads/, and left
+// the next launch to download it again.
+TEST(PayloadStoreTest, RestagingIdenticalBytesKeepsTheInstalledPayload) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path prepared = temporary.root() / "prepared";
+  const std::filesystem::path restaged = temporary.root() / "restaged";
+  Write(prepared / "libroblox.so", "native-library");
+  Write(prepared / "sober_apk/base.apk", "base-apk");
+  Write(prepared / "sober_apk/split_config.x86_64.apk", "split-apk");
+  Write(prepared / "assets/content/fixture", "asset");
+  std::string error;
+  std::size_t asset_count = 0;
+  const std::string asset_hash =
+      HashAssetTree(prepared / "assets", &asset_count, &error);
+  ASSERT_TRUE(error.empty()) << error;
+  nlohmann::json metadata = {
+      {"schema_version", 1},
+      {"package", "com.roblox.client"},
+      {"version_name", "2.727.1199"},
+      {"version_code", 2628},
+      {"elf_build_id", "1686400865ae0e408cd7bd67de7a439625c6fd13"},
+      {"sha256",
+       {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
+        {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
+        {"x86_64_split_apk",
+         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+      {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
+      {"source", "apk-pure-native"},
+      {"imported_at", "2026-09-04T03:49:16Z"},
+  };
+  Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");
+  std::filesystem::copy(prepared, restaged,
+                        std::filesystem::copy_options::recursive);
+  metadata["imported_at"] = "2026-09-04T04:12:55Z";
+  Write(restaged / "roblox_payload.json", metadata.dump(2) + "\n");
+
+  const std::filesystem::path store_root = temporary.root() / "store";
+  PayloadStore store(store_root, temporary.root() / "compatibility.json");
+  const PayloadStoreResult initial = store.Stage(prepared);
+  ASSERT_TRUE(initial) << initial.error;
+  const auto written_at =
+      std::filesystem::last_write_time(initial.payload_directory);
+
+  const PayloadStoreResult again = store.Stage(restaged);
+  ASSERT_TRUE(again) << again.error;
+  EXPECT_EQ(again.payload_id, initial.payload_id);
+  EXPECT_EQ(std::filesystem::last_write_time(initial.payload_directory),
+            written_at);
+  EXPECT_FALSE(std::filesystem::exists(store_root / "quarantine"));
+}
+
 TEST(PayloadStoreTest, CollectsNothingWhileTheStoreIsUnreadable) {
   TemporaryDirectory temporary;
   const std::filesystem::path root = temporary.root() / "store";

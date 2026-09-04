@@ -194,6 +194,15 @@ bool RemovePayloadTree(const std::filesystem::path& payload,
   return true;
 }
 
+bool SamePayloadContent(const PayloadMetadata& left,
+                        const PayloadMetadata& right) {
+  return left.library_sha256 == right.library_sha256 &&
+         left.base_apk_sha256 == right.base_apk_sha256 &&
+         left.split_apk_sha256 == right.split_apk_sha256 &&
+         left.asset_tree_sha256 == right.asset_tree_sha256 &&
+         left.asset_file_count == right.asset_file_count;
+}
+
 std::string TimestampSuffix() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   return std::to_string(
@@ -614,9 +623,11 @@ PayloadStoreResult PayloadStore::Stage(
   if (std::filesystem::exists(result.payload_directory, filesystem_error)) {
     const PayloadIntegrityResult existing =
         VerifyPreparedPayload(result.payload_directory);
+    // What the bytes are, not where they came from. The metadata records the
+    // moment of preparation, so comparing that file made every restage
+    // quarantine the payload the store was running from.
     if (existing && existing.payload_id == result.payload_id &&
-        HashRegularFile(prepared_payload / "roblox_payload.json") ==
-            HashRegularFile(result.payload_directory / "roblox_payload.json")) {
+        SamePayloadContent(existing.metadata, verified.metadata)) {
       return result;
     }
     if (!QuarantinePayloadCollision(root_, result.payload_directory,
@@ -626,17 +637,14 @@ PayloadStoreResult PayloadStore::Stage(
   const std::filesystem::path staging =
       root_ / "payloads" /
       (".stage-" + result.payload_id + "-" + std::to_string(getpid()));
-  std::filesystem::remove_all(staging, filesystem_error);
+  RemovePayloadTree(staging, nullptr);
   if (!CopyTree(prepared_payload, staging, &result.error)) {
-    std::filesystem::remove_all(staging, filesystem_error);
+    RemovePayloadTree(staging, nullptr);
     return result;
   }
   const PayloadIntegrityResult staged = VerifyPreparedPayload(staging);
   if (!staged || staged.payload_id != result.payload_id) {
-    std::filesystem::permissions(staging, std::filesystem::perms::owner_all,
-                                 std::filesystem::perm_options::add,
-                                 filesystem_error);
-    std::filesystem::remove_all(staging, filesystem_error);
+    RemovePayloadTree(staging, nullptr);
     result.error = staged ? "staged payload identity changed" : staged.error;
     return result;
   }
@@ -901,6 +909,21 @@ PayloadGarbageResult PayloadStore::CollectGarbage(
   if (filesystem_error) {
     result.error = "cannot inspect the payload store";
     return result;
+  }
+  // Nothing ever reads a quarantined tree back; it is a copy set aside by a
+  // collision and it is the same 600 MiB as a payload.
+  std::error_code quarantine_error;
+  std::filesystem::directory_iterator quarantine(
+      root_ / "quarantine", std::filesystem::directory_options::none,
+      quarantine_error);
+  while (!quarantine_error && quarantine != end) {
+    const auto status = quarantine->symlink_status(quarantine_error);
+    if (quarantine_error) break;
+    if (std::filesystem::is_directory(status) &&
+        !std::filesystem::is_symlink(status)) {
+      superseded.push_back(quarantine->path());
+    }
+    quarantine.increment(quarantine_error);
   }
   for (const std::filesystem::path& payload : superseded) {
     if (RemovePayloadTree(payload, &result.freed_bytes)) {
