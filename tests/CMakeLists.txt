@@ -71,6 +71,12 @@ target_link_libraries(support_bundle_runtime_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(vulkan_icd_selection_test vulkan_icd_selection_test.cc)
+target_link_libraries(vulkan_icd_selection_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(session_log_test session_log_test.cc)
 target_link_libraries(session_log_test PRIVATE
   Mocktail::Runtime
@@ -844,6 +850,7 @@ gtest_discover_tests(payload_update_preflight_test)
 gtest_discover_tests(apk_provider_test)
 gtest_discover_tests(native_update_test)
 gtest_discover_tests(support_bundle_runtime_test)
+gtest_discover_tests(vulkan_icd_selection_test)
 gtest_discover_tests(session_log_test)
 gtest_discover_tests(failure_dialog_test)
 gtest_discover_tests(frame_rate_policy_test)

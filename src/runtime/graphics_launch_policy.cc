@@ -2,12 +2,14 @@
 
 #include "runtime/frame_rate_policy.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <unistd.h>
 #include <vector>
@@ -28,11 +30,27 @@ constexpr const char* kIcdDirectories[] = {
     "/usr/local/share/vulkan/icd.d",
 };
 
+constexpr char kNativeArchitecture[] = "x86_64";
+
+constexpr const char* kForeignArchitectures[] = {
+    "i686", "i586", "i486", "i386",   "x86.",   "aarch64",
+    "arm64", "armhf", "armv7", "ppc64", "riscv64", "s390x",
+};
+
 struct HostGpus {
   bool intel = false;
   bool nvidia = false;
   bool amd = false;
 };
+
+bool ForeignArchitecture(const std::string& name) {
+  for (const char* architecture : kForeignArchitectures) {
+    if (name.find(architecture) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
 
 bool SetValue(const char* name, const std::string& value, std::string* error) {
   if (setenv(name, value.c_str(), 1) == 0) {
@@ -110,25 +128,11 @@ std::string FindIcdFile(const char* filename_needle) {
   if (filename_needle == nullptr || filename_needle[0] == '\0') {
     return {};
   }
+  std::vector<std::filesystem::path> directories;
   for (const char* directory : kIcdDirectories) {
-    std::error_code error;
-    for (std::filesystem::directory_iterator iterator(directory, error), end;
-         !error && iterator != end; iterator.increment(error)) {
-      if (!iterator->is_regular_file(error)) {
-        continue;
-      }
-      const std::string name = iterator->path().filename().string();
-      if (name.find(".json") == std::string::npos ||
-          name.find(filename_needle) == std::string::npos) {
-        continue;
-      }
-      const std::string path = iterator->path().string();
-      if (access(path.c_str(), R_OK) == 0) {
-        return path;
-      }
-    }
+    directories.emplace_back(directory);
   }
-  return {};
+  return SelectVulkanIcdManifest(directories, filename_needle);
 }
 
 std::string SelectHardwareIcd(const HostGpus& gpus) {
@@ -208,6 +212,48 @@ bool ApplyVulkanIcdPolicy(const HostGpus& gpus, std::string* error) {
 }
 
 }  // namespace
+
+std::string SelectVulkanIcdManifest(
+    const std::vector<std::filesystem::path>& directories,
+    std::string_view vendor) {
+  if (vendor.empty()) {
+    return {};
+  }
+  for (const std::filesystem::path& directory : directories) {
+    std::error_code error;
+    std::vector<std::string> names;
+    for (std::filesystem::directory_iterator iterator(directory, error), end;
+         !error && iterator != end; iterator.increment(error)) {
+      if (!iterator->is_regular_file(error)) {
+        continue;
+      }
+      const std::string name = iterator->path().filename().string();
+      if (name.find(".json") == std::string::npos ||
+          name.find(vendor) == std::string::npos || ForeignArchitecture(name)) {
+        continue;
+      }
+      names.push_back(name);
+    }
+    std::sort(names.begin(), names.end());
+    std::string generic;
+    for (const std::string& name : names) {
+      const std::string path = (directory / name).string();
+      if (access(path.c_str(), R_OK) != 0) {
+        continue;
+      }
+      if (name.find(kNativeArchitecture) != std::string::npos) {
+        return path;
+      }
+      if (generic.empty()) {
+        generic = path;
+      }
+    }
+    if (!generic.empty()) {
+      return generic;
+    }
+  }
+  return {};
+}
 
 bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
                                std::string* error) {
