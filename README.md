@@ -1,10 +1,14 @@
 # Mocktail
 
-[![CI](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml/badge.svg)](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml)
-[![Stars](https://img.shields.io/github/stars/komaruworld/mocktail?style=flat&logo=github)](https://github.com/komaruworld/mocktail/stargazers)
-[![Downloads](https://img.shields.io/github/downloads/komaruworld/mocktail/total?logo=github)](https://github.com/komaruworld/mocktail/releases/latest)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Discord](https://img.shields.io/discord/1543955607869063269?label=discord)](https://discord.gg/rhgpfcmFSD)
+<div align="center">
+
+[![CI](https://img.shields.io/github/actions/workflow/status/komaruworld/mocktail/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=10b981&label=CI&labelColor=111827&color=1f2937)](https://github.com/komaruworld/mocktail/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/komaruworld/mocktail?style=for-the-badge&logo=star&logoColor=f59e0b&label=STARS&labelColor=111827&color=f59e0b)](https://github.com/komaruworld/mocktail/stargazers)
+[![Downloads](https://img.shields.io/github/downloads/komaruworld/mocktail/total?style=for-the-badge&logo=github&logoColor=06b6d4&label=DOWNLOADS&labelColor=111827&color=06b6d4)](https://github.com/komaruworld/mocktail/releases/latest)
+[![License](https://img.shields.io/badge/LICENSE-APACHE_2.0-f43f5e?style=for-the-badge&logo=apache&logoColor=white&labelColor=111827)](LICENSE)
+[![Discord](https://img.shields.io/discord/1543955607869063269?style=for-the-badge&logo=discord&logoColor=white&label=DISCORD&labelColor=111827&color=5865F2)](https://discord.gg/rhgpfcmFSD)
+
+</div>
 
 Mocktail runs the Android `x86_64` Roblox client on Linux, including a Linux
 userspace hosted by FreeBSD's Linuxulator. It provides the Android ABI and JNI
