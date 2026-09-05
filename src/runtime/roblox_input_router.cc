@@ -313,6 +313,7 @@ Status RobloxInputRouter::Activate(RobloxInputViewport viewport,
   active_mouse_buttons_.clear();
   active_touches_.clear();
   active_keys_.clear();
+  gamepads_.clear();
   mouse_x_ = 0.0f;
   mouse_y_ = 0.0f;
   return Status::Ok();
@@ -324,6 +325,10 @@ Status RobloxInputRouter::Deactivate() {
     return Status::Ok();
   }
   Status status = ReleasePressedInputsLocked();
+  Status gamepad_status = DisconnectGamepadsLocked();
+  if (status.ok()) {
+    status = std::move(gamepad_status);
+  }
   const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
   if (text.focused) {
     Status text_status = text_editor_.EndFocusSession(text.textbox_handle,
@@ -417,6 +422,19 @@ RobloxInputDispatchResult RobloxInputRouter::HandleEvent(
     }
     return Result(RobloxInputDispatchState::kStateUpdated,
                   RobloxInputEventKind::kFocus);
+  }
+
+  if (const auto* connection =
+          std::get_if<platform::GamepadConnectionEvent>(&event.payload)) {
+    return HandleGamepadConnectionLocked(*connection);
+  }
+  if (const auto* button =
+          std::get_if<platform::GamepadButtonEvent>(&event.payload)) {
+    return HandleGamepadButtonLocked(*button);
+  }
+  if (const auto* axis =
+          std::get_if<platform::GamepadAxisEvent>(&event.payload)) {
+    return HandleGamepadAxisLocked(*axis);
   }
 
   RobloxInputEventKind kind = RobloxInputEventKind::kNone;
@@ -699,6 +717,12 @@ RobloxInputDispatchResult RobloxInputRouter::HandleKeyLocked(
 
 Status RobloxInputRouter::ReleasePressedInputsLocked() {
   Status first_error = Status::Ok();
+  for (ActiveGamepad& gamepad : gamepads_) {
+    Status status = ReleaseGamepadInputsLocked(gamepad);
+    if (first_error.ok()) {
+      first_error = std::move(status);
+    }
+  }
   for (int32_t button : active_mouse_buttons_) {
     if (sink_.mouse_button == nullptr) {
       continue;
@@ -801,6 +825,10 @@ RobloxInputDispatchResult RobloxInputRouter::NativeResultLocked(
     case RobloxInputEventKind::kKeyboard:
       ++snapshot_.keyboard_events;
       break;
+    case RobloxInputEventKind::kGamepadButton:
+    case RobloxInputEventKind::kGamepadAxis:
+      ++snapshot_.gamepad_events;
+      break;
     default:
       break;
   }
@@ -847,6 +875,12 @@ const char* RobloxInputEventKindName(RobloxInputEventKind kind) {
       return "Focus";
     case RobloxInputEventKind::kViewport:
       return "Viewport";
+    case RobloxInputEventKind::kGamepadConnection:
+      return "GamepadConnection";
+    case RobloxInputEventKind::kGamepadButton:
+      return "GamepadButton";
+    case RobloxInputEventKind::kGamepadAxis:
+      return "GamepadAxis";
   }
   return "Unknown";
 }

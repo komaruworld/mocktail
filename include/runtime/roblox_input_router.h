@@ -1,6 +1,7 @@
 #ifndef MOCKTAIL_RUNTIME_ROBLOX_INPUT_ROUTER_H_
 #define MOCKTAIL_RUNTIME_ROBLOX_INPUT_ROUTER_H_
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <mutex>
@@ -43,6 +44,33 @@ AndroidKeyMapping MapSdlKeyToAndroid(uint32_t sdl_scancode, uint32_t sdl_key = 0
 // numbers are not numerically compatible with Android button bit values.
 int32_t MapSdlMouseButtonToAndroid(uint8_t sdl_button);
 
+int32_t MapSdlGamepadButtonToAndroid(uint8_t sdl_button);
+int32_t RobloxGamepadType(platform::GamepadFamily family);
+
+struct RobloxGamepadSink {
+  using SupportedKeyFn = Status (*)(void*, int32_t, int32_t, bool, int32_t);
+  using SupportedMotionFn = Status (*)(void*, int32_t, int32_t, int32_t, bool,
+                                       int32_t);
+  using ConnectFn = Status (*)(void*, int32_t, int32_t);
+  using DisconnectFn = Status (*)(void*, int32_t);
+  using ButtonFn = Status (*)(void*, int32_t, int32_t, bool);
+  using AxisFn = Status (*)(void*, int32_t, int32_t, float, float, float);
+
+  void* context = nullptr;
+  SupportedKeyFn supported_key = nullptr;
+  SupportedMotionFn supported_motion = nullptr;
+  ConnectFn connect = nullptr;
+  DisconnectFn disconnect = nullptr;
+  ButtonFn button = nullptr;
+  AxisFn axis = nullptr;
+
+  bool valid() const {
+    return supported_key != nullptr && supported_motion != nullptr &&
+           connect != nullptr && disconnect != nullptr && button != nullptr &&
+           axis != nullptr;
+  }
+};
+
 struct RobloxInputSink {
   using MouseMoveFn = Status (*)(void* context, float x, float y, float delta_x,
                                  float delta_y);
@@ -63,6 +91,7 @@ struct RobloxInputSink {
   TouchFn touch = nullptr;
   KeyFn key = nullptr;
   RobloxTextSink text;
+  RobloxGamepadSink gamepad{};
 };
 
 enum class RobloxInputEventKind {
@@ -75,6 +104,9 @@ enum class RobloxInputEventKind {
   kText,
   kFocus,
   kViewport,
+  kGamepadConnection,
+  kGamepadButton,
+  kGamepadAxis,
 };
 
 enum class RobloxInputDispatchState {
@@ -110,6 +142,9 @@ struct RobloxInputSnapshot {
   uint32_t active_mouse_buttons = 0;
   uint32_t active_touches = 0;
   uint32_t active_keys = 0;
+  uint64_t gamepad_events = 0;
+  uint32_t detected_gamepads = 0;
+  uint32_t connected_gamepads = 0;
 };
 
 // Stateful translation boundary from SDL platform events to the exact
@@ -149,6 +184,16 @@ class RobloxInputRouter final {
     AndroidKeyMapping android;
   };
 
+  struct ActiveGamepad {
+    int64_t instance_id = 0;
+    int32_t device_id = 0;
+    platform::GamepadDescriptor descriptor;
+    bool connected = false;
+    uint32_t pressed_buttons = 0;
+    std::array<int16_t, 6> raw_axes{};
+    std::array<float, 6> sent_axes{};
+  };
+
   RobloxInputDispatchResult HandleMouseMotionLocked(
       const platform::MouseMotionEvent& event);
   RobloxInputDispatchResult HandleMouseButtonLocked(
@@ -158,6 +203,20 @@ class RobloxInputRouter final {
   RobloxInputDispatchResult HandleTouchLocked(
       const platform::TouchEvent& event);
   RobloxInputDispatchResult HandleKeyLocked(const platform::KeyEvent& event);
+  RobloxInputDispatchResult HandleGamepadConnectionLocked(
+      const platform::GamepadConnectionEvent& event);
+  RobloxInputDispatchResult HandleGamepadButtonLocked(
+      const platform::GamepadButtonEvent& event);
+  RobloxInputDispatchResult HandleGamepadAxisLocked(
+      const platform::GamepadAxisEvent& event);
+  std::vector<ActiveGamepad>::iterator FindGamepadLocked(int64_t instance_id);
+  Status ConfigureGamepadLocked(const ActiveGamepad& gamepad, bool available);
+  Status ConnectGamepadLocked(ActiveGamepad& gamepad);
+  Status DispatchGamepadAxesLocked(ActiveGamepad& gamepad, uint8_t axis,
+                                   bool* dispatched);
+  Status ReleaseGamepadInputsLocked(ActiveGamepad& gamepad);
+  Status DisconnectGamepadLocked(ActiveGamepad& gamepad);
+  Status DisconnectGamepadsLocked();
   Status ReleasePressedInputsLocked();
   int32_t AllocatePointerIdLocked() const;
   std::vector<ActiveTouch>::iterator FindTouchIteratorLocked(int64_t touch_id,
@@ -173,6 +232,7 @@ class RobloxInputRouter final {
   std::vector<int32_t> active_mouse_buttons_;
   std::vector<ActiveTouch> active_touches_;
   std::vector<ActiveKey> active_keys_;
+  std::vector<ActiveGamepad> gamepads_;
   float mouse_x_ = 0.0f;
   float mouse_y_ = 0.0f;
 };

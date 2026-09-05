@@ -13,6 +13,7 @@ get_filename_component(MOCKTAIL_INPUT_ROOT "${CMAKE_CURRENT_LIST_DIR}/.."
 )
 
 add_library(mocktail_input_runtime STATIC
+  ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_gamepad_input.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_input_native_adapter.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_input_router.cc
   ${MOCKTAIL_INPUT_ROOT}/src/runtime/roblox_native_text_box_info_reader.cc
@@ -44,6 +45,7 @@ mocktail_apply_compile_options(mocktail_input_runtime)
 
 if(BUILD_TESTING AND TARGET GTest::gtest_main)
   add_executable(roblox_input_router_test
+    ${MOCKTAIL_INPUT_ROOT}/tests/roblox_gamepad_input_test.cc
     ${MOCKTAIL_INPUT_ROOT}/tests/roblox_input_router_test.cc
   )
   target_link_libraries(roblox_input_router_test PRIVATE

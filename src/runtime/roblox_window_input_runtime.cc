@@ -72,7 +72,21 @@ Status RobloxWindowInputRuntime::Initialize() {
   }
   mouse_lock_query_registered_ = true;
   initialized_ = true;
+  if (runtime_.SupportsGamepads()) {
+    const Status gamepad_status = gamepads_.Initialize(
+        this, &RobloxWindowInputRuntime::GamepadEventCallback);
+    if (!gamepad_status.ok()) {
+      std::fprintf(stderr, "  [gamepad] unavailable: %s\n",
+                   gamepad_status.message().c_str());
+    }
+  }
   return Status::Ok();
+}
+
+void RobloxWindowInputRuntime::GamepadEventCallback(
+    void* context, const platform::PlatformEvent& event) {
+  auto* self = static_cast<RobloxWindowInputRuntime*>(context);
+  (void)self->runtime_.HandleEvent(event);
 }
 
 void RobloxWindowInputRuntime::PlatformEventCallback(
@@ -81,12 +95,21 @@ void RobloxWindowInputRuntime::PlatformEventCallback(
     return;
   }
   auto* self = static_cast<RobloxWindowInputRuntime*>(context);
+  if (self->gamepads_.HandleEvent(event)) {
+    return;
+  }
   if (const auto* resized =
           std::get_if<platform::WindowResizedEvent>(&event.payload)) {
     (void)self->text_surface_overlay_.UpdateViewport(
         {resized->pixel_width, resized->pixel_height, resized->density_scale});
   }
   (void)self->runtime_.HandleEvent(event);
+  if (const auto* focus =
+          std::get_if<platform::WindowFocusEvent>(&event.payload)) {
+    if (focus->focused) {
+      self->gamepads_.ResendState();
+    }
+  }
 }
 
 Status RobloxWindowInputRuntime::Shutdown() {
@@ -101,6 +124,7 @@ Status RobloxWindowInputRuntime::Shutdown() {
     window::ClearMouseLockQueryCallback();
     mouse_lock_query_registered_ = false;
   }
+  gamepads_.Shutdown();
   const RobloxInputSnapshot snapshot = runtime_.Snapshot();
   Status status = runtime_.Deactivate();
   Status overlay_status = text_surface_overlay_.Shutdown();

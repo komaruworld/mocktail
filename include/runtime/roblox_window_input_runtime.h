@@ -3,6 +3,7 @@
 
 #include <memory>
 
+#include "mocktail/platform/sdl_gamepad_manager.h"
 #include "mocktail/platform/text_clipboard.h"
 #include "mocktail/status.h"
 #include "runtime/roblox_input_native_adapter.h"
@@ -40,10 +41,13 @@ class RobloxWindowInputRuntime final {
   static void PlatformEventCallback(void* context,
                                     const platform::PlatformEvent& event);
   static bool MouseLockQueryCallback(void* context, bool* locked_center);
+  static void GamepadEventCallback(void* context,
+                                   const platform::PlatformEvent& event);
 
   RobloxTextSurfaceOverlay text_surface_overlay_;
   std::unique_ptr<platform::TextClipboard> text_clipboard_;
   RobloxInputRuntime runtime_;
+  platform::SdlGamepadManager gamepads_;
   bool observer_registered_ = false;
   bool mouse_lock_query_registered_ = false;
   bool initialized_ = false;

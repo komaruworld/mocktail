@@ -33,6 +33,7 @@ class RobloxInputNativeAdapter final {
   Status Initialize();
   Status Release();
   bool initialized() const;
+  bool SupportsGamepads() const;
   Status GetMainWindowIsMouseLockedCenter(bool* locked_center);
   Status QueryCurrentTextBoxInfo(RobloxNativeTextBoxInfoQueryResult* result);
   RobloxInputSink Sink();
@@ -49,6 +50,19 @@ class RobloxInputNativeAdapter final {
                               int32_t height);
   static Status KeyCallback(void* context, bool pressed, int32_t scan_code,
                             int32_t key_code, bool repeat);
+  static Status GamepadSupportedKeyCallback(void* context, int32_t device_id,
+                                            int32_t key, bool supported,
+                                            int32_t type);
+  static Status GamepadSupportedMotionCallback(void* context, int32_t device_id,
+                                               int32_t axis, int32_t direction,
+                                               bool supported, int32_t type);
+  static Status GamepadConnectCallback(void* context, int32_t device_id,
+                                       int32_t type);
+  static Status GamepadDisconnectCallback(void* context, int32_t device_id);
+  static Status GamepadButtonCallback(void* context, int32_t device_id,
+                                      int32_t key, bool pressed);
+  static Status GamepadAxisCallback(void* context, int32_t device_id,
+                                    int32_t axis, float x, float y, float z);
   static Status SyncTextCallback(void* context, const char* utf8,
                                  std::size_t size, int32_t cursor_utf16);
   static Status PassTextCallback(void* context, int64_t textbox_handle,
@@ -108,6 +122,7 @@ class RobloxInputRuntime final {
   RobloxInputDispatchResult HandleEvent(const platform::PlatformEvent& event);
   RobloxInputSnapshot Snapshot() const;
   Status GetMainWindowIsMouseLockedCenter(bool* locked_center);
+  bool SupportsGamepads() const;
 
   static void PlatformEventCallback(void* context,
                                     const platform::PlatformEvent& event);
@@ -124,6 +139,7 @@ class RobloxInputRuntime final {
   bool logged_text_ = false;
   bool logged_text_unsupported_ = false;
   bool logged_native_error_ = false;
+  bool logged_gamepad_ = false;
 };
 
 }  // namespace runtime

@@ -152,6 +152,15 @@ bool RobloxInputNativeAdapter::initialized() const {
   return initialized_;
 }
 
+bool RobloxInputNativeAdapter::SupportsGamepads() const {
+  return symbols_.gamepad_connect_event_with_gamepad_type != nullptr &&
+         symbols_.gamepad_disconnect_event != nullptr &&
+         symbols_.set_gamepad_supported_key_with_gamepad_type != nullptr &&
+         symbols_.set_gamepad_supported_motion_with_gamepad_type != nullptr &&
+         symbols_.gamepad_button_event != nullptr &&
+         symbols_.gamepad_axis_event != nullptr;
+}
+
 Status RobloxInputNativeAdapter::GetMainWindowIsMouseLockedCenter(
     bool* locked_center) {
   if (locked_center == nullptr) {
@@ -199,7 +208,114 @@ RobloxInputSink RobloxInputNativeAdapter::Sink() {
                &RobloxInputNativeAdapter::PassTextCallback,
                &RobloxInputNativeAdapter::ReturnPressedCallback,
                &RobloxInputNativeAdapter::ReleaseFocusCallback};
+  if (SupportsGamepads()) {
+    sink.gamepad = {this,
+                    &RobloxInputNativeAdapter::GamepadSupportedKeyCallback,
+                    &RobloxInputNativeAdapter::GamepadSupportedMotionCallback,
+                    &RobloxInputNativeAdapter::GamepadConnectCallback,
+                    &RobloxInputNativeAdapter::GamepadDisconnectCallback,
+                    &RobloxInputNativeAdapter::GamepadButtonCallback,
+                    &RobloxInputNativeAdapter::GamepadAxisCallback};
+  }
   return sink;
+}
+
+Status RobloxInputNativeAdapter::GamepadSupportedKeyCallback(void* context,
+                                                             int32_t device_id,
+                                                             int32_t key,
+                                                             bool supported,
+                                                             int32_t type) {
+  auto* self = static_cast<RobloxInputNativeAdapter*>(context);
+  std::lock_guard<std::mutex> lock(self->mutex_);
+  JNIEnv* env = nullptr;
+  Status status = self->RequireReadyLocked(&env);
+  if (!status.ok()) {
+    return status;
+  }
+  self->symbols_.set_gamepad_supported_key_with_gamepad_type(
+      env, self->native_input_class_, device_id, key,
+      supported ? JNI_TRUE : JNI_FALSE, type);
+  return self->CheckJniException(env,
+                                 "nativeSetGamepadSupportedKeyWithGamepadType");
+}
+
+Status RobloxInputNativeAdapter::GamepadSupportedMotionCallback(
+    void* context, int32_t device_id, int32_t axis, int32_t direction,
+    bool supported, int32_t type) {
+  auto* self = static_cast<RobloxInputNativeAdapter*>(context);
+  std::lock_guard<std::mutex> lock(self->mutex_);
+  JNIEnv* env = nullptr;
+  Status status = self->RequireReadyLocked(&env);
+  if (!status.ok()) {
+    return status;
+  }
+  self->symbols_.set_gamepad_supported_motion_with_gamepad_type(
+      env, self->native_input_class_, device_id, axis, direction,
+      supported ? JNI_TRUE : JNI_FALSE, type);
+  return self->CheckJniException(
+      env, "nativeSetGamepadSupportedMotionWithGamepadType");
+}
+
+Status RobloxInputNativeAdapter::GamepadConnectCallback(void* context,
+                                                        int32_t device_id,
+                                                        int32_t type) {
+  auto* self = static_cast<RobloxInputNativeAdapter*>(context);
+  std::lock_guard<std::mutex> lock(self->mutex_);
+  JNIEnv* env = nullptr;
+  Status status = self->RequireReadyLocked(&env);
+  if (!status.ok()) {
+    return status;
+  }
+  self->symbols_.gamepad_connect_event_with_gamepad_type(
+      env, self->native_input_class_, device_id, type);
+  return self->CheckJniException(env,
+                                 "nativeGamepadConnectEventWithGamepadType");
+}
+
+Status RobloxInputNativeAdapter::GamepadDisconnectCallback(void* context,
+                                                           int32_t device_id) {
+  auto* self = static_cast<RobloxInputNativeAdapter*>(context);
+  std::lock_guard<std::mutex> lock(self->mutex_);
+  JNIEnv* env = nullptr;
+  Status status = self->RequireReadyLocked(&env);
+  if (!status.ok()) {
+    return status;
+  }
+  self->symbols_.gamepad_disconnect_event(env, self->native_input_class_,
+                                          device_id);
+  return self->CheckJniException(env, "nativeGamepadDisconnectEvent");
+}
+
+Status RobloxInputNativeAdapter::GamepadButtonCallback(void* context,
+                                                       int32_t device_id,
+                                                       int32_t key,
+                                                       bool pressed) {
+  auto* self = static_cast<RobloxInputNativeAdapter*>(context);
+  std::lock_guard<std::mutex> lock(self->mutex_);
+  JNIEnv* env = nullptr;
+  Status status = self->RequireReadyLocked(&env);
+  if (!status.ok()) {
+    return status;
+  }
+  self->symbols_.gamepad_button_event(env, self->native_input_class_, device_id,
+                                      key, pressed ? 1 : 0);
+  return self->CheckJniException(env, "nativeGamepadButtonEvent");
+}
+
+Status RobloxInputNativeAdapter::GamepadAxisCallback(void* context,
+                                                     int32_t device_id,
+                                                     int32_t axis, float x,
+                                                     float y, float z) {
+  auto* self = static_cast<RobloxInputNativeAdapter*>(context);
+  std::lock_guard<std::mutex> lock(self->mutex_);
+  JNIEnv* env = nullptr;
+  Status status = self->RequireReadyLocked(&env);
+  if (!status.ok()) {
+    return status;
+  }
+  self->symbols_.gamepad_axis_event(env, self->native_input_class_, device_id,
+                                    axis, x, y, z);
+  return self->CheckJniException(env, "nativeGamepadAxisEvent");
 }
 
 Status RobloxInputNativeAdapter::MouseMoveCallback(void* context, float x,
@@ -466,7 +582,8 @@ Status RobloxInputRuntime::Initialize(RobloxInputViewport viewport,
   }
   std::fprintf(stderr,
                "  [input] typed production input ready: mouse=1 touch=1 "
-               "keyboard=1 text=1\n");
+               "keyboard=1 text=1 gamepad=%d\n",
+               SupportsGamepads() ? 1 : 0);
   return Status::Ok();
 }
 
@@ -514,6 +631,10 @@ RobloxInputSnapshot RobloxInputRuntime::Snapshot() const {
   return router_.Snapshot();
 }
 
+bool RobloxInputRuntime::SupportsGamepads() const {
+  return adapter_.SupportsGamepads();
+}
+
 Status RobloxInputRuntime::GetMainWindowIsMouseLockedCenter(
     bool* locked_center) {
   return adapter_.GetMainWindowIsMouseLockedCenter(locked_center);
@@ -553,6 +674,13 @@ void RobloxInputRuntime::LogFirstDispatch(
     std::fprintf(stderr,
                  "  [input] first live text update reached Roblox native "
                  "TextBox\n");
+  } else if (result.dispatched() &&
+             (result.kind == RobloxInputEventKind::kGamepadButton ||
+              result.kind == RobloxInputEventKind::kGamepadAxis) &&
+             !logged_gamepad_) {
+    logged_gamepad_ = true;
+    std::fprintf(
+        stderr, "  [input] first gamepad action reached Roblox native input\n");
   } else if (result.kind == RobloxInputEventKind::kText &&
              result.state == RobloxInputDispatchState::kIgnoredUnsupported &&
              !logged_text_unsupported_) {

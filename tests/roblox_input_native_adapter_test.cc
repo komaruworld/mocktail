@@ -1,5 +1,6 @@
 #include "runtime/roblox_input_native_adapter.h"
 
+#include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_scancode.h>
@@ -155,6 +156,40 @@ RobloxInputSymbols Symbols() {
   return symbols;
 }
 
+RobloxInputSymbols GamepadSymbols() {
+  RobloxInputSymbols symbols = Symbols();
+  symbols.set_gamepad_supported_key_with_gamepad_type =
+      [](JNIEnv* env, jclass cls, jint id, jint key, jboolean enabled,
+         jint type) {
+        Record("gamepad-key-cap", env, cls,
+               {double(id), double(key), double(enabled), double(type)});
+      };
+  symbols.set_gamepad_supported_motion_with_gamepad_type =
+      [](JNIEnv* env, jclass cls, jint id, jint axis, jint direction,
+         jboolean enabled, jint type) {
+        Record("gamepad-axis-cap", env, cls,
+               {double(id), double(axis), double(direction), double(enabled),
+                double(type)});
+      };
+  symbols.gamepad_connect_event_with_gamepad_type = [](JNIEnv* env, jclass cls,
+                                                       jint id, jint type) {
+    Record("gamepad-connect", env, cls, {double(id), double(type)});
+  };
+  symbols.gamepad_disconnect_event = [](JNIEnv* env, jclass cls, jint id) {
+    Record("gamepad-disconnect", env, cls, {double(id)});
+  };
+  symbols.gamepad_button_event = [](JNIEnv* env, jclass cls, jint id, jint key,
+                                    jint pressed) {
+    Record("gamepad-button", env, cls,
+           {double(id), double(key), double(pressed)});
+  };
+  symbols.gamepad_axis_event = [](JNIEnv* env, jclass cls, jint id, jint axis,
+                                  jfloat x, jfloat y, jfloat z) {
+    Record("gamepad-axis", env, cls, {double(id), double(axis), x, y, z});
+  };
+  return symbols;
+}
+
 platform::PlatformEvent Event(platform::PlatformEventPayload payload) {
   return {123, std::move(payload)};
 }
@@ -190,6 +225,50 @@ TEST_F(RobloxInputNativeAdapterTest, RejectsIncompleteInteractiveSymbolSet) {
   EXPECT_FALSE(status.ok());
   EXPECT_EQ(status.code(), StatusCode::kUnavailable);
   EXPECT_FALSE(adapter.initialized());
+}
+
+TEST_F(RobloxInputNativeAdapterTest,
+       CallsAndroidGamepadJniAndRejectsAfterRelease) {
+  RobloxInputNativeAdapter adapter(Environment(), GamepadSymbols());
+  ASSERT_TRUE(adapter.Initialize().ok());
+  const auto sink = adapter.Sink().gamepad;
+  ASSERT_TRUE(sink.valid());
+  EXPECT_TRUE(sink.supported_key(sink.context, 5, 96, true, 2).ok());
+  EXPECT_TRUE(sink.supported_motion(sink.context, 5, 11, -1, true, 2).ok());
+  EXPECT_TRUE(sink.connect(sink.context, 5, 2).ok());
+  EXPECT_TRUE(sink.button(sink.context, 5, 96, true).ok());
+  EXPECT_TRUE(sink.button(sink.context, 5, 96, false).ok());
+  EXPECT_TRUE(sink.axis(sink.context, 5, 11, 0.5F, -0.25F, 0).ok());
+  EXPECT_TRUE(sink.disconnect(sink.context, 5).ok());
+  ASSERT_EQ(probe_.calls.size(), 7U);
+  EXPECT_EQ(probe_.calls[0].arguments, (std::vector<double>{5, 96, 1, 2}));
+  EXPECT_EQ(probe_.calls[1].arguments, (std::vector<double>{5, 11, -1, 1, 2}));
+  EXPECT_EQ(probe_.calls[2].arguments, (std::vector<double>{5, 2}));
+  EXPECT_EQ(probe_.calls[3].arguments, (std::vector<double>{5, 96, 1}));
+  EXPECT_EQ(probe_.calls[4].arguments, (std::vector<double>{5, 96, 0}));
+  EXPECT_EQ(probe_.calls[5].arguments,
+            (std::vector<double>{5, 11, 0.5, -0.25, 0}));
+  EXPECT_EQ(probe_.calls[6].arguments, (std::vector<double>{5}));
+  for (const auto& call : probe_.calls) {
+    EXPECT_EQ(call.env, vm_->GetJNIEnv());
+    EXPECT_NE(call.clazz, nullptr);
+  }
+  ASSERT_TRUE(adapter.Release().ok());
+  EXPECT_FALSE(sink.button(sink.context, 5, 96, true).ok());
+  EXPECT_EQ(probe_.calls.size(), 7U);
+}
+
+TEST_F(RobloxInputNativeAdapterTest, PartialGamepadApiKeepsKeyboardAvailable) {
+  RobloxInputSymbols symbols = GamepadSymbols();
+  symbols.set_gamepad_supported_motion_with_gamepad_type = nullptr;
+  RobloxInputNativeAdapter adapter(Environment(), symbols);
+  ASSERT_TRUE(adapter.Initialize().ok());
+  EXPECT_FALSE(adapter.SupportsGamepads());
+  EXPECT_FALSE(adapter.Sink().gamepad.valid());
+  const auto sink = adapter.Sink();
+  EXPECT_TRUE(sink.key(sink.context, true, 30, 29, false).ok());
+  ASSERT_EQ(probe_.calls.size(), 1U);
+  EXPECT_EQ(probe_.calls[0].name, "key");
 }
 
 TEST_F(RobloxInputNativeAdapterTest,

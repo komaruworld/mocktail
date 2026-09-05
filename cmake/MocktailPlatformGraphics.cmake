@@ -69,6 +69,7 @@ add_library(mocktail_platform_sdl STATIC
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/platform/sdl_application_metadata.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/platform/sdl_display_refresh_capabilities.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/platform/sdl_event_converter.cc
+  ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/platform/sdl_gamepad_manager.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/platform/sdl_platform_runtime.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/platform/sdl_text_clipboard.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/platform/sdl_window_icon.cc

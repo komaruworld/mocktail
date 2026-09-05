@@ -187,9 +187,27 @@ struct TouchEvent {
   float pressure = 0.0f;
 };
 
+enum class GamepadFamily {
+  kUnknown,
+  kXbox,
+  kPlayStation4,
+  kPlayStation5,
+};
+
+struct GamepadDescriptor {
+  GamepadFamily family = GamepadFamily::kUnknown;
+  std::string name;
+  // Bit positions are SDL's standardized gamepad buttons and axes, not raw
+  // joystick indices or Android key codes.
+  std::uint32_t buttons = 0;
+  std::uint32_t axes = 0;
+};
+
 struct GamepadConnectionEvent {
   std::int64_t instance_id = 0;
   bool connected = false;
+  GamepadDescriptor descriptor{};
+  bool remapped = false;
 };
 
 struct GamepadAxisEvent {

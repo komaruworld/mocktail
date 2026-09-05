@@ -105,10 +105,13 @@ bool ConvertSdlEvent(SDL_Window* window, const SDL_Event& source,
       return true;
     }
     case SDL_EVENT_GAMEPAD_ADDED:
+    case SDL_EVENT_GAMEPAD_REMAPPED:
     case SDL_EVENT_GAMEPAD_REMOVED:
       destination->payload = GamepadConnectionEvent{
           static_cast<std::int64_t>(source.gdevice.which),
-          source.type == SDL_EVENT_GAMEPAD_ADDED};
+          source.type != SDL_EVENT_GAMEPAD_REMOVED,
+          {},
+          source.type == SDL_EVENT_GAMEPAD_REMAPPED};
       return true;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
       destination->payload =
