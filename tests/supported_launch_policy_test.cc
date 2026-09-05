@@ -83,6 +83,41 @@ TEST(SupportedLaunchPolicyTest, LeavesResearchModesUnchanged) {
   ExpectPolicyProbe(false, false);
 }
 
+void ExpectPackagedManifestProbe(bool candidate_override) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    constexpr const char* packaged = "/relocated AppDir/share/mocktail/default.json";
+    constexpr const char* candidate = "/private-canary/candidate.json";
+    if (setenv("MOCKTAIL_PACKAGED_COMPATIBILITY_MANIFEST", packaged, 1) != 0 ||
+        unsetenv("MOCKTAIL_COMPATIBILITY_MANIFEST") != 0) {
+      std::_Exit(10);
+    }
+    if (candidate_override &&
+        setenv("MOCKTAIL_COMPATIBILITY_MANIFEST", candidate, 1) != 0) {
+      std::_Exit(11);
+    }
+    std::string error;
+    if (!ApplySupportedLaunchPolicy(false, &error)) std::_Exit(12);
+    const char* manifest = getenv("MOCKTAIL_COMPATIBILITY_MANIFEST");
+    std::_Exit(manifest != nullptr &&
+                       std::string(manifest) == (candidate_override ? candidate : packaged)
+                   ? 0 : 13);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(SupportedLaunchPolicyTest, UsesRelocatedPackagedManifestByDefault) {
+  ExpectPackagedManifestProbe(false);
+}
+
+TEST(SupportedLaunchPolicyTest, PreservesCandidateManifestOverPackagedDefault) {
+  ExpectPackagedManifestProbe(true);
+}
+
 int RunGraphicsPolicyProbe(const char* backend) {
   for (const char* name : {
            "MOCKTAIL_GRAPHICS_BACKEND",

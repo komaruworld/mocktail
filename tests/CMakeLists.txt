@@ -956,6 +956,12 @@ add_test(
 )
 
 add_test(
+  NAME AnyLinuxPackagingTest.RelocatedRuntimePaths
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/anylinux_packaging_test.sh
+          ${CMAKE_SOURCE_DIR} ${CMAKE_CXX_COMPILER}
+)
+
+add_test(
   NAME UrlHandlerRegistrationTest.ExplicitPerUserDefault
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/url_handler_registration_test.sh
           ${CMAKE_SOURCE_DIR}/scripts/register_url_handler.sh

@@ -2,6 +2,7 @@
 /build/
 /build_*/
 /build-flatpak/
+/build-anylinux*/
 /.flatpak-builder/
 /cmake-build-*/
 /out/

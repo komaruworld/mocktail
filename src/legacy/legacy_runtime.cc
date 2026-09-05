@@ -3257,12 +3257,10 @@ void ConfigureLocalStorage(JNIEnv* env, const EngineStartupContext* context) {
 }
 
 
-// Resolve the exact Android Vulkan loader adapter shipped next to this
-// runtime binary. Never resolve it by SONAME: an unversioned host
-// libvulkan.so on the search path (for example distribution or Nix wrappers)
-// would win, silently drop VK_KHR_android_surface support, and break
-// direct-Vulkan mode with "Unable to create Vulkan instance".
-static std::string RuntimeVulkanAdapterPath() {
+// Resolve Android adapters from the runtime bundle even when a launcher
+// relocates the executable. Host libraries with the same unversioned SONAME
+// do not implement the Android ABI (notably VK_KHR_android_surface).
+static std::string RuntimeBionicAdapterPath(const char* name) {
   const char* override_dir = std::getenv("MOCKTAIL_RUNTIME_LIBRARY_DIR");
   std::string directory;
   if (override_dir != nullptr && override_dir[0] != '\0') {
@@ -3280,7 +3278,7 @@ static std::string RuntimeVulkanAdapterPath() {
     directory = separator == 0 ? "/" : path.substr(0, separator);
   }
   if (directory.empty()) return {};
-  return directory + "/libvulkan.so";
+  return directory + "/" + name;
 }
 
 
@@ -4845,10 +4843,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         bionic_egl_bridge.IsLoaded()) {
       h = bionic_egl_bridge.handle();
       exact_adapter = true;
-    } else if (std::strcmp(name, "libvulkan.so") == 0) {
-      const std::string vulkan_adapter = RuntimeVulkanAdapterPath();
-      if (!vulkan_adapter.empty()) {
-        h = ::dlopen(vulkan_adapter.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+    } else {
+      const std::string adapter = RuntimeBionicAdapterPath(name);
+      if (!adapter.empty()) {
+        h = ::dlopen(adapter.c_str(), RTLD_LAZY | RTLD_GLOBAL);
         exact_adapter = h != nullptr;
       }
     }

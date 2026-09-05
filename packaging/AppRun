@@ -6,9 +6,22 @@ set -eu
 
 APPDIR="${APPDIR:-$(CDPATH= cd -P "$(dirname -- "$0")" && pwd)}"
 
+InitializeAnyLinuxPaths() {
+  # quick-sharun preserves our custom AppRun, so its generated AppRun never
+  # runs these relocation hooks. WebKit and p11-kit use the patched paths
+  # even when WEBKIT_EXEC_PATH and SSL_CERT_FILE are set.
+  for anylinux_hook in 01-check-ca-certs.hook 01-path-mapping-hardcoded.hook; do
+    if [ -f "${APPDIR}/bin/${anylinux_hook}" ]; then
+      . "${APPDIR}/bin/${anylinux_hook}"
+    fi
+  done
+}
+
 if [ -n "${SHARUN_DIR:-}" ] && [ -x "${APPDIR}/bin/bash" ]; then
+  export PATH="${APPDIR}/bin:${PATH}"
   export MOCKTAIL_ANYLINUX_BIN_DIR="${APPDIR}/bin"
   export MOCKTAIL_BUNDLE_ROOT="${APPDIR}/usr/share/mocktail-bundle"
+  InitializeAnyLinuxPaths
   exec "${APPDIR}/bin/bash" \
     "${MOCKTAIL_BUNDLE_ROOT}/mocktail/scripts/portable_launcher.sh" "$@"
 fi

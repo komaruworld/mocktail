@@ -1,0 +1,11 @@
+# pkgforge-dev/archlinux-pkgs-debloated, continuous release, 2026-09-05.
+# These assets are rolling. Refresh names/hashes together; do not bypass a
+# checksum mismatch. Only the disposable AppImage build container installs them.
+0ef79c925de634653e3a45da1faf00db5f95fc70ed16d378592d0b6b2294da02  ffmpeg-mini-x86_64.pkg.tar.zst
+41bdbac716a88b186d597b79865243744455ef8e86d45129149235e0c5b596b7  gdk-pixbuf2-mini-x86_64.pkg.tar.zst
+e72f6c3a294068901f9191dbe8704fd971a3a0eecc6d06dbfb7f6c5cf4bedd0b  gtk4-mini-x86_64.pkg.tar.zst
+268fd9b70a17ffe978c5165f72aa6557400216e53993aa94ea5c9783f8c557c4  icu-mini-x86_64.pkg.tar.zst
+3bf03ec2cc8149b73bd8712f5313eba0d9e1bf3c2f619acc0a358adccf482c34  librsvg-mini-x86_64.pkg.tar.zst
+a1015fab5778e12642d7363bd4b913c864952a6543c2454f8132a2043fd06df9  libxml2-mini-x86_64.pkg.tar.zst
+3640e7a594cca1f68b6e73d3808ed6f1ff02acd339ff1049f10b469595b9f70a  mesa-mini-x86_64.pkg.tar.zst
+3b4b6a5c2981e82c1c289943e8dad4622dc1ad10b172a74d1b3617f9a940534d  opus-mini-x86_64.pkg.tar.zst

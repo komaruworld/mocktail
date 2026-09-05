@@ -40,4 +40,31 @@ grep -Fq "anylinux=${app_dir}/bin" <<<"${output}"
 grep -Fq "bundle=${app_dir}/usr/share/mocktail-bundle" <<<"${output}"
 grep -Fq 'first=--launch-uri' <<<"${output}"
 
+# With a custom AppRun, quick-sharun's generated startup is skipped. Its
+# paths and certificate hooks must run on every fresh launch, before the
+# helper is spawned, without consuming application arguments.
+cat >"${app_dir}/bin/01-check-ca-certs.hook" <<'EOF'
+export MOCKTAIL_TEST_CA_HOOK=ready
+EOF
+cat >"${app_dir}/bin/01-path-mapping-hardcoded.hook" <<'EOF'
+[ "${MOCKTAIL_TEST_CA_HOOK}" = ready ]
+ln -s "${APPDIR}/bin" "${APPDIR}/mapped-bin"
+set -- hook-private-argument
+EOF
+cat >"${app_dir}/usr/share/mocktail-bundle/mocktail/scripts/portable_launcher.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${MOCKTAIL_TEST_CA_HOOK}" == ready ]]
+[[ -x "${APPDIR}/mapped-bin/bash" ]]
+[[ "$#" == 2 && "$1" == --launch-uri ]]
+printf '%s\n' "$2"
+EOF
+output="$(APPDIR="${app_dir}" SHARUN_DIR="${app_dir}" \
+  "${app_run}" --launch-uri "${launch_uri}")"
+[[ "${output}" == "${launch_uri}" ]]
+unlink "${app_dir}/mapped-bin"
+output="$(APPDIR="${app_dir}" SHARUN_DIR="${app_dir}" \
+  "${app_run}" --launch-uri "${launch_uri}")"
+[[ "${output}" == "${launch_uri}" ]]
+
 printf 'AppImage AppRun test passed\n'

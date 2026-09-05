@@ -49,18 +49,17 @@ jobs:
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
-            archlinux:base-devel bash -Eeuo pipefail -c '
+            ghcr.io/archlinux/archlinux:base-devel@sha256:c3953446016873a756fb7814f10087cac1634c127f7302e80c81c512da796d05 bash -Eeuo pipefail -c '
               pacman -Syu --noconfirm --needed \
                 cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
                 nlohmann-json libyaml libelf minizip minizip-ng capstone gtk4 \
                 libadwaita webkitgtk-6.0 libutf8proc fontconfig libglvnd \
                 vulkan-headers zlib libplacebo bubblewrap xdg-dbus-proxy \
-                patchelf jq unzip file ca-certificates jdk-openjdk giflib \
-                dbus
+                patchelf jq unzip file ca-certificates dbus zsync
 
-              export JAVA_HOME=/usr/lib/jvm/default
-              export PATH="${JAVA_HOME}/bin:${PATH}"
-              test -x "${JAVA_HOME}/bin/jlink"
+              # Reduced ABI-compatible packages belong only in this builder.
+              # The native updater does not require a JRE or Android SDK.
+              ./scripts/install_anylinux_dependencies.sh
 
               curl --fail --location --retry 3 \
                 --output /tmp/quick-sharun \
@@ -103,19 +102,11 @@ jobs:
                 sha256sum --check --strict
               chmod 0755 /tmp/mkdwarfs
 
-              curl --fail --location --retry 3 \
-                --output /tmp/android-build-tools.zip \
-                https://dl.google.com/android/repository/build-tools_r35_linux.zip
-              echo "bd3a4966912eb8b30ed0d00b0cda6b6543b949d5ffe00bea54c04c81e1561d88  /tmp/android-build-tools.zip" | \
-                sha256sum --check --strict
-              unzip -q /tmp/android-build-tools.zip -d /tmp/android-build-tools
-              android_tools_root="$(dirname -- "$(find /tmp/android-build-tools -type f -name apksigner -print -quit)")"
-              [[ -n "$android_tools_root" ]]
-
               git config --global --add safe.directory /workspace
               git config --global --add safe.directory /workspace/third_party/Vulkan-Headers
               git config --global --add safe.directory /workspace/third_party/libjnivm
-              export MOCKTAIL_ANDROID_BUILD_TOOLS_ROOT="$android_tools_root"
+              # Install into the disposable container /usr before deployment.
+              export MOCKTAIL_ANYLINUX_SYSTEM_INSTALL=1
               export MOCKTAIL_ANYLINUX_SHARUN=/tmp/sharun
               export MOCKTAIL_ANYLINUX_C_SOURCE=/tmp/anylinux.c
               export RUNTIME=/tmp/uruntime
@@ -127,6 +118,19 @@ jobs:
                 ANYLINUX_APPIMAGETOOL=/tmp/appimagetool
               test -x dist/Mocktail-x86_64.AppImage
             '
+
+      - name: Smoke-test AppImage without FUSE
+        shell: bash
+        run: |
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$smoke_dir"' EXIT
+          export XDG_DATA_HOME="$smoke_dir/data"
+          export XDG_CONFIG_HOME="$smoke_dir/config"
+          export XDG_CACHE_HOME="$smoke_dir/cache"
+          export XDG_STATE_HOME="$smoke_dir/state"
+          mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+          timeout 60s dist/Mocktail-x86_64.AppImage --appimage-extract-and-run --help
+          timeout 60s dist/Mocktail-x86_64.AppImage --appimage-extract-and-run mocktail_updater status
 
       - name: Upload AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

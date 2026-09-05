@@ -526,6 +526,9 @@ export MOCKTAIL_UPDATE_HELPER="${UPDATE_HELPER}"
 export MOCKTAIL_UPDATE_CANARY_BIN="${MAIN_BINARY}"
 export MOCKTAIL_BIN="${MAIN_BINARY}"
 export MOCKTAIL_PORTABLE_MODE="${ABI_MODE}"
+# AnyLinux relocates executables into its own bin directory. The Bionic
+# adapters stay in the original bundle and must be loaded by exact path.
+export MOCKTAIL_RUNTIME_LIBRARY_DIR="${BUNDLED_BIN_DIR}"
 
 cd -- "${RUNTIME_ROOT}"
 exec "${MAIN_BINARY}" "$@"

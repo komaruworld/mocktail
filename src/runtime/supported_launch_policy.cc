@@ -97,6 +97,15 @@ bool ApplyInstalledResourceDefaults(std::string* error) {
 }  // namespace
 
 bool ApplySupportedLaunchPolicy(bool interactive, std::string* error) {
+  // A packaging launcher may reload its environment for each native child.
+  // Keep the bundled default separate from the updater's per-candidate
+  // manifest, which must survive both normal launches and isolated canaries.
+  const char* packaged_manifest =
+      std::getenv("MOCKTAIL_PACKAGED_COMPATIBILITY_MANIFEST");
+  if (packaged_manifest != nullptr && packaged_manifest[0] != '\0' &&
+      !SetDefault("MOCKTAIL_COMPATIBILITY_MANIFEST", packaged_manifest, error)) {
+    return false;
+  }
   if (!ApplyInstalledResourceDefaults(error)) {
     return false;
   }

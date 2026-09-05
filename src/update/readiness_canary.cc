@@ -323,6 +323,9 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
            // resolve shared libraries through the launcher environment
            // (for example NixOS wrappers) still find libGLESv2/libEGL.
            "LD_LIBRARY_PATH",
+           // AppImage executables can be relocated separately from the
+           // exact Bionic EGL and Vulkan adapters in the original bundle.
+           "MOCKTAIL_RUNTIME_LIBRARY_DIR",
            "MOCKTAIL_EGL_LIBRARY",
            "MOCKTAIL_GLES_LIBRARY",
            "MOCKTAIL_ANGLE_LIB_DIR",

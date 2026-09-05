@@ -485,7 +485,7 @@ CopyGtkData() {
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
 <fontconfig>
-  <dir>share/fonts</dir>
+  <dir prefix="relative">../fonts</dir>
   <cachedir prefix="xdg">fontconfig</cachedir>
 </fontconfig>
 EOF

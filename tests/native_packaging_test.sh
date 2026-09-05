@@ -93,12 +93,14 @@ for expected in \
     'fedora:44' \
     'archlinux:base-devel' \
     'minizip-ng-compat-devel' \
-    'giflib' \
     '-G DEB' \
     '-G RPM' \
     'makepkg --dir' \
     'APPIMAGE_FORMAT=anylinux' \
     'quick-sharun' \
+    './scripts/install_anylinux_dependencies.sh' \
+    'MOCKTAIL_ANYLINUX_SYSTEM_INSTALL=1' \
+    '--appimage-extract-and-run mocktail_updater status' \
     'Mocktail-x86_64.AppImage' \
     'gh release upload continuous'; do
   grep -Fq -- "${expected}" "${WORKFLOW}" ||
