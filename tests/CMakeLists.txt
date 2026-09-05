@@ -379,6 +379,15 @@ target_link_libraries(jnivm_native_text_box_info_test PRIVATE
 )
 mocktail_apply_compile_options(jnivm_native_text_box_info_test)
 
+add_executable(jnivm_webrtc_audio_manager_test
+  jnivm_webrtc_audio_manager_test.cc
+)
+target_link_libraries(jnivm_webrtc_audio_manager_test PRIVATE
+  Mocktail::LegacyJni
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(jnivm_webrtc_audio_manager_test)
+
 add_executable(vulkan_present_observer_test
   vulkan_present_observer_test.cc
 )
@@ -890,6 +899,7 @@ gtest_discover_tests(roblox_experience_composition_test)
 gtest_discover_tests(jnivm_message_bus_test)
 gtest_discover_tests(jnivm_experience_lifecycle_test)
 gtest_discover_tests(jnivm_native_text_box_info_test)
+gtest_discover_tests(jnivm_webrtc_audio_manager_test)
 gtest_discover_tests(vulkan_present_observer_test)
 gtest_discover_tests(input_pump_pacer_test)
 gtest_discover_tests(vulkan_surface_recovery_gate_test)

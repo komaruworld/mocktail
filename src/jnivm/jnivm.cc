@@ -2944,6 +2944,78 @@ bool IsFmodAudioDeviceMethod(jobject obj, jmethodID method_id,
          ObjectClassName(obj) == "org/fmod/AudioDevice";
 }
 
+bool IsWebRtcAudioManagerMethod(jobject obj, jmethodID method_id,
+                                const char* name, const char* signature) {
+  return obj != nullptr && method_id != nullptr &&
+         std::strcmp(MethodName(method_id), name) == 0 &&
+         std::strcmp(MethodSignature(method_id), signature) == 0 &&
+         ObjectClassName(obj) == "org/webrtc/voiceengine/WebRtcAudioManager";
+}
+
+bool HandleWebRtcAudioManagerBooleanMethod(jobject obj, jmethodID method_id,
+                                           jboolean* result) {
+  VM* vm = CurrentVM();
+  if (IsWebRtcAudioManagerMethod(obj, method_id, "init", "()Z")) {
+    *result = vm != nullptr && vm->DispatchWebRtcAudioManagerInit(obj)
+                  ? JNI_TRUE
+                  : JNI_FALSE;
+  } else if (IsWebRtcAudioManagerMethod(obj, method_id,
+                                        "isDeviceBlacklistedForOpenSLESUsage",
+                                        "()Z")) {
+    // Host recording is provided by AudioRecord JNI, not Android OpenSL ES.
+    *result = JNI_TRUE;
+  } else if (IsWebRtcAudioManagerMethod(obj, method_id,
+                                        "isCommunicationModeEnabled", "()Z")) {
+    *result = BooleanFieldValue(obj, "initialized");
+  } else if (IsWebRtcAudioManagerMethod(obj, method_id,
+                                        "isLowLatencyOutputSupported", "()Z")) {
+    *result = BooleanFieldValue(obj, "lowLatencyOutput");
+  } else if (IsWebRtcAudioManagerMethod(obj, method_id,
+                                        "isLowLatencyInputSupported", "()Z")) {
+    *result = BooleanFieldValue(obj, "lowLatencyInput");
+  } else if (IsWebRtcAudioManagerMethod(obj, method_id, "isProAudioSupported",
+                                        "()Z")) {
+    *result = BooleanFieldValue(obj, "proAudio");
+  } else if (IsWebRtcAudioManagerMethod(obj, method_id, "isAAudioSupported",
+                                        "()Z")) {
+    *result = BooleanFieldValue(obj, "aAudio");
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool HandleWebRtcAudioManagerVoidMethodV(jobject obj, jmethodID method_id,
+                                         va_list args) {
+  VM* vm = CurrentVM();
+  if (IsWebRtcAudioManagerMethod(obj, method_id, "dispose", "()V")) {
+    if (vm != nullptr) vm->DispatchWebRtcAudioManagerDispose(obj);
+  } else if (IsWebRtcAudioManagerMethod(obj, method_id, "setMicrophoneMute",
+                                        "(Z)V")) {
+    const bool muted = va_arg(args, jint) != JNI_FALSE;
+    if (vm != nullptr) vm->DispatchWebRtcAudioManagerMicrophoneMute(obj, muted);
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool HandleWebRtcAudioManagerVoidMethodA(jobject obj, jmethodID method_id,
+                                         const jvalue* args) {
+  VM* vm = CurrentVM();
+  if (IsWebRtcAudioManagerMethod(obj, method_id, "dispose", "()V")) {
+    if (vm != nullptr) vm->DispatchWebRtcAudioManagerDispose(obj);
+  } else if (IsWebRtcAudioManagerMethod(obj, method_id, "setMicrophoneMute",
+                                        "(Z)V")) {
+    if (vm != nullptr && args != nullptr) {
+      vm->DispatchWebRtcAudioManagerMicrophoneMute(obj, args[0].z != JNI_FALSE);
+    }
+  } else {
+    return false;
+  }
+  return true;
+}
+
 bool IsWebRtcAudioRecordMethod(jobject obj, jmethodID method_id,
                                const char *name, const char *signature) {
   return obj != nullptr && method_id != nullptr &&
@@ -4463,6 +4535,7 @@ void JNICALL CallVoidMethod(JNIEnv * /*env*/, jobject obj, jmethodID methodID,
   va_list args;
   va_start(args, methodID);
   if (!HandleRobloxExperienceLifecycleVoidMethod(obj, methodID) &&
+      !HandleWebRtcAudioManagerVoidMethodV(obj, methodID, args) &&
       !HandleRobloxOpenWebActivityMethodV(obj, methodID, args) &&
       !HandleRobloxTextInputInstanceVoidMethodV(obj, methodID, args) &&
       !HandleFmodAudioDeviceVoidMethodV(obj, methodID, args) &&
@@ -4493,8 +4566,11 @@ jboolean JNICALL CallBooleanMethod(JNIEnv* /*env*/, jobject obj,
   va_list args;
   va_start(args, methodID);
   jboolean result = JNI_FALSE;
-  bool handled =
-      HandleWebRtcAudioRecordBooleanMethodV(obj, methodID, args, &result);
+  bool handled = HandleWebRtcAudioManagerBooleanMethod(obj, methodID, &result);
+  if (!handled) {
+    handled =
+        HandleWebRtcAudioRecordBooleanMethodV(obj, methodID, args, &result);
+  }
   if (!handled) {
     handled =
         HandleWebRtcAudioTrackBooleanMethodV(obj, methodID, args, &result);
@@ -4566,6 +4642,14 @@ jobject ConstructObjectV(jclass clazz, jmethodID methodID, va_list args) {
              std::strcmp(MethodName(methodID), "<init>") == 0 &&
              std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
     SetLongFieldRaw(object, "ref", va_arg(args, jlong));
+  } else if (object_class->GetName() ==
+                 "org/webrtc/voiceengine/WebRtcAudioManager" &&
+             std::strcmp(MethodName(methodID), "<init>") == 0 &&
+             std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+    const jlong native_audio_manager = va_arg(args, jlong);
+    if (VM* vm = CurrentVM()) {
+      vm->DispatchWebRtcAudioManagerConstruct(object, native_audio_manager);
+    }
   } else if (object_class->GetName() ==
                  "org/webrtc/voiceengine/WebRtcAudioRecord" &&
              std::strcmp(MethodName(methodID), "<init>") == 0 &&
@@ -4648,6 +4732,13 @@ jobject ConstructObjectA(jclass clazz, jmethodID methodID, const jvalue *args) {
              std::strcmp(MethodName(methodID), "<init>") == 0 &&
              std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
     SetLongFieldRaw(object, "ref", args[0].j);
+  } else if (object_class->GetName() ==
+                 "org/webrtc/voiceengine/WebRtcAudioManager" &&
+             std::strcmp(MethodName(methodID), "<init>") == 0 &&
+             std::strcmp(MethodSignature(methodID), "(J)V") == 0) {
+    if (VM* vm = CurrentVM()) {
+      vm->DispatchWebRtcAudioManagerConstruct(object, args[0].j);
+    }
   } else if (object_class->GetName() ==
                  "org/webrtc/voiceengine/WebRtcAudioRecord" &&
              std::strcmp(MethodName(methodID), "<init>") == 0 &&
@@ -4853,6 +4944,7 @@ VM::~VM() {
   ClearRobloxCredentialProvider();
   ClearRobloxTextInputCallbacks();
   ClearAndroidWindowCallbacks();
+  ClearWebRtcAudioManagerCallbacks();
   ClearWebRtcAudioTrackCallbacks();
   ClearWebRtcAudioRecordCallbacks();
   ClearFmodAudioDeviceCallbacks();
@@ -5471,6 +5563,163 @@ void OnWebRtcAudioRecordData(void *context, const void *identity,
 }
 
 } // namespace
+
+void VM::SetWebRtcAudioManagerCallbacks(
+    std::shared_ptr<void> context,
+    const WebRtcAudioManagerCallbacks& callbacks) {
+  WebRtcAudioManagerBinding previous;
+  {
+    std::lock_guard<std::mutex> lock(webrtc_audio_manager_mutex_);
+    previous = std::move(webrtc_audio_manager_binding_);
+    webrtc_audio_manager_binding_ = {std::move(context), callbacks};
+  }
+}
+
+void VM::ClearWebRtcAudioManagerCallbacks() {
+  WebRtcAudioManagerBinding previous;
+  {
+    std::lock_guard<std::mutex> lock(webrtc_audio_manager_mutex_);
+    previous = std::move(webrtc_audio_manager_binding_);
+    webrtc_audio_manager_binding_ = {};
+  }
+}
+
+void VM::RegisterWebRtcAudioManagerNative(const char* name,
+                                          const char* signature,
+                                          void* function) {
+  if (name == nullptr || signature == nullptr || function == nullptr ||
+      std::strcmp(name, "nativeCacheAudioParameters") != 0 ||
+      std::strcmp(signature, "(IIIZZZZZZZIIJ)V") != 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(webrtc_audio_manager_mutex_);
+  webrtc_cache_audio_parameters_native_ = function;
+}
+
+bool VM::DispatchWebRtcAudioManagerConstruct(jobject manager,
+                                             jlong native_audio_manager) {
+  const auto fail = [](const char* reason) {
+    std::cerr << "  [mocktail][audio] WebRTC audio manager parameters_failed "
+              << "reason=" << reason << '\n';
+    return false;
+  };
+  if (ObjectClassName(manager) != "org/webrtc/voiceengine/WebRtcAudioManager") {
+    return fail("invalid receiver");
+  }
+  SetLongFieldRaw(manager, "nativeAudioManager", native_audio_manager);
+  SetBooleanFieldRaw(manager, "initialized", JNI_FALSE);
+  SetBooleanFieldRaw(manager, "mocktailAudioParametersCached", JNI_FALSE);
+  WebRtcAudioManagerBinding binding;
+  void* native = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(webrtc_audio_manager_mutex_);
+    binding = webrtc_audio_manager_binding_;
+    native = webrtc_cache_audio_parameters_native_;
+  }
+  if (native == nullptr || native_audio_manager == 0) {
+    return fail("missing nativeCacheAudioParameters or native handle");
+  }
+  WebRtcAudioManagerParameters parameters;
+  if (binding.context == nullptr ||
+      binding.callbacks.get_parameters == nullptr ||
+      !binding.callbacks.get_parameters(binding.context.get(), &parameters)) {
+    return fail("host audio manager unavailable");
+  }
+  if (parameters.sample_rate_hz <= 0 || parameters.output_channels < 1 ||
+      parameters.output_channels > 2 || parameters.input_channels < 1 ||
+      parameters.input_channels > 2 ||
+      parameters.output_buffer_size_frames <= 0 ||
+      parameters.input_buffer_size_frames <= 0) {
+    return fail("invalid host PCM parameters");
+  }
+  SetIntFieldRaw(manager, "sampleRate", parameters.sample_rate_hz);
+  SetIntFieldRaw(manager, "outputChannels", parameters.output_channels);
+  SetIntFieldRaw(manager, "inputChannels", parameters.input_channels);
+  SetIntFieldRaw(manager, "outputBufferSize",
+                 parameters.output_buffer_size_frames);
+  SetIntFieldRaw(manager, "inputBufferSize",
+                 parameters.input_buffer_size_frames);
+  SetBooleanFieldRaw(manager, "lowLatencyOutput",
+                     parameters.low_latency_output);
+  SetBooleanFieldRaw(manager, "lowLatencyInput", parameters.low_latency_input);
+  SetBooleanFieldRaw(manager, "proAudio", parameters.pro_audio);
+  SetBooleanFieldRaw(manager, "aAudio", parameters.aaudio);
+
+  // Execute the constructor's Java -> native callback before returning the
+  // object. The guest needs these formats even before it calls init(). No VM
+  // locks are held here: the native callback may make nested JNI calls.
+  using CacheAudioParameters = void(JNICALL*)(
+      JNIEnv*, jobject, jint, jint, jint, jboolean, jboolean, jboolean,
+      jboolean, jboolean, jboolean, jboolean, jint, jint, jlong);
+  reinterpret_cast<CacheAudioParameters>(native)(
+      GetJNIEnv(), manager, parameters.sample_rate_hz,
+      parameters.output_channels, parameters.input_channels,
+      parameters.hardware_aec, parameters.hardware_agc, parameters.hardware_ns,
+      parameters.low_latency_output, parameters.low_latency_input,
+      parameters.pro_audio, parameters.aaudio,
+      parameters.output_buffer_size_frames, parameters.input_buffer_size_frames,
+      native_audio_manager);
+  SetBooleanFieldRaw(manager, "mocktailAudioParametersCached", JNI_TRUE);
+  std::cout << "  [mocktail][audio] WebRTC audio manager parameters "
+            << "sample_rate_hz=" << parameters.sample_rate_hz
+            << " output_channels=" << parameters.output_channels
+            << " input_channels=" << parameters.input_channels << '\n'
+            << std::flush;
+  return true;
+}
+
+bool VM::DispatchWebRtcAudioManagerInit(jobject manager) {
+  WebRtcAudioManagerBinding binding;
+  {
+    std::lock_guard<std::mutex> lock(webrtc_audio_manager_mutex_);
+    binding = webrtc_audio_manager_binding_;
+  }
+  const bool initialized =
+      ObjectClassName(manager) == "org/webrtc/voiceengine/WebRtcAudioManager" &&
+      BooleanFieldValue(manager, "mocktailAudioParametersCached") == JNI_TRUE &&
+      binding.context != nullptr && binding.callbacks.init != nullptr &&
+      (BooleanFieldValue(manager, "initialized") == JNI_TRUE ||
+       binding.callbacks.init(binding.context.get(), manager));
+  SetBooleanFieldRaw(manager, "initialized",
+                     initialized ? JNI_TRUE : JNI_FALSE);
+  if (!initialized) {
+    std::cerr << "  [mocktail][audio] WebRTC audio manager init_failed "
+                 "reason=parameters or host manager unavailable\n";
+  }
+  return initialized;
+}
+
+void VM::DispatchWebRtcAudioManagerDispose(jobject manager) {
+  if (ObjectClassName(manager) != "org/webrtc/voiceengine/WebRtcAudioManager" ||
+      BooleanFieldValue(manager, "initialized") != JNI_TRUE) {
+    return;
+  }
+  SetBooleanFieldRaw(manager, "initialized", JNI_FALSE);
+  WebRtcAudioManagerBinding binding;
+  {
+    std::lock_guard<std::mutex> lock(webrtc_audio_manager_mutex_);
+    binding = webrtc_audio_manager_binding_;
+  }
+  if (binding.context != nullptr && binding.callbacks.dispose != nullptr) {
+    binding.callbacks.dispose(binding.context.get(), manager);
+  }
+}
+
+void VM::DispatchWebRtcAudioManagerMicrophoneMute(jobject manager, bool muted) {
+  if (ObjectClassName(manager) != "org/webrtc/voiceengine/WebRtcAudioManager" ||
+      BooleanFieldValue(manager, "mocktailAudioParametersCached") != JNI_TRUE) {
+    return;
+  }
+  WebRtcAudioManagerBinding binding;
+  {
+    std::lock_guard<std::mutex> lock(webrtc_audio_manager_mutex_);
+    binding = webrtc_audio_manager_binding_;
+  }
+  if (binding.context != nullptr &&
+      binding.callbacks.set_microphone_mute != nullptr) {
+    binding.callbacks.set_microphone_mute(binding.context.get(), muted);
+  }
+}
 
 void VM::SetWebRtcAudioRecordCallbacks(
     std::shared_ptr<void> context,
@@ -6234,6 +6483,14 @@ void VM::InitJNIFunctionTables() {
 	      }
               if (cls != nullptr &&
                   cls->GetName() ==
+                      "org/webrtc/voiceengine/WebRtcAudioManager") {
+                if (VM* vm = CurrentVM()) {
+                  vm->RegisterWebRtcAudioManagerNative(
+                      methods[i].name, methods[i].signature, methods[i].fnPtr);
+                }
+              }
+              if (cls != nullptr &&
+                  cls->GetName() ==
                       "org/webrtc/voiceengine/WebRtcAudioRecord") {
                 VM *vm = CurrentVM();
                 if (vm != nullptr) {
@@ -6578,6 +6835,7 @@ void VM::InitJNIFunctionTables() {
       std::cout << "  [JNI] CallVoidMethodV: " << MethodName(methodID) << '\n';
     }
     if (!HandleRobloxExperienceLifecycleVoidMethod(obj, methodID) &&
+        !HandleWebRtcAudioManagerVoidMethodV(obj, methodID, args) &&
         !HandleRobloxOpenWebActivityMethodV(obj, methodID, args) &&
         !HandleRobloxTextInputInstanceVoidMethodV(obj, methodID, args) &&
         !HandleFmodAudioDeviceVoidMethodV(obj, methodID, args) &&
@@ -6594,6 +6852,7 @@ void VM::InitJNIFunctionTables() {
       std::cout << "  [JNI] CallVoidMethodA: " << MethodName(methodID) << '\n';
     }
     if (!HandleRobloxExperienceLifecycleVoidMethod(obj, methodID) &&
+        !HandleWebRtcAudioManagerVoidMethodA(obj, methodID, args) &&
         !HandleRobloxOpenWebActivityMethodA(obj, methodID, args) &&
         !HandleRobloxTextInputInstanceVoidMethodA(obj, methodID, args) &&
         !HandleFmodAudioDeviceVoidMethodA(obj, methodID, args) &&
@@ -6669,6 +6928,9 @@ void VM::InitJNIFunctionTables() {
       std::cout << "  [JNI] CallBooleanMethodV: " << MethodName(methodID) << '\n';
     }
     jboolean result = JNI_FALSE;
+    if (HandleWebRtcAudioManagerBooleanMethod(obj, methodID, &result)) {
+      return result;
+    }
     if (HandleWebRtcAudioRecordBooleanMethodV(obj, methodID, args, &result)) {
       return result;
     }
@@ -6698,6 +6960,9 @@ void VM::InitJNIFunctionTables() {
       std::cout << "  [JNI] CallBooleanMethodA: " << MethodName(methodID) << '\n';
     }
     jboolean result = JNI_FALSE;
+    if (HandleWebRtcAudioManagerBooleanMethod(obj, methodID, &result)) {
+      return result;
+    }
     if (HandleWebRtcAudioRecordBooleanMethodA(obj, methodID, args, &result)) {
       return result;
     }

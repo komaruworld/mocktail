@@ -1,8 +1,10 @@
 #include "mocktail/audio/webrtc_jni_audio_bridge.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -11,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -26,6 +29,7 @@ struct CaptureSession {
   jnivm::WebRtcAudioRecordDataCallback data_callback = nullptr;
   void* data_context = nullptr;
   std::unique_ptr<AudioCapture> capture;
+  std::shared_ptr<std::atomic<bool>> microphone_muted;
 };
 
 struct PlayoutSession {
@@ -46,6 +50,9 @@ struct PlayoutSession {
 
 struct WebRtcJniAudioBridgeContext {
   std::mutex mutex;
+  std::unordered_set<const void*> initialized_managers;
+  std::shared_ptr<std::atomic<bool>> microphone_muted =
+      std::make_shared<std::atomic<bool>>(false);
   std::unordered_map<const void*, std::shared_ptr<CaptureSession>>
       capture_sessions;
   std::unordered_map<const void*, std::shared_ptr<PlayoutSession>>
@@ -54,9 +61,71 @@ struct WebRtcJniAudioBridgeContext {
   bool shutting_down = false;
 };
 
+bool GetManagerParameters(void* opaque_context,
+                          jnivm::WebRtcAudioManagerParameters* parameters) {
+  auto* context = static_cast<WebRtcJniAudioBridgeContext*>(opaque_context);
+  if (context == nullptr || parameters == nullptr) return false;
+  std::lock_guard<std::mutex> lock(context->mutex);
+  if (context->shutting_down) return false;
+  // SDL converts between this WebRTC-facing format and the actual device.
+  // Match WebRtcAudioManager's default mono input/output and 10 ms frames.
+  // Advertising the format never opens a capture device, including when the
+  // microphone is disabled. Recording init remains the permission boundary.
+  *parameters = {};
+  parameters->sample_rate_hz = 48000;
+  parameters->output_channels = 1;
+  parameters->input_channels = 1;
+  parameters->output_buffer_size_frames = 480;
+  parameters->input_buffer_size_frames = 480;
+  // Android hardware effects, low-latency paths and AAudio are not emulated;
+  // WebRTC must retain its software processing and Java audio transport.
+  return true;
+}
+
+bool InitManager(void* opaque_context, const void* identity) {
+  auto* context = static_cast<WebRtcJniAudioBridgeContext*>(opaque_context);
+  if (context == nullptr || identity == nullptr) return false;
+  bool inserted = false;
+  {
+    std::lock_guard<std::mutex> lock(context->mutex);
+    if (context->shutting_down) return false;
+    inserted = context->initialized_managers.insert(identity).second;
+  }
+  if (inserted) {
+    std::cout << "  [mocktail][audio] WebRTC audio manager initialized\n"
+              << std::flush;
+  }
+  return true;
+}
+
+void DisposeManager(void* opaque_context, const void* identity) {
+  auto* context = static_cast<WebRtcJniAudioBridgeContext*>(opaque_context);
+  if (context == nullptr) return;
+  std::lock_guard<std::mutex> lock(context->mutex);
+  if (context->initialized_managers.erase(identity) != 0) {
+    std::cout << "  [mocktail][audio] WebRTC audio manager disposed\n"
+              << std::flush;
+  }
+  // Record/track objects own their streams and stop them independently.
+}
+
+void SetMicrophoneMute(void* opaque_context, bool muted) {
+  auto* context = static_cast<WebRtcJniAudioBridgeContext*>(opaque_context);
+  if (context == nullptr) return;
+  context->microphone_muted->store(muted, std::memory_order_release);
+}
+
 void OnCapturedAudio(void* opaque_session, std::size_t size_bytes) {
   auto* session = static_cast<CaptureSession*>(opaque_session);
   if (session != nullptr && session->data_callback != nullptr) {
+    if (session->microphone_muted != nullptr &&
+        session->microphone_muted->load(std::memory_order_acquire)) {
+      if (session->capture == nullptr ||
+          size_bytes > session->capture->buffer_size_bytes()) {
+        return;
+      }
+      std::memset(session->capture->buffer_data(), 0, size_bytes);
+    }
     session->data_callback(session->data_context, session->identity,
                            size_bytes);
   }
@@ -104,6 +173,7 @@ int Init(void* opaque_context, const void* identity, int sample_rate_hz,
   session->identity = identity;
   session->data_callback = data_callback;
   session->data_context = data_context;
+  session->microphone_muted = context->microphone_muted;
 
   SdlAudioCaptureOptions options;
   options.output_spec.sample_rate_hz = sample_rate_hz;
@@ -480,6 +550,7 @@ void Shutdown(void* opaque_context) {
     std::lock_guard<std::mutex> lock(context->mutex);
     context->recording_enabled = false;
     context->shutting_down = true;
+    context->initialized_managers.clear();
     capture_sessions.swap(context->capture_sessions);
     playout_sessions.swap(context->playout_sessions);
   }
@@ -544,6 +615,13 @@ Status InstallWebRtcJniAudioBridge(jnivm::VM* vm) {
   record_callbacks.shutdown = &Shutdown;
   vm->SetWebRtcAudioRecordCallbacks(context, record_callbacks);
 
+  jnivm::WebRtcAudioManagerCallbacks manager_callbacks;
+  manager_callbacks.get_parameters = &GetManagerParameters;
+  manager_callbacks.init = &InitManager;
+  manager_callbacks.dispose = &DisposeManager;
+  manager_callbacks.set_microphone_mute = &SetMicrophoneMute;
+  vm->SetWebRtcAudioManagerCallbacks(context, manager_callbacks);
+
   jnivm::WebRtcAudioTrackCallbacks track_callbacks;
   track_callbacks.init = &InitPlayout;
   track_callbacks.buffer_size_frames = &PlayoutBufferSizeFrames;
@@ -561,6 +639,7 @@ Status ShutdownWebRtcJniAudioBridge(jnivm::VM* vm) {
   }
   // Drop dispatch first, then let the recording binding's shared context stop
   // both playout workers and capture streams.
+  vm->ClearWebRtcAudioManagerCallbacks();
   vm->ClearWebRtcAudioTrackCallbacks();
   vm->ClearWebRtcAudioRecordCallbacks();
   return Status::Ok();

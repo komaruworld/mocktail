@@ -82,6 +82,32 @@ struct FmodAudioDeviceCallbacks {
   void (*shutdown)(void *context) = nullptr;
 };
 
+// Parameters passed by WebRtcAudioManager's constructor to the guest's
+// nativeCacheAudioParameters(IIIZZZZZZZIIJ)V. Buffer sizes are PCM frames,
+// not bytes. Querying them must not open a microphone.
+struct WebRtcAudioManagerParameters {
+  int sample_rate_hz = 0;
+  int output_channels = 0;
+  int input_channels = 0;
+  bool hardware_aec = false;
+  bool hardware_agc = false;
+  bool hardware_ns = false;
+  bool low_latency_output = false;
+  bool low_latency_input = false;
+  bool pro_audio = false;
+  bool aaudio = false;
+  int output_buffer_size_frames = 0;
+  int input_buffer_size_frames = 0;
+};
+
+struct WebRtcAudioManagerCallbacks {
+  bool (*get_parameters)(void* context,
+                         WebRtcAudioManagerParameters* parameters) = nullptr;
+  bool (*init)(void* context, const void* identity) = nullptr;
+  void (*dispose)(void* context, const void* identity) = nullptr;
+  void (*set_microphone_mute)(void* context, bool muted) = nullptr;
+};
+
 using WebRtcAudioRecordDataCallback = void (*)(void *context,
                                                const void *identity,
                                                std::size_t size_bytes);
@@ -290,6 +316,18 @@ public:
                                     const std::uint8_t *data, std::size_t size);
   bool DispatchFmodAudioDeviceClose(const void *identity);
 
+  void SetWebRtcAudioManagerCallbacks(
+      std::shared_ptr<void> context,
+      const WebRtcAudioManagerCallbacks& callbacks);
+  void ClearWebRtcAudioManagerCallbacks();
+  void RegisterWebRtcAudioManagerNative(const char* name, const char* signature,
+                                        void* function);
+  bool DispatchWebRtcAudioManagerConstruct(jobject manager,
+                                           jlong native_audio_manager);
+  bool DispatchWebRtcAudioManagerInit(jobject manager);
+  void DispatchWebRtcAudioManagerDispose(jobject manager);
+  void DispatchWebRtcAudioManagerMicrophoneMute(jobject manager, bool muted);
+
   void
   SetWebRtcAudioRecordCallbacks(std::shared_ptr<void> context,
                                 const WebRtcAudioRecordCallbacks &callbacks);
@@ -431,6 +469,14 @@ private:
   };
   mutable std::mutex fmod_audio_device_mutex_;
   FmodAudioDeviceBinding fmod_audio_device_binding_;
+
+  struct WebRtcAudioManagerBinding {
+    std::shared_ptr<void> context;
+    WebRtcAudioManagerCallbacks callbacks;
+  };
+  mutable std::mutex webrtc_audio_manager_mutex_;
+  WebRtcAudioManagerBinding webrtc_audio_manager_binding_;
+  void* webrtc_cache_audio_parameters_native_ = nullptr;
 
   struct WebRtcAudioRecordBinding {
     std::shared_ptr<void> context;

@@ -9,8 +9,10 @@ class VM;
 
 namespace mocktail::audio {
 
-// Installs the host sides of WebRtcAudioRecord and WebRtcAudioTrack. SDL's
-// audio subsystem must remain alive until ShutdownWebRtcJniAudioBridge.
+// Installs WebRtcAudioManager, WebRtcAudioRecord and WebRtcAudioTrack. The
+// manager only advertises the host PCM contract; capture opens on recording
+// init, never on manager construction. SDL's audio subsystem must remain alive
+// until ShutdownWebRtcJniAudioBridge.
 Status InstallWebRtcJniAudioBridge(jnivm::VM* vm);
 Status ShutdownWebRtcJniAudioBridge(jnivm::VM* vm);
 

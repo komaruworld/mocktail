@@ -1,10 +1,14 @@
 #include "mocktail/audio/fmod_jni_audio_bridge.h"
-#include "mocktail/audio/sdl_audio_capture.h"
-#include "mocktail/audio/webrtc_jni_audio_bridge.h"
 
+#include <SDL3/SDL.h>
+#include <gtest/gtest.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -12,10 +16,10 @@
 #include <thread>
 #include <vector>
 
-#include <gtest/gtest.h>
-
 #include "jnivm/jnivm.h"
+#include "mocktail/audio/sdl_audio_capture.h"
 #include "mocktail/audio/sdl_audio_sink.h"
+#include "mocktail/audio/webrtc_jni_audio_bridge.h"
 
 namespace mocktail::audio {
 namespace {
@@ -53,6 +57,72 @@ public:
   ~ScopedSdlAudioShutdown() { (void)ShutdownSdlAudioSubsystem(); }
 };
 
+class ScopedSdlHint final {
+ public:
+  ScopedSdlHint(const char* name, const char* value) : name_(name) {
+    const char* previous = SDL_GetHint(name);
+    had_value_ = previous != nullptr;
+    if (had_value_) previous_ = previous;
+    EXPECT_TRUE(SDL_SetHintWithPriority(name, value, SDL_HINT_OVERRIDE));
+  }
+  ~ScopedSdlHint() {
+    if (had_value_) {
+      SDL_SetHintWithPriority(name_.c_str(), previous_.c_str(),
+                              SDL_HINT_OVERRIDE);
+    } else {
+      SDL_ResetHint(name_.c_str());
+    }
+  }
+
+ private:
+  std::string name_;
+  std::string previous_;
+  bool had_value_ = false;
+};
+
+class ScopedWebRtcBridgeShutdown final {
+ public:
+  explicit ScopedWebRtcBridgeShutdown(jnivm::VM* vm) : vm_(vm) {}
+  ~ScopedWebRtcBridgeShutdown() {
+    if (vm_ != nullptr) (void)ShutdownWebRtcJniAudioBridge(vm_);
+  }
+  void Release() { vm_ = nullptr; }
+
+ private:
+  jnivm::VM* vm_;
+};
+
+struct WebRtcManagerProbe {
+  int callbacks = 0;
+  jnivm::WebRtcAudioManagerParameters parameters;
+};
+
+void JNICALL CacheWebRtcParameters(JNIEnv*, jobject, jint rate,
+                                   jint output_channels, jint input_channels,
+                                   jboolean aec, jboolean agc, jboolean ns,
+                                   jboolean low_output, jboolean low_input,
+                                   jboolean pro, jboolean aaudio,
+                                   jint output_frames, jint input_frames,
+                                   jlong native_manager) {
+  auto* probe = reinterpret_cast<WebRtcManagerProbe*>(native_manager);
+  ++probe->callbacks;
+  probe->parameters = {
+      rate,     output_channels, input_channels,  aec != 0,
+      agc != 0, ns != 0,         low_output != 0, low_input != 0,
+      pro != 0, aaudio != 0,     output_frames,   input_frames};
+}
+
+jobject CreateWebRtcManager(JNIEnv* env, WebRtcManagerProbe* probe) {
+  jclass cls = env->FindClass("org/webrtc/voiceengine/WebRtcAudioManager");
+  const JNINativeMethod cache = {
+      const_cast<char*>("nativeCacheAudioParameters"),
+      const_cast<char*>("(IIIZZZZZZZIIJ)V"),
+      reinterpret_cast<void*>(&CacheWebRtcParameters)};
+  EXPECT_EQ(env->RegisterNatives(cls, &cache, 1), JNI_OK);
+  return env->NewObject(cls, env->GetMethodID(cls, "<init>", "(J)V"),
+                        reinterpret_cast<jlong>(probe));
+}
+
 struct WebRtcCaptureProbe {
   std::mutex mutex;
   std::condition_variable cv;
@@ -60,6 +130,8 @@ struct WebRtcCaptureProbe {
   jlong capacity = -1;
   int callbacks = 0;
   int last_size = 0;
+  int non_silent_callbacks = 0;
+  int silent_callbacks = 0;
 };
 
 struct WebRtcPlayoutProbe {
@@ -87,6 +159,16 @@ void JNICALL WebRtcDataIsRecorded(JNIEnv *, jobject, jint size,
     std::lock_guard<std::mutex> lock(probe->mutex);
     ++probe->callbacks;
     probe->last_size = size;
+    if (probe->buffer != nullptr && size > 0 && size <= probe->capacity) {
+      const auto* bytes = static_cast<const unsigned char*>(probe->buffer);
+      const bool silent =
+          std::all_of(bytes, bytes + size,
+                      [](unsigned char sample) { return sample == 0; });
+      if (silent)
+        ++probe->silent_callbacks;
+      else
+        ++probe->non_silent_callbacks;
+    }
   }
   probe->cv.notify_all();
 }
@@ -225,6 +307,13 @@ TEST(WebRtcJniAudioBridgeTest, DisabledMicrophoneRejectsRecordingInit) {
   ASSERT_TRUE(install_status.ok()) << install_status.message();
 
   JNIEnv *env = vm.GetJNIEnv();
+  WebRtcManagerProbe manager_probe;
+  jobject manager = CreateWebRtcManager(env, &manager_probe);
+  jclass manager_class = env->GetObjectClass(manager);
+  EXPECT_EQ(manager_probe.callbacks, 1);
+  EXPECT_EQ(env->CallBooleanMethod(
+                manager, env->GetMethodID(manager_class, "init", "()Z")),
+            JNI_TRUE);
   jclass recorder_class =
       env->FindClass("org/webrtc/voiceengine/WebRtcAudioRecord");
   ASSERT_NE(recorder_class, nullptr);
@@ -305,6 +394,214 @@ TEST(WebRtcJniAudioBridgeTest, PlaysTenMillisecondFramesThroughExactJni) {
 
   EXPECT_TRUE(ShutdownWebRtcJniAudioBridge(&vm).ok());
   EXPECT_TRUE(ShutdownSdlAudioSubsystem().ok());
+}
+
+TEST(WebRtcJniAudioBridgeTest,
+     StartsDuplexAudioFromManagerParametersAndReopens) {
+  ScopedEnvironment input("MOCKTAIL_AUDIO_INPUT_DEVICE", "default");
+  ScopedSdlAudioShutdown shutdown;
+  jnivm::VM vm;
+  ASSERT_TRUE(InstallWebRtcJniAudioBridge(&vm).ok());
+  JNIEnv* env = vm.GetJNIEnv();
+  // Repeat the complete object lifecycle, as when leaving and rejoining VC.
+  for (int iteration = 0; iteration != 2; ++iteration) {
+    WebRtcManagerProbe manager_probe;
+    WebRtcCaptureProbe capture_probe;
+    WebRtcPlayoutProbe playout_probe;
+    ScopedWebRtcBridgeShutdown close_on_failure(&vm);
+    jobject manager = CreateWebRtcManager(env, &manager_probe);
+    ASSERT_NE(manager, nullptr);
+    ASSERT_EQ(manager_probe.callbacks, 1);
+    const auto& format = manager_probe.parameters;
+    EXPECT_EQ(format.sample_rate_hz, 48000);
+    EXPECT_EQ(format.input_buffer_size_frames, format.sample_rate_hz / 100);
+    EXPECT_FALSE(format.hardware_aec || format.hardware_agc ||
+                 format.hardware_ns || format.low_latency_output ||
+                 format.low_latency_input || format.pro_audio || format.aaudio);
+    jclass manager_class = env->GetObjectClass(manager);
+    ASSERT_EQ(env->CallBooleanMethod(
+                  manager, env->GetMethodID(manager_class, "init", "()Z")),
+              JNI_TRUE);
+
+    jclass record_class =
+        env->FindClass("org/webrtc/voiceengine/WebRtcAudioRecord");
+    jclass track_class =
+        env->FindClass("org/webrtc/voiceengine/WebRtcAudioTrack");
+    const JNINativeMethod record_methods[] = {
+        {const_cast<char*>("nativeCacheDirectBufferAddress"),
+         const_cast<char*>("(Ljava/nio/ByteBuffer;J)V"),
+         reinterpret_cast<void*>(&CacheWebRtcBuffer)},
+        {const_cast<char*>("nativeDataIsRecorded"), const_cast<char*>("(IJ)V"),
+         reinterpret_cast<void*>(&WebRtcDataIsRecorded)}};
+    const JNINativeMethod track_methods[] = {
+        {const_cast<char*>("nativeCacheDirectBufferAddress"),
+         const_cast<char*>("(Ljava/nio/ByteBuffer;J)V"),
+         reinterpret_cast<void*>(&CacheWebRtcPlayoutBuffer)},
+        {const_cast<char*>("nativeGetPlayoutData"), const_cast<char*>("(IJ)V"),
+         reinterpret_cast<void*>(&WebRtcGetPlayoutData)}};
+    ASSERT_EQ(env->RegisterNatives(record_class, record_methods, 2), JNI_OK);
+    ASSERT_EQ(env->RegisterNatives(track_class, track_methods, 2), JNI_OK);
+    jobject record = env->NewObject(
+        record_class, env->GetMethodID(record_class, "<init>", "(J)V"),
+        reinterpret_cast<jlong>(&capture_probe));
+    jobject track = env->NewObject(
+        track_class, env->GetMethodID(track_class, "<init>", "(J)V"),
+        reinterpret_cast<jlong>(&playout_probe));
+    ASSERT_EQ(
+        env->CallIntMethod(
+            record, env->GetMethodID(record_class, "initRecording", "(II)I"),
+            format.sample_rate_hz, format.input_channels),
+        format.input_buffer_size_frames);
+    ASSERT_GT(env->CallIntMethod(
+                  track, env->GetMethodID(track_class, "initPlayout", "(IID)I"),
+                  format.sample_rate_hz, format.output_channels, 1.0),
+              0);
+    ASSERT_EQ(
+        env->CallBooleanMethod(
+            record, env->GetMethodID(record_class, "startRecording", "()Z")),
+        JNI_TRUE);
+    ASSERT_EQ(env->CallBooleanMethod(
+                  track, env->GetMethodID(track_class, "startPlayout", "()Z")),
+              JNI_TRUE);
+    {
+      std::unique_lock<std::mutex> lock(capture_probe.mutex);
+      ASSERT_TRUE(capture_probe.cv.wait_for(lock, std::chrono::seconds(2), [&] {
+        return capture_probe.callbacks >= 3;
+      }));
+      EXPECT_EQ(capture_probe.last_size,
+                format.input_buffer_size_frames * format.input_channels * 2);
+    }
+    {
+      std::unique_lock<std::mutex> lock(playout_probe.mutex);
+      ASSERT_TRUE(playout_probe.cv.wait_for(lock, std::chrono::seconds(2), [&] {
+        return playout_probe.callbacks >= 3;
+      }));
+      EXPECT_EQ(playout_probe.last_size,
+                format.output_buffer_size_frames * format.output_channels * 2);
+      EXPECT_FALSE(playout_probe.invalid_buffer);
+    }
+    ASSERT_EQ(
+        env->CallBooleanMethod(
+            record, env->GetMethodID(record_class, "stopRecording", "()Z")),
+        JNI_TRUE);
+    ASSERT_EQ(env->CallBooleanMethod(
+                  track, env->GetMethodID(track_class, "stopPlayout", "()Z")),
+              JNI_TRUE);
+    env->CallVoidMethod(manager,
+                        env->GetMethodID(manager_class, "dispose", "()V"));
+    env->DeleteLocalRef(record);
+    env->DeleteLocalRef(track);
+    env->DeleteLocalRef(manager);
+    close_on_failure.Release();
+  }
+  ASSERT_TRUE(ShutdownWebRtcJniAudioBridge(&vm).ok());
+}
+
+TEST(WebRtcJniAudioBridgeTest,
+     ManagerMuteSilencesNonzeroPcmAndUnmuteRestoresIt) {
+  // Read synthetic PCM through SDL's disk driver, never a physical microphone.
+  // A nonzero source is essential: dummy-driver silence cannot test muting.
+  bool have_disk_driver = false;
+  for (int index = 0; index < SDL_GetNumAudioDrivers(); ++index) {
+    if (std::strcmp(SDL_GetAudioDriver(index), "disk") == 0)
+      have_disk_driver = true;
+  }
+  if (!have_disk_driver) GTEST_SKIP() << "SDL disk audio driver is not built";
+  ASSERT_TRUE(ShutdownSdlAudioSubsystem().ok());
+  struct TemporaryPcm {
+    char path[40] = "/tmp/mocktail-webrtc-pcm-XXXXXX";
+    ~TemporaryPcm() {
+      if (created) std::remove(path);
+    }
+    bool created = false;
+  } pcm;
+  const int fd = mkstemp(pcm.path);
+  ASSERT_GE(fd, 0);
+  pcm.created = true;
+  FILE* file = fdopen(fd, "wb");
+  if (file == nullptr) close(fd);
+  ASSERT_NE(file, nullptr);
+  // 0x3f is nonzero in both the S16 stream format and SDL's F32 device format.
+  const std::vector<unsigned char> samples(4 * 1024 * 1024, 0x3f);
+  const std::size_t written =
+      std::fwrite(samples.data(), 1, samples.size(), file);
+  const int closed = std::fclose(file);
+  ASSERT_EQ(written, samples.size());
+  ASSERT_EQ(closed, 0);
+  // SDL caches environment values, so set hints explicitly when switching
+  // drivers within a test process that already initialized dummy audio.
+  ScopedSdlHint driver(SDL_HINT_AUDIO_DRIVER, "disk");
+  ScopedSdlHint disk_input(SDL_HINT_AUDIO_DISK_INPUT_FILE, pcm.path);
+  ScopedSdlHint disk_output(SDL_HINT_AUDIO_DISK_OUTPUT_FILE, "/dev/null");
+  ScopedEnvironment input("MOCKTAIL_AUDIO_INPUT_DEVICE", "default");
+  ScopedSdlAudioShutdown shutdown;
+  jnivm::VM vm;
+  WebRtcManagerProbe manager_probe;
+  WebRtcCaptureProbe capture_probe;
+  ScopedWebRtcBridgeShutdown close_before_probes(&vm);
+  ASSERT_TRUE(InstallWebRtcJniAudioBridge(&vm).ok());
+  ASSERT_STREQ(SDL_GetCurrentAudioDriver(), "disk");
+  JNIEnv* env = vm.GetJNIEnv();
+  jobject manager = CreateWebRtcManager(env, &manager_probe);
+  jclass manager_class = env->GetObjectClass(manager);
+  ASSERT_EQ(env->CallBooleanMethod(
+                manager, env->GetMethodID(manager_class, "init", "()Z")),
+            JNI_TRUE);
+  jclass record_class =
+      env->FindClass("org/webrtc/voiceengine/WebRtcAudioRecord");
+  const JNINativeMethod methods[] = {
+      {const_cast<char*>("nativeCacheDirectBufferAddress"),
+       const_cast<char*>("(Ljava/nio/ByteBuffer;J)V"),
+       reinterpret_cast<void*>(&CacheWebRtcBuffer)},
+      {const_cast<char*>("nativeDataIsRecorded"), const_cast<char*>("(IJ)V"),
+       reinterpret_cast<void*>(&WebRtcDataIsRecorded)}};
+  ASSERT_EQ(env->RegisterNatives(record_class, methods, 2), JNI_OK);
+  jobject record = env->NewObject(
+      record_class, env->GetMethodID(record_class, "<init>", "(J)V"),
+      reinterpret_cast<jlong>(&capture_probe));
+  const auto& format = manager_probe.parameters;
+  ASSERT_EQ(
+      env->CallIntMethod(
+          record, env->GetMethodID(record_class, "initRecording", "(II)I"),
+          format.sample_rate_hz, format.input_channels),
+      480);
+  ASSERT_EQ(
+      env->CallBooleanMethod(
+          record, env->GetMethodID(record_class, "startRecording", "()Z")),
+      JNI_TRUE);
+  {
+    std::unique_lock<std::mutex> lock(capture_probe.mutex);
+    ASSERT_TRUE(capture_probe.cv.wait_for(lock, std::chrono::seconds(2), [&] {
+      return capture_probe.non_silent_callbacks >= 3;
+    }));
+  }
+  const jmethodID mute =
+      env->GetMethodID(manager_class, "setMicrophoneMute", "(Z)V");
+  env->CallVoidMethod(manager, mute, JNI_TRUE);
+  {
+    std::unique_lock<std::mutex> lock(capture_probe.mutex);
+    int silent_before = capture_probe.silent_callbacks;
+    ASSERT_TRUE(capture_probe.cv.wait_for(lock, std::chrono::seconds(2), [&] {
+      return capture_probe.silent_callbacks >= silent_before + 3;
+    }));
+    // Allow the one already-running callback at the mute boundary to finish,
+    // then verify an additional three frames contain only silence.
+    const int non_silent_before = capture_probe.non_silent_callbacks;
+    silent_before = capture_probe.silent_callbacks;
+    ASSERT_TRUE(capture_probe.cv.wait_for(lock, std::chrono::seconds(2), [&] {
+      return capture_probe.silent_callbacks >= silent_before + 3;
+    }));
+    EXPECT_EQ(capture_probe.non_silent_callbacks, non_silent_before);
+    env->CallVoidMethod(manager, mute, JNI_FALSE);
+    ASSERT_TRUE(capture_probe.cv.wait_for(lock, std::chrono::seconds(2), [&] {
+      return capture_probe.non_silent_callbacks >= non_silent_before + 3;
+    }));
+  }
+  EXPECT_EQ(env->CallBooleanMethod(
+                record, env->GetMethodID(record_class, "stopRecording", "()Z")),
+            JNI_TRUE);
+  env->CallVoidMethod(manager,
+                      env->GetMethodID(manager_class, "dispose", "()V"));
 }
 
 TEST(SdlAudioCaptureTest, ResolvesDefaultIdAndUnambiguousDeviceNames) {
