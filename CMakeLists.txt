@@ -138,12 +138,7 @@ if(BUILD_TESTING)
   FetchContent_MakeAvailable(googletest)
 endif()
 
-add_library(mocktail_crypto_foundation STATIC
-  src/foundation/sha256.cc
-)
-add_library(Mocktail::CryptoFoundation ALIAS mocktail_crypto_foundation)
-target_include_directories(mocktail_crypto_foundation PUBLIC include)
-mocktail_apply_compile_options(mocktail_crypto_foundation)
+find_package(OpenSSL REQUIRED)
 
 include(${CMAKE_SOURCE_DIR}/cmake/MocktailPlatformGraphics.cmake)
 foreach(foundation_target IN ITEMS
@@ -201,7 +196,6 @@ target_include_directories(mocktail_bionic_stdio_runtime PUBLIC include)
 mocktail_apply_compile_options(mocktail_bionic_stdio_runtime)
 
 find_package(CURL REQUIRED)
-find_package(OpenSSL REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
@@ -234,7 +228,6 @@ add_library(Mocktail::Update ALIAS mocktail_update)
 target_include_directories(mocktail_update PUBLIC include)
 target_link_libraries(mocktail_update PUBLIC
   Mocktail::Compat
-  Mocktail::CryptoFoundation
   CURL::libcurl
   OpenSSL::Crypto
   PkgConfig::LIBYAML
@@ -334,7 +327,6 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
 endif()
 target_link_libraries(mocktail_runtime PUBLIC Threads::Threads)
 target_link_libraries(mocktail_runtime PRIVATE
-  Mocktail::CryptoFoundation
   CURL::libcurl
   nlohmann_json::nlohmann_json
   PkgConfig::GIO
