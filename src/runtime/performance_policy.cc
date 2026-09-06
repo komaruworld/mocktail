@@ -16,6 +16,7 @@
 
 #include "runtime/crash_report_policy.h"
 #include "runtime/http_client_policy.h"
+#include "runtime/texture_memory_policy.h"
 
 namespace mocktail {
 namespace runtime {
@@ -356,7 +357,13 @@ bool MergeRuntimeClientSettingsOverrides(const FrameRatePolicy& frame_rate,
                                         &http_client_overrides, error)) {
     return false;
   }
-  return MergeCrashReportClientSettingsOverrides(http_client_overrides,
+  std::string texture_memory_overrides;
+  if (!MergeTextureMemoryClientSettingsOverrides(
+          CalculateTextureMemoryBudgetBytes(DetectHostMemoryBytes()),
+          http_client_overrides, &texture_memory_overrides, error)) {
+    return false;
+  }
+  return MergeCrashReportClientSettingsOverrides(texture_memory_overrides,
                                                  merged_json, error);
 }
 
