@@ -376,6 +376,143 @@ TEST_F(JniVmTest, JniEnvPointerIsNotNull) {
   EXPECT_NE(vm_->GetJNIEnv(), nullptr);
 }
 
+TEST_F(JniVmTest, DiscardedTemporaryVmKeepsOriginalUsable) {
+  JavaVM* java_vm = vm_->GetJavaVM();
+  JNIEnv* original_env = vm_->GetJNIEnv();
+  {
+    auto candidate = std::make_unique<VM>();
+    EXPECT_EQ(VM::FromJavaVM(java_vm), vm_.get());
+  }
+
+  void* queried_env = nullptr;
+  ASSERT_EQ(java_vm->GetEnv(&queried_env, JNI_VERSION_1_6), JNI_OK);
+  EXPECT_EQ(queried_env, original_env);
+  EXPECT_EQ(VM::FromJavaVM(java_vm), vm_.get());
+
+  // JNI_OnLoad also attaches Roblox worker threads to the surviving VM.
+  std::thread worker([java_vm]() {
+    void* attached_env = nullptr;
+    ASSERT_EQ(java_vm->AttachCurrentThread(&attached_env, nullptr), JNI_OK);
+    ASSERT_NE(attached_env, nullptr);
+    JavaVM* owner = nullptr;
+    EXPECT_EQ(static_cast<JNIEnv*>(attached_env)->GetJavaVM(&owner), JNI_OK);
+    EXPECT_EQ(owner, java_vm);
+    EXPECT_EQ(java_vm->DetachCurrentThread(), JNI_OK);
+  });
+  worker.join();
+}
+
+TEST_F(JniVmTest, SurvivingVmReattachesAfterTemporaryVmUsedTheThread) {
+  JavaVM* java_vm = vm_->GetJavaVM();
+  const auto* original_functions = vm_->GetJNIEnv()->functions;
+  {
+    auto candidate = std::make_unique<VM>();
+    EXPECT_NE(candidate->GetJNIEnv()->functions, original_functions);
+  }
+
+  JNIEnv* env = vm_->GetJNIEnv();
+  EXPECT_EQ(env->functions, original_functions);
+  void* queried_env = nullptr;
+  EXPECT_EQ(java_vm->GetEnv(&queried_env, JNI_VERSION_1_6), JNI_OK);
+  EXPECT_EQ(queried_env, env);
+  JavaVM* owner = nullptr;
+  EXPECT_EQ(env->GetJavaVM(&owner), JNI_OK);
+  EXPECT_EQ(owner, java_vm);
+}
+
+TEST_F(JniVmTest, InvocationUsesTheRequestedVmNotTheNewestVm) {
+  JavaVM* original = vm_->GetJavaVM();
+  vm_->GetJNIEnv();
+  auto candidate = std::make_unique<VM>();
+  JavaVM* other = candidate->GetJavaVM();
+  void* env = nullptr;
+  EXPECT_EQ(other->GetEnv(&env, JNI_VERSION_1_6), JNI_EDETACHED);
+  EXPECT_EQ(env, nullptr);
+
+  const auto* other_functions = candidate->GetJNIEnv()->functions;
+  vm_->RestoreFunctions();
+  EXPECT_EQ(candidate->GetJNIEnv()->functions, other_functions);
+  EXPECT_EQ(original->GetEnv(&env, JNI_VERSION_1_6), JNI_EDETACHED);
+  EXPECT_EQ(env, nullptr);
+  EXPECT_EQ(original->DetachCurrentThread(), JNI_EDETACHED);
+  EXPECT_EQ(other->GetEnv(&env, JNI_VERSION_1_6), JNI_OK);
+
+  ASSERT_EQ(original->AttachCurrentThread(&env, nullptr), JNI_OK);
+  ASSERT_NE(env, nullptr);
+  JavaVM* owner = nullptr;
+  EXPECT_EQ(static_cast<JNIEnv*>(env)->GetJavaVM(&owner), JNI_OK);
+  EXPECT_EQ(owner, original);
+  EXPECT_EQ(other->GetEnv(&env, JNI_VERSION_1_6), JNI_EDETACHED);
+  EXPECT_EQ(env, nullptr);
+}
+
+TEST_F(JniVmTest, ForeignVmIsRejectedWithoutDetachingTheOwner) {
+  JavaVM* java_vm = vm_->GetJavaVM();
+  JNIEnv* original_env = vm_->GetJNIEnv();
+  JavaVM foreign = {java_vm->functions};
+  void* env = original_env;
+  EXPECT_EQ(VM::FromJavaVM(&foreign), nullptr);
+  EXPECT_EQ(foreign.GetEnv(&env, JNI_VERSION_1_6), JNI_EINVAL);
+  EXPECT_EQ(env, nullptr);
+  env = original_env;
+  EXPECT_EQ(foreign.AttachCurrentThread(&env, nullptr), JNI_EINVAL);
+  EXPECT_EQ(env, nullptr);
+  EXPECT_EQ(foreign.DetachCurrentThread(), JNI_EINVAL);
+  EXPECT_EQ(java_vm->GetEnv(&env, JNI_VERSION_1_6), JNI_OK);
+  EXPECT_EQ(env, original_env);
+}
+
+TEST_F(JniVmTest, DestroyingOlderVmDoesNotUnregisterItsReplacement) {
+  JavaVM* retired_vm = vm_->GetJavaVM();
+  auto replacement = std::make_unique<VM>();
+  JavaVM* java_vm = replacement->GetJavaVM();
+  JNIEnv* replacement_env = replacement->GetJNIEnv();
+  vm_.reset();
+
+  EXPECT_EQ(VM::FromJavaVM(retired_vm), nullptr);
+  EXPECT_EQ(VM::FromJavaVM(java_vm), replacement.get());
+  void* env = nullptr;
+  EXPECT_EQ(java_vm->GetEnv(&env, JNI_VERSION_1_6), JNI_OK);
+  EXPECT_EQ(env, replacement_env);
+}
+
+TEST_F(JniVmTest, GuestWrappedTablesKeepTheirOwnerOnRepeatedAttach) {
+  JavaVM* java_vm = vm_->GetJavaVM();
+  JNIEnv* env = vm_->GetJNIEnv();
+  JNIInvokeInterface_ wrapped_vm = *java_vm->functions;
+  JNINativeInterface_ wrapped_env = *env->functions;
+  java_vm->functions = &wrapped_vm;
+  env->functions = &wrapped_env;
+  {
+    auto candidate = std::make_unique<VM>();
+  }
+
+  EXPECT_EQ(VM::FromJavaVM(java_vm), vm_.get());
+  void* attached_env = nullptr;
+  EXPECT_EQ(java_vm->AttachCurrentThread(&attached_env, nullptr), JNI_OK);
+  EXPECT_EQ(attached_env, env);
+  EXPECT_EQ(env->functions, &wrapped_env);
+  EXPECT_EQ(java_vm->functions, &wrapped_vm);
+  void* queried_env = nullptr;
+  EXPECT_EQ(java_vm->GetEnv(&queried_env, JNI_VERSION_1_6), JNI_OK);
+  EXPECT_EQ(queried_env, env);
+  vm_->RestoreFunctions();
+}
+
+TEST_F(JniVmTest, TemporaryVmOnAnotherThreadDoesNotDetachTheOriginal) {
+  JavaVM* java_vm = vm_->GetJavaVM();
+  JNIEnv* original_env = vm_->GetJNIEnv();
+  std::thread worker([]() {
+    auto candidate = std::make_unique<VM>();
+    candidate->GetJNIEnv();
+  });
+  worker.join();
+  void* queried_env = nullptr;
+  EXPECT_EQ(java_vm->GetEnv(&queried_env, JNI_VERSION_1_6), JNI_OK);
+  EXPECT_EQ(queried_env, original_env);
+  EXPECT_EQ(VM::FromJavaVM(java_vm), vm_.get());
+}
+
 TEST_F(JniVmTest, TraceAllNeverPrintsJStringContentOrPrefix) {
   constexpr char kCookieShapedSecret[] =
       ".ROBLOSECURITY=_|SECRET_CANARY_PREFIX_never_log_this_value";

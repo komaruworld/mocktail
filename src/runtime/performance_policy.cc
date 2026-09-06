@@ -378,8 +378,10 @@ bool MergeAudioCaptureClientSettingsOverrides(bool microphone_enabled,
     }
     return false;
   }
-  overrides["DFFlagVoiceChatSkipPermissionCheckForTests"] =
-      microphone_enabled ? "True" : "False";
+  // PermissionsProtocol now owns authorization. Keep the test bypass off even
+  // when a caller supplied it, so disabled host capture remains denied.
+  (void)microphone_enabled;
+  overrides["DFFlagVoiceChatSkipPermissionCheckForTests"] = "False";
   *merged_json = overrides.dump();
   return true;
 }

@@ -1256,6 +1256,23 @@ void ClearBrowserServiceMemStorageCallback(void *context, jobject callback) {
   }
 }
 
+jobject CreateAsyncMessageBusRequestHandler(
+    void* context, std::shared_ptr<void> callback_context,
+    void (*run)(void*, JNIEnv*, jstring, jstring)) {
+  return context ? static_cast<jnivm::VM*>(context)
+                       ->CreateMessageBusAsyncRequestHandler(
+                           std::move(callback_context),
+                           jnivm::MessageBusAsyncRequestHandlerCallbacks{run})
+                 : nullptr;
+}
+
+void ClearAsyncMessageBusRequestHandler(void* context, jobject handler) {
+  if (context) {
+    static_cast<jnivm::VM*>(context)->ClearMessageBusAsyncRequestHandler(
+        handler);
+  }
+}
+
 struct ExperienceLifecycleTarget {
   std::weak_ptr<mocktail::runtime::RobloxExperienceComposition> composition;
 };
@@ -6443,7 +6460,9 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
           &CreateBrowserServiceMemStorageCallback,
           &ClearBrowserServiceMemStorageCallback,
           &mocktail::runtime::SetJnivmPlatformWebCallbacks,
-          &mocktail::runtime::ClearJnivmPlatformWebCallbacks};
+          &mocktail::runtime::ClearJnivmPlatformWebCallbacks,
+          &CreateAsyncMessageBusRequestHandler,
+          &ClearAsyncMessageBusRequestHandler};
       mocktail::runtime::RobloxFreshLaunchPresentBoundary present_boundary{
           &game_present_observer, &RegisterFreshGamePresentObserver,
           &ClearFreshGamePresentObserver};
@@ -6459,12 +6478,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       experience_composition =
           std::make_shared<mocktail::runtime::RobloxExperienceComposition>(
               environment, message_bus_symbols, platform_web_symbols.web_view,
-              platform_web_symbols.browser_service, *experience_game_symbols,
+              platform_web_symbols.browser_service,
+              platform_web_symbols.permissions, *experience_game_symbols,
               jni_factory, present_boundary, std::move(surface_config),
               &dependencies.roblox_credential(),
               mocktail::runtime::RobloxExperienceSurfaceProvider{},
               discord_rpc.observer(),
-              dependencies.clear_persisted_web_view_cookie());
+              dependencies.clear_persisted_web_view_cookie(),
+              runtime_config.microphone_enabled());
       const mocktail::Status platform_protocol_status =
           experience_composition->InitializePlatformProtocols();
       if (!platform_protocol_status.ok()) {
@@ -6472,9 +6493,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                   << platform_protocol_status.message() << '\n';
         return EXIT_FAILURE;
       }
-      std::cout << "  [platform] WebView and BrowserService protocols "
-                   "initialized before native bootstrap\n"
-                << std::flush;
+      std::cout
+          << "  [platform] WebView, BrowserService and Permissions protocols "
+             "initialized before native bootstrap\n"
+          << std::flush;
     }
 
     EngineStartupContext startup_context_value = {

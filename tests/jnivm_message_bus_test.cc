@@ -1,13 +1,14 @@
-#include "jnivm/jnivm.h"
-
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdarg>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+
+#include "jnivm/jnivm.h"
 
 namespace jnivm {
 namespace {
@@ -116,6 +117,137 @@ TEST(JniVmMessageBusTest, ClearStopsNewCallsAndRetainsInflightContext) {
 
   env->CallVoidMethod(callback, run, message);
   EXPECT_FALSE(vm.DispatchMessageBusRawCallback(callback, env, message));
+}
+
+struct AsyncProbe {
+  std::string message;
+  std::string id;
+  int calls = 0;
+};
+
+void RecordAsync(void* context, JNIEnv* env, jstring message, jstring id) {
+  auto* probe = static_cast<AsyncProbe*>(context);
+  ++probe->calls;
+  const char* text =
+      message ? env->GetStringUTFChars(message, nullptr) : nullptr;
+  probe->message = text ? text : "";
+  if (text) env->ReleaseStringUTFChars(message, text);
+  text = env->GetStringUTFChars(id, nullptr);
+  probe->id = text ? text : "";
+  if (text) env->ReleaseStringUTFChars(id, text);
+}
+
+void InvokeV(JNIEnv* env, jobject receiver, jmethodID method, ...) {
+  va_list args;
+  va_start(args, method);
+  env->CallVoidMethodV(receiver, method, args);
+  va_end(args);
+}
+
+class JniVmAsyncRequestTest : public testing::TestWithParam<int> {
+ protected:
+  void Invoke(JNIEnv* env, jobject receiver, jmethodID method, jstring message,
+              jstring id) {
+    if (GetParam() == 0) {
+      env->functions->CallVoidMethod(env, receiver, method, message, id);
+    } else if (GetParam() == 1) {
+      InvokeV(env, receiver, method, message, id);
+    } else {
+      jvalue args[2]{};
+      args[0].l = message;
+      args[1].l = id;
+      env->CallVoidMethodA(receiver, method, args);
+    }
+  }
+};
+
+TEST_P(JniVmAsyncRequestTest, ExactTwoStringContractAndClear) {
+  VM vm;
+  auto probe = std::make_shared<AsyncProbe>();
+  jobject handler = vm.CreateMessageBusAsyncRequestHandler(
+      probe, MessageBusAsyncRequestHandlerCallbacks{RecordAsync});
+  ASSERT_NE(handler, nullptr);
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass cls = env->GetObjectClass(handler);
+  jmethodID run =
+      env->GetMethodID(cls, "run", "(Ljava/lang/String;Ljava/lang/String;)V");
+  jstring message = env->NewStringUTF("{\"permissions\":[]}");
+  jstring id = env->NewStringUTF("request-42");
+  Invoke(env, handler, run, message, id);
+  EXPECT_EQ(probe->calls, 1);
+  EXPECT_EQ(probe->message, "{\"permissions\":[]}");
+  EXPECT_EQ(probe->id, "request-42");
+  Invoke(env, handler, run, nullptr, id);
+  EXPECT_EQ(probe->calls, 2);  // Malformed input still gets a denial response.
+  Invoke(env, handler, run, message, nullptr);
+  EXPECT_EQ(probe->calls, 2);
+  vm.ClearMessageBusAsyncRequestHandler(handler);
+  Invoke(env, handler, run, message, id);
+  EXPECT_EQ(probe->calls, 2);
+}
+
+TEST_P(JniVmAsyncRequestTest,
+       RejectsWrongSignaturesReceiversAndUnboundObjects) {
+  VM vm;
+  auto probe = std::make_shared<AsyncProbe>();
+  jobject handler = vm.CreateMessageBusAsyncRequestHandler(
+      probe, MessageBusAsyncRequestHandlerCallbacks{RecordAsync});
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass cls = env->GetObjectClass(handler);
+  jstring value = env->NewStringUTF("{}");
+  for (const char* signature : {"()V", "(Ljava/lang/String;)V",
+                                "(Ljava/lang/String;Ljava/lang/String;)Z"}) {
+    Invoke(env, handler, env->GetMethodID(cls, "run", signature), value, value);
+  }
+  jmethodID run =
+      env->GetMethodID(cls, "run", "(Ljava/lang/String;Ljava/lang/String;)V");
+  Invoke(env, env->AllocObject(cls), run, value, value);
+  Invoke(env, env->AllocObject(env->FindClass("java/lang/Object")), run, value,
+         value);
+  Invoke(
+      env, handler,
+      env->GetMethodID(cls, "other", "(Ljava/lang/String;Ljava/lang/String;)V"),
+      value, value);
+  EXPECT_EQ(probe->calls, 0);
+}
+
+INSTANTIATE_TEST_SUITE_P(DirectVAndA, JniVmAsyncRequestTest,
+                         testing::Values(0, 1, 2));
+
+void BlockAsync(void* context, JNIEnv* env, jstring message, jstring) {
+  RecordRawMessage(context, env, message);
+}
+
+TEST(JniVmMessageBusTest, AsyncClearRetainsInflightContext) {
+  VM vm;
+  auto probe = std::make_shared<RawCallbackProbe>();
+  std::weak_ptr<RawCallbackProbe> weak = probe;
+  jobject handler = vm.CreateMessageBusAsyncRequestHandler(
+      probe, MessageBusAsyncRequestHandlerCallbacks{BlockAsync});
+  ASSERT_NE(handler, nullptr);
+  JNIEnv* env = vm.GetJNIEnv();
+  jstring message = env->NewStringUTF("{}");
+  jstring id = env->NewStringUTF("id");
+  std::thread caller([&] {
+    vm.DispatchMessageBusAsyncRequestHandler(handler, env, message, id);
+  });
+  {
+    std::unique_lock<std::mutex> lock(probe->mutex);
+    EXPECT_TRUE(probe->entered.wait_for(lock, std::chrono::seconds(2),
+                                        [&] { return probe->is_entered; }));
+  }
+  vm.ClearMessageBusAsyncRequestHandler(handler);
+  probe.reset();
+  EXPECT_FALSE(weak.expired());
+  if (const auto held = weak.lock()) {
+    std::lock_guard<std::mutex> lock(held->mutex);
+    held->may_return = true;
+    held->released.notify_all();
+  }
+  caller.join();
+  EXPECT_TRUE(weak.expired());
+  EXPECT_FALSE(
+      vm.DispatchMessageBusAsyncRequestHandler(handler, env, message, id));
 }
 
 } // namespace

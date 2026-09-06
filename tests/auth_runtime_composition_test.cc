@@ -193,6 +193,44 @@ TEST(AuthRuntimeCompositionTest,
   EXPECT_EQ(identity.display_name.find(kCredential), std::string::npos);
 }
 
+TEST(AuthRuntimeCompositionTest,
+     DiscardedGuestSignInCandidateKeepsProductionJniAvailable) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
+  FakeHttpClient http;
+  services::AuthService auth_service(http);
+  const auto paths = PathsFor(environment, directory);
+  AuthRuntimeComposition production =
+      ComposeAuthRuntime(environment, paths, auth_service);
+  ASSERT_EQ(production.status, AuthRuntimeStatus::kGuest);
+  ASSERT_TRUE(production);
+
+  // The first-launch browser can capture a cookie header without an
+  // authenticated Roblox session. PromptFirstLaunchSignIn discards that
+  // second guest composition and keeps the original production VM.
+  environment.Set("MOCKTAIL_ROBLOX_COOKIES", "RBXEventTrackerV2=test-tracker");
+  {
+    AuthRuntimeComposition candidate =
+        ComposeAuthRuntime(environment, paths, auth_service);
+    ASSERT_EQ(candidate.status, AuthRuntimeStatus::kGuest);
+    ASSERT_TRUE(candidate);
+    ASSERT_NE(candidate.jni_vm, production.jni_vm);
+  }
+
+  JNIEnv* env = production.jni_vm->GetJNIEnv();
+  JavaVM* java_vm = production.jni_vm->GetJavaVM();
+  EXPECT_EQ(jnivm::VM::FromJavaVM(java_vm), production.jni_vm.get());
+  void* queried_env = nullptr;
+  EXPECT_EQ(java_vm->GetEnv(&queried_env, JNI_VERSION_1_6), JNI_OK);
+  EXPECT_EQ(queried_env, env);
+  void* attached_env = nullptr;
+  EXPECT_EQ(java_vm->AttachCurrentThread(&attached_env, nullptr), JNI_OK);
+  EXPECT_EQ(attached_env, env);
+  EXPECT_EQ(http.request_count, 0);
+}
+
 TEST(AuthRuntimeCompositionTest, SoberCookieIsIgnoredAndGuestPolicyRequired) {
   TempDirectory directory;
   MapEnvironment environment;

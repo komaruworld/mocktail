@@ -291,6 +291,7 @@ RobloxExperienceComposition::RobloxExperienceComposition(
     RobloxExperienceMessageBusSymbols message_bus_symbols,
     RobloxWebViewMessageBusSymbols web_view_symbols,
     RobloxBrowserServiceSymbols browser_service_symbols,
+    RobloxPermissionsMessageBusSymbols permissions_symbols,
     RobloxGameSessionSymbols game_symbols,
     RobloxExperienceJniFactory jni_factory,
     RobloxFreshLaunchPresentBoundary present_boundary,
@@ -298,11 +299,13 @@ RobloxExperienceComposition::RobloxExperienceComposition(
     const SecureRobloxCredential* initial_web_view_credential,
     RobloxExperienceSurfaceProvider surface_provider,
     RobloxExperiencePresenceObserver presence_observer,
-    bool clear_persisted_web_view_cookie)
+    bool clear_persisted_web_view_cookie, bool microphone_enabled)
     : environment_(environment),
       message_bus_symbols_(message_bus_symbols),
       web_view_symbols_(web_view_symbols),
       browser_service_symbols_(browser_service_symbols),
+      permissions_symbols_(permissions_symbols),
+      microphone_enabled_(microphone_enabled),
       game_symbols_(game_symbols),
       jni_factory_(jni_factory),
       present_boundary_(present_boundary),
@@ -338,13 +341,14 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
     return FailedPrecondition(web_view_cookie_initialization_error_);
   }
   if (!environment_.valid() || !web_view_symbols_.complete() ||
-      !browser_service_symbols_.complete() || !jni_factory_.complete()) {
+      !browser_service_symbols_.complete() ||
+      !permissions_symbols_.complete() || !jni_factory_.complete()) {
     return FailedPrecondition("platform protocol prerequisites are incomplete");
   }
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (platform_protocols_initialized_ || objects_ != nullptr ||
-        web_view_bridge_ != nullptr) {
+        web_view_bridge_ != nullptr || permissions_bridge_ != nullptr) {
       return FailedPrecondition("platform protocols are already initialized");
     }
   }
@@ -404,14 +408,33 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
     (void)ReleaseGlobalObjects();
     return status;
   }
+  RobloxPermissionsMessageBusObjects permissions_objects{
+      web_view_objects.message_bus,
+      jni_factory_.context,
+      jni_factory_.create_raw_callback,
+      jni_factory_.clear_raw_callback,
+      jni_factory_.create_async_request_handler,
+      jni_factory_.clear_async_request_handler};
+  auto permissions_bridge = std::make_unique<RobloxPermissionsBridge>(
+      environment_, permissions_symbols_, permissions_objects,
+      microphone_enabled_);
+  status = permissions_bridge->Initialize();
+  if (!status.ok()) {
+    (void)browser_service_bridge->Shutdown();
+    (void)web_view_bridge->Shutdown();
+    (void)ReleaseGlobalObjects();
+    return status;
+  }
   {
     std::lock_guard<std::mutex> lock(mutex_);
     web_view_bridge_ = std::move(web_view_bridge);
     browser_service_bridge_ = std::move(browser_service_bridge);
+    permissions_bridge_ = std::move(permissions_bridge);
     platform_protocols_initialized_ = true;
   }
   std::fprintf(stderr,
-               "  [platform] Android WebViewProtocol and BrowserService "
+               "  [platform] Android WebViewProtocol, BrowserService and "
+               "PermissionsProtocol "
                "bridges ready\n");
   return Status::Ok();
 }
@@ -431,7 +454,7 @@ Status RobloxExperienceComposition::OnLuaAppReady(
     std::lock_guard<std::mutex> lock(mutex_);
     if (!platform_protocols_initialized_ || objects_ == nullptr ||
         objects_->message_bus == nullptr || web_view_bridge_ == nullptr ||
-        browser_service_bridge_ == nullptr) {
+        browser_service_bridge_ == nullptr || permissions_bridge_ == nullptr) {
       return FailedPrecondition(
           "platform protocols must be initialized before LuaApp readiness");
     }
@@ -1515,6 +1538,7 @@ Status RobloxExperienceComposition::Shutdown() {
   std::unique_ptr<RobloxExperienceLaunchBridge> bridge;
   std::unique_ptr<RobloxWebViewBridge> web_view_bridge;
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge;
+  std::unique_ptr<RobloxPermissionsBridge> permissions_bridge;
   std::shared_ptr<WebViewHelperProcess> web_surface_process;
   jnivm::VM* late_lifecycle_vm = nullptr;
   {
@@ -1537,6 +1561,7 @@ Status RobloxExperienceComposition::Shutdown() {
     bridge = std::move(bridge_);
     web_view_bridge = std::move(web_view_bridge_);
     browser_service_bridge = std::move(browser_service_bridge_);
+    permissions_bridge = std::move(permissions_bridge_);
     web_surface_process = std::move(web_surface_process_);
     web_surface_logical_exit_observer_ = {};
     web_surface_route_ = WebSurfaceRoute::kNone;
@@ -1553,9 +1578,12 @@ Status RobloxExperienceComposition::Shutdown() {
   if (web_surface_process != nullptr) {
     (void)web_surface_process->RequestClose();
   }
-  Status status = browser_service_bridge != nullptr
-                      ? browser_service_bridge->Shutdown()
-                      : Status::Ok();
+  Status status = permissions_bridge != nullptr ? permissions_bridge->Shutdown()
+                                                : Status::Ok();
+  const Status browser_status = browser_service_bridge != nullptr
+                                    ? browser_service_bridge->Shutdown()
+                                    : Status::Ok();
+  if (status.ok()) status = browser_status;
   const Status web_view_status =
       web_view_bridge != nullptr ? web_view_bridge->Shutdown() : Status::Ok();
   if (status.ok()) {
@@ -1567,6 +1595,7 @@ Status RobloxExperienceComposition::Shutdown() {
     status = bridge_status;
   }
   browser_service_bridge.reset();
+  permissions_bridge.reset();
   web_view_bridge.reset();
   bridge.reset();
   if (launch_worker_.joinable()) {

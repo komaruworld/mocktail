@@ -17,6 +17,7 @@
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_experience_presence.h"
 #include "runtime/roblox_fresh_game_launch_controller.h"
+#include "runtime/roblox_permissions_bridge.h"
 #include "runtime/roblox_web_view_bridge.h"
 #include "runtime/webview_roblox_cookie.h"
 
@@ -56,6 +57,10 @@ struct RobloxExperienceJniFactory {
       void (*on_sync_cookies)(void*, JNIEnv*, jstring),
       void (*on_set_cookie)(void*, JNIEnv*, jstring, jstring)) = nullptr;
   void (*clear_platform_web_callbacks)(void* context) = nullptr;
+  jobject (*create_async_request_handler)(
+      void* context, std::shared_ptr<void> callback_context,
+      void (*run)(void*, JNIEnv*, jstring, jstring)) = nullptr;
+  void (*clear_async_request_handler)(void* context, jobject handler) = nullptr;
 
   bool complete() const {
     return context != nullptr && create_raw_callback != nullptr &&
@@ -64,7 +69,9 @@ struct RobloxExperienceJniFactory {
            create_mem_storage_callback != nullptr &&
            clear_mem_storage_callback != nullptr &&
            set_platform_web_callbacks != nullptr &&
-           clear_platform_web_callbacks != nullptr;
+           clear_platform_web_callbacks != nullptr &&
+           create_async_request_handler != nullptr &&
+           clear_async_request_handler != nullptr;
   }
 };
 
@@ -104,6 +111,7 @@ class RobloxExperienceComposition final {
       RobloxExperienceMessageBusSymbols message_bus_symbols,
       RobloxWebViewMessageBusSymbols web_view_symbols,
       RobloxBrowserServiceSymbols browser_service_symbols,
+      RobloxPermissionsMessageBusSymbols permissions_symbols,
       RobloxGameSessionSymbols game_symbols,
       RobloxExperienceJniFactory jni_factory,
       RobloxFreshLaunchPresentBoundary present_boundary,
@@ -111,7 +119,8 @@ class RobloxExperienceComposition final {
       const SecureRobloxCredential* initial_web_view_credential = nullptr,
       RobloxExperienceSurfaceProvider surface_provider = {},
       RobloxExperiencePresenceObserver presence_observer = {},
-      bool clear_persisted_web_view_cookie = false);
+      bool clear_persisted_web_view_cookie = false,
+      bool microphone_enabled = false);
   ~RobloxExperienceComposition();
 
   RobloxExperienceComposition(const RobloxExperienceComposition&) = delete;
@@ -219,6 +228,8 @@ class RobloxExperienceComposition final {
   const RobloxExperienceMessageBusSymbols message_bus_symbols_;
   const RobloxWebViewMessageBusSymbols web_view_symbols_;
   const RobloxBrowserServiceSymbols browser_service_symbols_;
+  const RobloxPermissionsMessageBusSymbols permissions_symbols_;
+  const bool microphone_enabled_;
   const RobloxGameSessionSymbols game_symbols_;
   const RobloxExperienceJniFactory jni_factory_;
   const RobloxFreshLaunchPresentBoundary present_boundary_;
@@ -236,6 +247,7 @@ class RobloxExperienceComposition final {
   std::unique_ptr<RobloxExperienceLaunchBridge> bridge_;
   std::unique_ptr<RobloxWebViewBridge> web_view_bridge_;
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge_;
+  std::unique_ptr<RobloxPermissionsBridge> permissions_bridge_;
   std::shared_ptr<WebViewHelperProcess> web_surface_process_;
   std::shared_ptr<WebSurfaceExitTarget> web_surface_exit_target_;
   std::shared_ptr<LifecycleTarget> lifecycle_target_;

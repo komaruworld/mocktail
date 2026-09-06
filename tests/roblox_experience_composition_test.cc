@@ -7,7 +7,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
 #include <vector>
@@ -43,6 +45,11 @@ struct Probe {
   int surface_width = 0;
   int join_request_type = -1;
   int web_view_initializations = 0;
+  int permission_subscriptions = 0;
+  int permission_disconnects = 0;
+  int permission_handlers_cleared = 0;
+  std::map<std::string, jobject> permission_handlers;
+  std::string permission_response;
   int browser_bindings = 0;
   int browser_disconnects = 0;
   int browser_releases = 0;
@@ -97,6 +104,19 @@ jobject CreateRequestHandler(void* context,
 
 void ClearRequestHandler(void* context, jobject handler) {
   static_cast<Probe*>(context)->vm->ClearMessageBusRequestHandler(handler);
+}
+
+jobject CreateAsyncRequestHandler(void* context,
+                                  std::shared_ptr<void> callback_context,
+                                  void (*run)(void*, JNIEnv*, jstring,
+                                              jstring)) {
+  return static_cast<Probe*>(context)->vm->CreateMessageBusAsyncRequestHandler(
+      std::move(callback_context),
+      jnivm::MessageBusAsyncRequestHandlerCallbacks{run});
+}
+
+void ClearAsyncRequestHandler(void* context, jobject handler) {
+  static_cast<Probe*>(context)->vm->ClearMessageBusAsyncRequestHandler(handler);
 }
 
 jobject CreateMemStorageCallback(void* context,
@@ -186,7 +206,62 @@ RobloxExperienceJniFactory JniFactory(Probe* probe) {
           CreateMemStorageCallback,
           ClearMemStorageCallback,
           SetPlatformWebCallbacks,
-          ClearPlatformWebCallbacks};
+          ClearPlatformWebCallbacks,
+          CreateAsyncRequestHandler,
+          ClearAsyncRequestHandler};
+}
+
+jobject SubscribePermission(JNIEnv* env, jobject, jstring, jstring, jobject,
+                            jboolean) {
+  jclass cls = env->FindClass("com/roblox/universalapp/messagebus/Connection");
+  jmethodID ctor = env->GetMethodID(cls, "<init>", "(J)V");
+  return env->NewObject(
+      cls, ctor, static_cast<jlong>(++g_probe->permission_subscriptions));
+}
+
+void DisconnectPermission(JNIEnv*, jobject, jlong) {
+  ++g_probe->permission_disconnects;
+}
+
+void PublishPermission(JNIEnv*, jobject, jstring, jstring, jstring, jint,
+                       jstring) {}
+
+void SetAsyncPermission(JNIEnv* env, jobject, jstring, jstring method,
+                        jobject handler) {
+  const char* chars = env->GetStringUTFChars(method, nullptr);
+  g_probe->permission_handlers[chars] = handler;
+  env->ReleaseStringUTFChars(method, chars);
+}
+
+void ClearPermission(JNIEnv*, jobject, jstring, jstring) {
+  ++g_probe->permission_handlers_cleared;
+}
+
+void ResolvePermission(JNIEnv* env, jobject, jstring, jstring response) {
+  const char* chars = env->GetStringUTFChars(response, nullptr);
+  g_probe->permission_response = chars;
+  env->ReleaseStringUTFChars(response, chars);
+}
+
+RobloxPermissionsMessageBusSymbols PermissionsSymbols() {
+  return {SubscribePermission, DisconnectPermission, PublishPermission,
+          SetAsyncPermission,  ClearPermission,      ResolvePermission};
+}
+
+nlohmann::json QueryMicrophone(Probe* probe) {
+  JNIEnv* env = probe->vm->GetJNIEnv();
+  jobject handler = probe->permission_handlers.at("HasPermissions");
+  jclass cls = env->GetObjectClass(handler);
+  jmethodID run =
+      env->GetMethodID(cls, "run", "(Ljava/lang/String;Ljava/lang/String;)V");
+  jstring message =
+      env->NewStringUTF(R"({"permissions":["MICROPHONE_ACCESS"]})");
+  jstring id = env->NewStringUTF("before-luaapp");
+  env->CallVoidMethod(handler, run, message, id);
+  env->DeleteLocalRef(message);
+  env->DeleteLocalRef(id);
+  env->DeleteLocalRef(cls);
+  return nlohmann::json::parse(probe->permission_response);
 }
 
 void SetRequestHandler(JNIEnv*, jobject, jstring, jstring, jobject) {}
@@ -427,11 +502,11 @@ TEST(RobloxExperienceCompositionTest,
        PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
        GetWebViewCloseId, SignalWebViewJavascriptCallback,
        UpdateCookieSetHandler},
-      BrowserServiceSymbols(),
+      BrowserServiceSymbols(), PermissionsSymbols(),
       {Foreground, Start, Update, PauseGame, ResumeGame, Leave, PauseApp,
        DestroyApp, UpdateApp, StartApp, CallMessagesFromMainThread},
       JniFactory(&probe), {&probe, RegisterObserver, ClearObserver}, {},
-      nullptr, {}, {&probe, ObservePresence});
+      nullptr, {}, {&probe, ObservePresence}, false, true);
   RobloxLuaAppExperienceReadiness readiness;
   readiness.principal = {GameSessionPrincipalKind::kAuthenticated, 4, "42",
                          "https://www.roblox.com"};
@@ -439,6 +514,7 @@ TEST(RobloxExperienceCompositionTest,
   readiness.username = "typed-user";
 
   ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
+  EXPECT_EQ(QueryMicrophone(&probe).at("status"), "AUTHORIZED");
   ASSERT_TRUE(composition.OnLuaAppReady(readiness).ok());
   ASSERT_TRUE(composition.subscribed());
   EXPECT_EQ(probe.web_view_initializations, 1);
@@ -572,7 +648,7 @@ TEST(RobloxExperienceCompositionTest,
        PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
        GetWebViewCloseId, SignalWebViewJavascriptCallback,
        UpdateCookieSetHandler},
-      BrowserServiceSymbols(),
+      BrowserServiceSymbols(), PermissionsSymbols(),
       {Foreground, Start, Update, PauseGame, ResumeGame, Leave, PauseApp,
        DestroyApp, UpdateApp, StartApp, CallMessagesFromMainThread},
       JniFactory(&probe), {&probe, RegisterObserver, ClearObserver});
@@ -640,7 +716,7 @@ TEST(RobloxExperienceCompositionTest,
        PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
        GetWebViewCloseId, SignalWebViewJavascriptCallback,
        UpdateCookieSetHandler},
-      BrowserServiceSymbols(),
+      BrowserServiceSymbols(), PermissionsSymbols(),
       {Foreground, Start, Update, PauseGame, ResumeGame, Leave, PauseApp,
        DestroyApp, UpdateApp, StartApp, CallMessagesFromMainThread},
       JniFactory(&probe), {&probe, RegisterObserver, ClearObserver});
@@ -736,7 +812,7 @@ TEST(RobloxExperienceCompositionTest,
        PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
        GetWebViewCloseId, SignalWebViewJavascriptCallback,
        UpdateCookieSetHandler},
-      BrowserServiceSymbols(),
+      BrowserServiceSymbols(), PermissionsSymbols(),
       {Foreground, Start, Update, PauseGame, ResumeGame, Leave, PauseApp,
        DestroyApp, UpdateApp, StartApp, CallMessagesFromMainThread},
       JniFactory(&probe), {&probe, RegisterObserver, ClearObserver}, {},
@@ -783,7 +859,8 @@ TEST(RobloxExperienceCompositionTest,
   jnivm::VM vm;
   Probe probe{&vm};
   RobloxExperienceComposition composition({vm.GetJavaVM(), &vm, Prepare}, {},
-                                          {}, {}, {}, JniFactory(&probe), {});
+                                          {}, {}, {}, {}, JniFactory(&probe),
+                                          {});
   EXPECT_FALSE(
       composition.OnLuaAppReady(RobloxLuaAppExperienceReadiness{}).ok());
   EXPECT_FALSE(composition.subscribed());
@@ -812,10 +889,14 @@ TEST(RobloxExperienceCompositionTest,
        PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
        GetWebViewCloseId, SignalWebViewJavascriptCallback,
        UpdateCookieSetHandler},
-      BrowserServiceSymbols(), {}, JniFactory(&probe), {});
+      BrowserServiceSymbols(), PermissionsSymbols(), {}, JniFactory(&probe),
+      {});
 
   ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
   EXPECT_FALSE(composition.subscribed());
+  EXPECT_EQ(probe.permission_subscriptions, 5);
+  EXPECT_EQ(probe.permission_handlers.size(), 5u);
+  EXPECT_EQ(QueryMicrophone(&probe).at("status"), "DENIED");
   EXPECT_EQ(probe.web_view_initializations, 1);
   EXPECT_EQ(probe.browser_bindings, 4);
   EXPECT_EQ(probe.browser_callbacks_created, 4);
@@ -823,6 +904,8 @@ TEST(RobloxExperienceCompositionTest,
   EXPECT_EQ(probe.browser_releases, 0);
   EXPECT_EQ(probe.browser_callbacks_cleared, 0);
   EXPECT_TRUE(composition.Shutdown().ok());
+  EXPECT_EQ(probe.permission_disconnects, 5);
+  EXPECT_EQ(probe.permission_handlers_cleared, 5);
   EXPECT_EQ(probe.disconnects, 3);
   EXPECT_EQ(probe.browser_disconnects, 4);
   EXPECT_EQ(probe.browser_releases, 4);
@@ -859,7 +942,7 @@ TEST(RobloxExperienceCompositionTest,
        PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
        GetWebViewCloseId, SignalWebViewJavascriptCallback,
        UpdateCookieSetHandler},
-      BrowserServiceSymbols(),
+      BrowserServiceSymbols(), PermissionsSymbols(),
       {Foreground, Start, Update, PauseGame, ResumeGame, Leave, PauseApp,
        DestroyApp, UpdateApp, StartApp, CallMessagesFromMainThread},
       JniFactory(&probe), {&probe, RegisterObserver, ClearObserver}, {},
@@ -918,7 +1001,7 @@ TEST(RobloxExperienceCompositionTest,
        PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
        GetWebViewCloseId, SignalWebViewJavascriptCallback,
        UpdateCookieSetHandler},
-      BrowserServiceSymbols(),
+      BrowserServiceSymbols(), PermissionsSymbols(),
       {Foreground, Start, Update, PauseGame, ResumeGame, Leave, PauseApp,
        DestroyApp, UpdateApp, StartApp, CallMessagesFromMainThread},
       JniFactory(&probe), {&probe, RegisterObserver, ClearObserver});
@@ -951,9 +1034,9 @@ class RobloxExperienceCompositionWebSurfaceTest : public ::testing::Test {
     return std::make_unique<RobloxExperienceComposition>(
         JniEnvironmentProvider{}, RobloxExperienceMessageBusSymbols{},
         RobloxWebViewMessageBusSymbols{}, RobloxBrowserServiceSymbols{},
-        RobloxGameSessionSymbols{}, RobloxExperienceJniFactory{},
-        RobloxFreshLaunchPresentBoundary{}, RobloxGameSurfaceJniConfig{},
-        credential);
+        RobloxPermissionsMessageBusSymbols{}, RobloxGameSessionSymbols{},
+        RobloxExperienceJniFactory{}, RobloxFreshLaunchPresentBoundary{},
+        RobloxGameSurfaceJniConfig{}, credential);
   }
 
   static bool CookieSynchronized(
@@ -1041,7 +1124,8 @@ TEST_F(RobloxExperienceCompositionWebSurfaceTest,
        PublishRaw, BroadcastDataModelFocus, GetWebViewMutateId,
        GetWebViewCloseId, SignalWebViewJavascriptCallback,
        UpdateCookieSetHandler},
-      BrowserServiceSymbols(), {}, JniFactory(&probe), {});
+      BrowserServiceSymbols(), PermissionsSymbols(), {}, JniFactory(&probe),
+      {});
   ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
 
   const std::string join =
