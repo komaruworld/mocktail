@@ -102,6 +102,38 @@ TEST(BuildProfileTest, ReportsUnknownBuildWithoutInventingProfile) {
   EXPECT_FALSE(result.profile.has_value());
 }
 
+TEST(BuildProfileTest, Payload2998SupportsFullscreenAndHostAudioByDefault) {
+  const ProfileLookupResult result = FindBuildProfile(
+      kManifestPath, "ade08266c67aee88ec9c1d00902150e1684dad3a");
+
+  ASSERT_TRUE(result) << result.error;
+  ASSERT_TRUE(result.profile.has_value());
+  EXPECT_EQ(result.profile->version_name, "2.736.1408");
+  EXPECT_EQ(result.profile->version_code, 2998);
+  EXPECT_EQ(result.profile->status, BuildStatus::kSupported);
+  EXPECT_TRUE(result.profile->default_allowed);
+  EXPECT_FALSE(result.profile->allow_legacy_binary_patches);
+  EXPECT_TRUE(result.profile->allow_host_abi_bridges);
+  EXPECT_TRUE(result.profile->allow_host_constructor_replay);
+  ASSERT_TRUE(
+      result.profile->user_game_settings_fullscreen_setter_rva.has_value());
+  EXPECT_EQ(*result.profile->user_game_settings_fullscreen_setter_rva,
+            0x45ad8aaU);
+  ASSERT_TRUE(result.profile->fmod_output_device_bridge.has_value());
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->vtable_rva,
+            0x6c58040U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->string_constructor_rva,
+            0x1d32df8U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->count_method_rva,
+            0x32d0ee0U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->info_method_rva,
+            0x32d0f80U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->current_method_rva,
+            0x32d0f30U);
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->select_method_rva,
+            0x32d0cb4U);
+}
+
 TEST(BuildProfileTest, RejectsInvalidBuildId) {
   const ProfileLookupResult result = FindBuildProfile(kManifestPath, "oops");
 

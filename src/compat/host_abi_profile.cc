@@ -6,6 +6,29 @@ namespace mocktail::compat {
 namespace {
 
 constexpr HostAbiProfile kProfiles[] = {
+    // Roblox 2.736.1408. Derived from the verified 2908 profile and validated
+    // by two isolated no-recovery Vulkan canaries and real game sessions.
+    {"ade08266c67aee88ec9c1d00902150e1684dad3a",
+     {{{0x1d2c1e2, HostBridgeKind::kAllocate, "small-allocate"},
+       {0x1d2f43a, HostBridgeKind::kUsableSize, "usable-size"},
+       {0x21e68bf, HostBridgeKind::kReallocate, "reallocate"},
+       {0x1d2bf82, HostBridgeKind::kAllocate, "allocate"},
+       {0x1d47a63, HostBridgeKind::kAlignedAllocate,
+        "aligned-allocate-direct"},
+       {0x1d2f9d9, HostBridgeKind::kFree, "free"}}},
+     6,
+     {0x7652e70, 0x775fd28, 0x7bb4340, 0x400, 0x1d2c5f8, 0x1db7b57,
+      0x7af0430, 0x7af04c0, 0x400000},
+     {0x1d2bf82, 0x1d2f9d9},
+     0x7057818,
+     3570,
+     {{{2, 3}, {5, 3570}}},
+     2,
+     {{{2, 3570}}},
+     1,
+     2,
+     {0x21e8e09, 0x7af4598},
+     HostAllocatorStrategy::kNativeMimalloc},
     // Roblox 2.734.917. This exact Build-ID profile was machine-derived from
     // the verified reference and passed two isolated no-recovery Tier C Vulkan
     // canaries with native constructors, JNI startup, presentation, and

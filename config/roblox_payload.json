@@ -1,23 +1,24 @@
 {
   "schema_version": 1,
   "package": "com.roblox.client",
-  "version_name": "2.725.1142",
-  "version_code": 2546,
+  "version_name": "2.736.1408",
+  "version_code": 2998,
   "abi": "x86_64",
-  "elf_build_id": "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21",
+  "elf_build_id": "ade08266c67aee88ec9c1d00902150e1684dad3a",
   "sha256": {
-    "libroblox": "92ca0e4d8bc4e1c7a37fc2b52544869299ec8b9a40ea8da96ebac66660e0b1af",
-    "base_apk": "eba476fec3020eaceb28436c1d160eb35d6689d8ffb060e09678535584babc7a",
-    "x86_64_split_apk": "5c4193c9700481079cee958b38ba9cbb97768b0a130b7f704ed084753f01ce2b"
+    "libroblox": "4343a6a900d1fca27ff8e10b9d9c86bee40a5d0ba547cb29903b7769f4f42a9d",
+    "base_apk": "a4a71ec39df6619a56ab7adce0959d1d60354835485b53806f4026914287ea86",
+    "x86_64_split_apk": "a4a71ec39df6619a56ab7adce0959d1d60354835485b53806f4026914287ea86"
   },
   "signing_certificates_sha256": [
-    "2bebd189e8d3106401347056c93d045b61e20e22d0c3cbed85474aeb00a3d12a",
     "44932ea35a17a267372d71b54d1a0cb3da0dca5113e94406ae2fe18090ba1477"
   ],
   "assets": {
-    "file_count": 1837
+    "file_count": 1836,
+    "sha256_tree": "caee48e11c194bc11852493f53ff67d5e2bb233172f12b87ea5fca97c0c10840"
   },
-  "source": "sober-update-service",
-  "imported_at": "2026-07-09T19:12:54Z",
-  "compatibility_status": "supported"
+  "source": "apk-pure-native",
+  "imported_at": "2026-08-31T16:30:19Z",
+  "compatibility_status": "supported",
+  "apk_layout": "monolithic"
 }

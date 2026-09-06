@@ -31,7 +31,8 @@ import unittest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ANALYZER_PATH = PROJECT_ROOT / "scripts" / "derive_roblox_host_abi_profile.py"
-REFERENCE_PROFILE_PATH = PROJECT_ROOT / "config" / "roblox_host_abi_reference.json"
+# Keep the upgrade fixture independent of the project's current reference.
+REFERENCE_PROFILE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "roblox_host_abi_2908.json"
 REFERENCE_PAYLOAD_ID = "2908-63c5109637b7d7b2bdb8ed8f858023ff5ef49326"
 CANDIDATE_PAYLOAD_ID = "2998-ade08266c67aee88ec9c1d00902150e1684dad3a"
 PAYLOAD_ROOT = Path.home() / ".local" / "share" / "mocktail" / "payloads"

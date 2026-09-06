@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "compat/build_profile.h"
+#include "compat/host_abi_profile.h"
 #include "update/apkpure_provider.h"
 #include "update/compatibility_catalog.h"
 #include "update/host_abi_deriver.h"
@@ -543,6 +544,57 @@ TEST(ShippedMetadataTest, ReferenceSidecarDescribesASupportedProfile) {
   EXPECT_TRUE(
       runtime.profile->user_game_settings_fullscreen_setter_rva.has_value());
   EXPECT_TRUE(runtime.profile->fmod_output_device_bridge.has_value());
+}
+
+TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) {
+  const std::filesystem::path root = MOCKTAIL_TEST_SOURCE_DIR;
+  const auto catalog =
+      LoadCompatibilityCatalog(root / "config/roblox_compatibility.json");
+  ASSERT_TRUE(catalog) << catalog.error;
+  const auto preferred = PreferredSupportedProfile(catalog.profiles);
+  ASSERT_TRUE(preferred.has_value());
+  EXPECT_EQ(preferred->version_name, "2.736.1408");
+  EXPECT_EQ(preferred->version_code, 2998U);
+
+  const auto payload = nlohmann::json::parse(
+      ReadFile(root / "config/roblox_payload.json"));
+  EXPECT_EQ(payload.at("version_name"), preferred->version_name);
+  EXPECT_EQ(payload.at("version_code"), preferred->version_code);
+  EXPECT_EQ(payload.at("elf_build_id"), preferred->elf_build_id);
+  EXPECT_EQ(payload.at("compatibility_status"), "supported");
+
+  const auto reference = nlohmann::json::parse(
+      ReadFile(root / "config/roblox_host_abi_reference.json"));
+  EXPECT_EQ(reference.at("payload_sha256"),
+            payload.at("sha256").at("libroblox"));
+  const auto* builtin = compat::FindHostAbiProfile(preferred->elf_build_id);
+  ASSERT_NE(builtin, nullptr);
+  const auto& profile = reference.at("profile");
+  const auto rva = [](const nlohmann::json& value) {
+    return std::stoull(value.get<std::string>(), nullptr, 16);
+  };
+  EXPECT_EQ(builtin->init_array_offset, rva(profile.at("init_array_offset")));
+  EXPECT_EQ(builtin->init_array_count, profile.at("init_array_count"));
+  ASSERT_EQ(builtin->bridge_entry_count, profile.at("bridge_entries").size());
+  for (std::size_t i = 0; i < builtin->bridge_entry_count; ++i) {
+    EXPECT_EQ(builtin->bridge_entries[i].rva,
+              rva(profile.at("bridge_entries").at(i).at("rva")));
+  }
+  EXPECT_EQ(builtin->native_allocator.allocate,
+            rva(profile.at("native_allocator").at("allocate")));
+  EXPECT_EQ(builtin->native_allocator.deallocate,
+            rva(profile.at("native_allocator").at("deallocate")));
+  EXPECT_EQ(builtin->native_pre_jni_bootstrap.registry_initializer,
+            rva(profile.at("native_pre_jni_bootstrap")
+                    .at("registry_initializer")));
+  EXPECT_EQ(builtin->native_pre_jni_bootstrap.registry_slot,
+            rva(profile.at("native_pre_jni_bootstrap").at("registry_slot")));
+  EXPECT_TRUE(builtin->HasValidConstructorRanges());
+  EXPECT_TRUE(builtin->HasValidNativeMimallocConstructorRanges());
+  EXPECT_EQ(builtin->NativeMimallocConstructorRangeEndExclusive(),
+            builtin->init_array_count);
+  EXPECT_EQ(builtin->default_allocator_strategy,
+            compat::HostAllocatorStrategy::kNativeMimalloc);
 }
 
 std::string ActivationManifestFixture(const std::string& payload_id) {
