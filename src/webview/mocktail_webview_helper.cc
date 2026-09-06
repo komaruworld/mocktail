@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -121,6 +122,30 @@ void ClearSensitiveString(std::string* value) {
     bytes[index] = '\0';
   }
   value->clear();
+}
+
+bool ConfigureSandboxForHost() {
+  // Linuxulator presents itself as Linux, but its kernel version identifies
+  // FreeBSD. A missing/unreadable procfs must not disable the sandbox on Linux.
+  std::array<char, 512> version{};
+  std::ifstream version_file("/proc/version", std::ios::binary);
+  version_file.read(version.data(), version.size());
+  constexpr char kSandboxOverride[] =
+      "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS";
+  if (!mocktail::webview::ShouldDisableWebKitSandbox(
+          std::string_view(version.data(),
+                           static_cast<std::size_t>(version_file.gcount())),
+          std::getenv(kSandboxOverride))) {
+    return true;
+  }
+  if (setenv(kSandboxOverride, "1", 0) != 0) {
+    std::cerr << "[webview] could not configure Linuxulator sandbox: "
+              << std::strerror(errno) << '\n';
+    return false;
+  }
+  std::cerr << "[webview] FreeBSD Linuxulator detected; WebKit sandbox disabled "
+               "because Bubblewrap requires Linux kernel support\n";
+  return true;
 }
 
 bool ReadRequest(std::string *request) {
@@ -656,7 +681,7 @@ gboolean FlushHybridEvents(gint descriptor, GIOCondition condition,
     ssize_t count = -1;
     do {
       count = send(descriptor, packet.data(), packet.size(),
-                   MSG_DONTWAIT | MSG_NOSIGNAL);
+                   MSG_DONTWAIT | MSG_NOSIGNAL | MSG_EOR);
     } while (count < 0 && errno == EINTR);
     if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
       return G_SOURCE_CONTINUE;
@@ -1278,6 +1303,12 @@ int main(int argc, char *argv[]) {
   if (!PrepareControlChannel()) {
     ClearSensitiveString(&state.initial_url);
     std::cerr << "invalid webview control channel\n";
+    return EXIT_FAILURE;
+  }
+  // Configure only this helper and its children, before GTK/WebKit starts
+  // threads or creates any network session or web process.
+  if (!ConfigureSandboxForHost()) {
+    ClearSensitiveString(&state.initial_url);
     return EXIT_FAILURE;
   }
   g_weak_ref_init(&state.primary_web_view, nullptr);

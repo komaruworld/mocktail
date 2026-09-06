@@ -260,8 +260,9 @@ bool SendControlCommand(
         state->control_descriptor >= 0) {
       ssize_t count = -1;
       do {
+        // FreeBSD requires an explicit record boundary for SOCK_SEQPACKET.
         count = send(state->control_descriptor, packet.data(), packet.size(),
-                     MSG_DONTWAIT | MSG_NOSIGNAL);
+                     MSG_DONTWAIT | MSG_NOSIGNAL | MSG_EOR);
       } while (count < 0 && errno == EINTR);
       sent = count == static_cast<ssize_t>(packet.size());
     }

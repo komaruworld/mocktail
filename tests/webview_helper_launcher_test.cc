@@ -208,7 +208,8 @@ TEST(WebViewHelperLauncherTest, WaitsForExplicitSurfaceReadiness) {
       helper,
       "#!/bin/sh\n"
       "python3 -c 'import socket,time; s=socket.socket(fileno=198); "
-      "s.send(b\"MWVE\"+bytes([1,3,0,0])+bytes(4)); time.sleep(1)'\n"));
+      "s.send(b\"MWVE\"+bytes([1,3,0,0])+bytes(4), socket.MSG_EOR); "
+      "time.sleep(1)'\n"));
 
   const WebViewHelperLaunchResult result =
       LaunchWebViewHelper(helper, "https://www.roblox.com/login");
@@ -250,7 +251,8 @@ TEST(WebViewHelperLauncherTest, DrainsChildEventsWithoutBlocking) {
       "#!/bin/sh\n"
       "python3 -c 'import socket,time; s=socket.socket(fileno=198); "
       "p=b\"{\\\"event\\\":\\\"ready\\\"}\"; "
-      "s.send(b\"MWVE\"+bytes([1,2,0,0])+len(p).to_bytes(4,\"big\")+p); "
+      "s.send(b\"MWVE\"+bytes([1,2,0,0])+len(p).to_bytes(4,\"big\")+p, "
+      "socket.MSG_EOR); "
       "time.sleep(1)'\n"));
 
   const WebViewHelperLaunchResult result =
@@ -381,20 +383,24 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
   ASSERT_FALSE(temporary.path().empty());
   const std::filesystem::path helper = temporary.path() / "fake-helper";
   const std::filesystem::path ready = temporary.path() / "ready";
+  const std::filesystem::path queued = temporary.path() / "queued";
   const std::string packet_prefix = (temporary.path() / "packet-").string();
-  ASSERT_TRUE(WriteExecutable(helper,
-                              "#!/bin/sh\n"
-                              "cat >/dev/null\n"
-                              "touch '" +
-                                  ready.string() +
-                                  "'\n"
-                                  "index=0\n"
-                                  "while [ \"$index\" -lt 10 ]; do\n"
-                                  "  dd bs=65548 count=1 status=none <&198 >'" +
-                                  packet_prefix +
-                                  "'\"$index\" || exit 21\n"
-                                  "  index=$((index + 1))\n"
-                                  "done\n"));
+  // Queue the entire burst before reading: missing record boundaries on
+  // FreeBSD must not be hidden by reading each command as soon as it arrives.
+  ASSERT_TRUE(WriteExecutable(
+      helper,
+      "#!/usr/bin/env python3\n"
+      "import pathlib, socket, time\n"
+      "s = socket.socket(fileno=198)\n"
+      "s.settimeout(2)\n"
+      "pathlib.Path('" + ready.string() + "').touch()\n"
+      "deadline = time.monotonic() + 2\n"
+      "while not pathlib.Path('" + queued.string() + "').exists():\n"
+      "    if time.monotonic() >= deadline: raise SystemExit(21)\n"
+      "    time.sleep(0.01)\n"
+      "for index in range(10):\n"
+      "    pathlib.Path('" + packet_prefix +
+          "' + str(index)).write_bytes(s.recv(65548))\n"));
 
   const WebViewHelperLaunchResult result =
       LaunchWebViewHelper(helper, "https://www.roblox.com/login");
@@ -417,8 +423,9 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
   EXPECT_TRUE(result.process->SetRobloxCookie({}));
   EXPECT_TRUE(result.process->ClearRobloxCookie());
   EXPECT_TRUE(result.process->RequestClose());
+  ASSERT_TRUE(std::ofstream(queued).put('\n').good());
   ASSERT_TRUE(
-      WaitForProcessToBeReaped(result.process_id, std::chrono::seconds(2)));
+      WaitForProcessToBeReaped(result.process_id, std::chrono::seconds(3)));
 
   const std::vector<WebViewHelperControlOperation> expected_operations = {
       WebViewHelperControlOperation::kLoadUrl,

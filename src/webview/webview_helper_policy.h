@@ -32,6 +32,9 @@ struct UriPolicyResult {
   std::string host = "none";
 };
 
+// An explicit WebKit sandbox setting takes precedence over host defaults.
+bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
+                                const char* sandbox_override);
 const char* AndroidBridgeSource();
 std::string BuildRobloxAndroidUserAgent();
 std::string BoundedLogToken(const char* value, std::string_view fallback);

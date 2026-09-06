@@ -116,6 +116,13 @@ bool IsRobloxHost(const char* host) {
 
 }  // namespace
 
+bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
+                                const char* sandbox_override) {
+  return sandbox_override == nullptr &&
+         (kernel_version.find("FreeBSD") != std::string_view::npos ||
+          kernel_version.find("freebsd.org") != std::string_view::npos);
+}
+
 const char* AndroidBridgeSource() { return kBridgeSource; }
 
 std::string BuildRobloxAndroidUserAgent() {

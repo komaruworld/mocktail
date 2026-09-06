@@ -94,6 +94,30 @@ void EvaluateForSideEffects(JSCContext* context, std::string_view script) {
   g_object_unref(value);
 }
 
+TEST(WebViewHelperPolicyTest, DisablesSandboxForFreeBsdLinuxulator) {
+  EXPECT_TRUE(ShouldDisableWebKitSandbox(
+      "Linux version 5.15.0 (FreeBSD 15.1-RELEASE-p2 GENERIC)", nullptr));
+  EXPECT_TRUE(ShouldDisableWebKitSandbox(
+      "Linux version 5.15.0 (root@releng1.nyi.freebsd.org)", nullptr));
+}
+
+TEST(WebViewHelperPolicyTest, KeepsSandboxForOtherOrUnknownKernels) {
+  for (const char* version : {"", "Linux version 7.1.9-arch1-2",
+                              "Linux version 6.12.0 (Debian)",
+                              "Linux version 5.15.0", "NetBSD 10.1"}) {
+    EXPECT_FALSE(ShouldDisableWebKitSandbox(version, nullptr)) << version;
+  }
+}
+
+TEST(WebViewHelperPolicyTest, HonorsExplicitSandboxEnvironment) {
+  for (const char* override_value : {"0", "1", ""}) {
+    EXPECT_FALSE(ShouldDisableWebKitSandbox(
+        "Linux version 5.15.0 (FreeBSD 15.1-RELEASE)", override_value));
+    EXPECT_FALSE(ShouldDisableWebKitSandbox(
+        "Linux version 7.1.9-arch1-2", override_value));
+  }
+}
+
 TEST(WebViewHelperPolicyTest, AllowsOnlyTlsTopLevelNavigation) {
   const UriPolicyResult roblox =
       EvaluateNavigationUri("https://www.roblox.com/login");
