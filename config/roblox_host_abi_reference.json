@@ -1,64 +1,64 @@
 {
   "schema_version": 1,
-  "elf_build_id": "1686400865ae0e408cd7bd67de7a439625c6fd13",
-  "payload_sha256": "3e9c26c81186f93458ff65d8a8bc240c220974db02b8388b91340b77b336997d",
-  "payload_id": "2628-1686400865ae0e408cd7bd67de7a439625c6fd13",
-  "payload_path": "payloads/2628-1686400865ae0e408cd7bd67de7a439625c6fd13",
+  "elf_build_id": "63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
+  "payload_sha256": "72c3b1a5c151b5ac0bfc5394ce3a91775884fbd777589ccab8ac1c4f9885f739",
+  "payload_id": "2908-63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
+  "payload_path": "payloads/2908-63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
   "reference": {
-    "elf_build_id": "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21",
-    "payload_sha256": "92ca0e4d8bc4e1c7a37fc2b52544869299ec8b9a40ea8da96ebac66660e0b1af"
+    "elf_build_id": "1686400865ae0e408cd7bd67de7a439625c6fd13",
+    "payload_sha256": "3e9c26c81186f93458ff65d8a8bc240c220974db02b8388b91340b77b336997d"
   },
   "profile": {
-    "elf_build_id": "1686400865ae0e408cd7bd67de7a439625c6fd13",
+    "elf_build_id": "63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
     "bridge_entries": [
       {
-        "rva": "0x1c39ea2",
+        "rva": "0x1cf69e2",
         "kind": "allocate",
         "label": "small-allocate"
       },
       {
-        "rva": "0x1fe4c84",
+        "rva": "0x1cf9c3a",
         "kind": "usable_size",
         "label": "usable-size"
       },
       {
-        "rva": "0x203daae",
+        "rva": "0x21af33f",
         "kind": "reallocate",
         "label": "reallocate"
       },
       {
-        "rva": "0x1c39c3a",
+        "rva": "0x1cf677e",
         "kind": "allocate",
         "label": "allocate"
       },
       {
-        "rva": "0x1c8dbf8",
+        "rva": "0x1d12197",
         "kind": "aligned_allocate",
         "label": "aligned-allocate-direct"
       },
       {
-        "rva": "0x1c3eb72",
+        "rva": "0x1cfa1d9",
         "kind": "free",
         "label": "free"
       }
     ],
     "data_seeds": {
-      "allocator_object_slot": "0x7030ae0",
-      "empty_string_slot": "0x703a7e8",
-      "jni_singleton_slot": "0x72a16d0",
+      "allocator_object_slot": "0x7571570",
+      "empty_string_slot": "0x767e428",
+      "jni_singleton_slot": "0x7ad47e8",
       "jni_singleton_bytes": 1024,
-      "arena_initializer": "0x1c39f1d",
-      "allocator_thread_initializer": "0x2040817",
-      "arena_guard_slot": "0x71e92f0",
-      "arena_table_slot": "0x71e9380",
+      "arena_initializer": "0x1cf6df8",
+      "allocator_thread_initializer": "0x1d82be7",
+      "arena_guard_slot": "0x7a10730",
+      "arena_table_slot": "0x7a107c0",
       "arena_table_slot_count": 4194304
     },
     "native_allocator": {
-      "allocate": "0x1c39c3a",
-      "deallocate": "0x1c3eb72"
+      "allocate": "0x1cf677e",
+      "deallocate": "0x1cfa1d9"
     },
-    "init_array_offset": "0x6c2c9b0",
-    "init_array_count": 3481,
+    "init_array_offset": "0x6f78a18",
+    "init_array_count": 3556,
     "constructor_run_ranges": [
       {
         "begin": 2,
@@ -66,32 +66,32 @@
       },
       {
         "begin": 5,
-        "end_exclusive": 3481
+        "end_exclusive": 3556
       }
     ],
     "native_mimalloc_constructor_run_ranges": [
       {
         "begin": 2,
-        "end_exclusive": 3481
+        "end_exclusive": 3556
       }
     ],
     "native_mimalloc_thread_initializer_after_constructor": 2,
     "native_pre_jni_bootstrap": {
-      "registry_initializer": "0x1fe72e5",
-      "registry_slot": "0x71ed428"
+      "registry_initializer": "0x21b1889",
+      "registry_slot": "0x7a14898"
     },
     "default_allocator_strategy": "native_mimalloc"
   },
   "derivation_anchors": {
     "signature_version": 1,
-    "allocator_object_initializer_rva": "0x1fbf1de",
-    "empty_string_initializer_rva": "0x1fc82b0",
-    "jni_singleton_initializer_rva": "0x1c39a34",
+    "allocator_object_initializer_rva": "0x2186a91",
+    "empty_string_initializer_rva": "0x2192669",
+    "jni_singleton_initializer_rva": "0x1cf6309",
     "constructor_rvas": {
-      "2": "0x1c3c764",
-      "3": "0x1c38c00",
-      "4": "0x1c39884",
-      "5": "0x1c39a34"
+      "2": "0x1cf9f31",
+      "3": "0x1cf5680",
+      "4": "0x1cf63c8",
+      "5": "0x1cf6309"
     }
   }
 }

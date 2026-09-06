@@ -12,6 +12,7 @@
 #include <string_view>
 #include <vector>
 
+#include "compat/build_profile.h"
 #include "update/apkpure_provider.h"
 #include "update/compatibility_catalog.h"
 #include "update/host_abi_deriver.h"
@@ -451,23 +452,31 @@ TEST(HostAbiSidecarTest, RejectsAnIdentityThatDoesNotDescribeItsOwnPayload) {
 // the sidecar stayed whatever file shipped, and the pair failed every
 // derivation.
 TEST(ReferenceProfileTest, FollowsTheSidecarRatherThanTheNewestProfile) {
-  const std::filesystem::path root = MOCKTAIL_TEST_SOURCE_DIR;
-  const CompatibilityCatalogResult catalog =
-      LoadCompatibilityCatalog(root / "config/roblox_compatibility.json");
-  ASSERT_TRUE(catalog) << catalog.error;
-  const auto preferred = PreferredSupportedProfile(catalog.profiles);
+  TemporaryDirectory temporary;
+  const auto profiles = CatalogFixture();
+  const auto preferred = PreferredSupportedProfile(profiles);
   ASSERT_TRUE(preferred.has_value());
+  const auto& older = profiles[1];
+  const std::string payload_id =
+      std::to_string(older.version_code) + "-" + older.elf_build_id;
+  const auto reference_file = temporary.root() / "reference.json";
+  Write(reference_file,
+        nlohmann::json({{"schema_version", 1},
+                        {"elf_build_id", older.elf_build_id},
+                        {"payload_id", payload_id},
+                        {"payload_path", "payloads/" + payload_id}})
+                .dump(2) +
+            "\n");
 
   std::filesystem::path sidecar;
-  const auto reference = ResolveReferenceProfile(
-      root / "config/roblox_host_abi_reference.json", catalog.profiles,
-      &sidecar);
+  const auto reference =
+      ResolveReferenceProfile(reference_file, profiles, &sidecar);
   ASSERT_TRUE(reference.has_value());
-  EXPECT_EQ(sidecar, root / "config/roblox_host_abi_reference.json");
+  EXPECT_EQ(sidecar, reference_file);
   EXPECT_EQ(reference->elf_build_id,
             ReadHostAbiSidecarIdentity(sidecar).elf_build_id);
-  EXPECT_NE(reference->elf_build_id, "")
-      << "the shipped sidecar must describe a supported profile";
+  EXPECT_EQ(reference->elf_build_id, older.elf_build_id);
+  EXPECT_NE(reference->elf_build_id, preferred->elf_build_id);
 }
 
 TEST(ReferenceProfileTest, PicksTheNewestSidecarInADirectory) {
@@ -520,6 +529,20 @@ TEST(ShippedMetadataTest, ReferenceSidecarDescribesASupportedProfile) {
   EXPECT_EQ(identity.payload_id,
             std::to_string(supported->version_code) + "-" +
                 supported->elf_build_id);
+
+  // A stale reference can derive a runnable client while silently dropping
+  // fullscreen synchronization and the host audio output menu.
+  const auto preferred = PreferredSupportedProfile(catalog.profiles);
+  ASSERT_TRUE(preferred.has_value());
+  EXPECT_EQ(identity.elf_build_id, preferred->elf_build_id);
+  const auto runtime = compat::FindBuildProfile(
+      (root / "config/roblox_compatibility.json").string(),
+      identity.elf_build_id);
+  ASSERT_TRUE(runtime) << runtime.error;
+  ASSERT_TRUE(runtime.profile.has_value());
+  EXPECT_TRUE(
+      runtime.profile->user_game_settings_fullscreen_setter_rva.has_value());
+  EXPECT_TRUE(runtime.profile->fmod_output_device_bridge.has_value());
 }
 
 std::string ActivationManifestFixture(const std::string& payload_id) {

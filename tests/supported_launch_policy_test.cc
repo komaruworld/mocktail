@@ -186,6 +186,12 @@ int RunGraphicsPolicyProbe(const char* backend) {
                      std::string::npos &&
                  std::string(overrides).find(
                      "FStringGraphicsVulkanShaderMTDenyPattern") !=
+                     std::string::npos &&
+                 std::string(overrides).find(
+                     "\"FFlagTextureTranscodeNewRollout\":\"True\"") !=
+                     std::string::npos &&
+                 std::string(overrides).find(
+                     "\"FStringTextureTranscodeRollout\":\"\"") !=
                      std::string::npos
              ? 0
              : 25;

@@ -250,7 +250,9 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
     const bool manual_quality =
         quality_str == "auto" || quality_str == "0" || quality_str == "manual";
 
-    const std::array<ClientSetting, 70> rendering_settings = {{
+    // ForceCacheSize settings are byte counts. Let Roblox size its mesh and
+    // SLIM content caches; values like 256/128 would cap them to a few bytes.
+    const std::array<ClientSetting, 68> rendering_settings = {{
         {"FIntSmoothClusterTaskQueueMaxParallelTasks", workers},
         {"FIntOcclusionWorkerThreadCount", occlusion_workers},
         {"FFlagMovePrerenderV2", "True"},
@@ -299,8 +301,6 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FFlagContentProviderMmapAssets", "True"},
         {"FIntAssetProviderAssetCacheReadThreadCount", "1"},
         {"FIntAssetProviderAssetCacheWriteThreadCount", "1"},
-        {"FIntMeshContentProviderForceCacheSize", "256"},
-        {"FIntSlimContentProviderForceCacheSize", "128"},
         {"FIntInitialAudioAssetCacheSize", "32"},
         {"FIntAvatarTextureMemoryMax", "33554432"},
         {"FFlagEnableSLIMAvatars", "True"},

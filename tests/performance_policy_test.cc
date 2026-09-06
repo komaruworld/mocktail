@@ -133,6 +133,41 @@ TEST(PerformancePolicyTest, AcceptsIdenticalExplicitModeValues) {
   EXPECT_EQ(parsed.at("FFlagMovePrerenderV2"), "True");
 }
 
+TEST(PerformancePolicyTest, WorkerModesRetainRobloxManagedAssetCacheSizes) {
+  for (const bool throughput : {false, true}) {
+    PerformancePolicy policy;
+    policy.multithreaded_rendering = !throughput;
+    policy.physical_core_count = 14;
+    policy.physics_worker_mode = throughput ? PhysicsWorkerMode::kThroughput
+                                            : PhysicsWorkerMode::kAuto;
+    std::string merged;
+    std::string error;
+    ASSERT_TRUE(MergePerformanceClientSettingsOverrides(
+        policy, "{}", &merged, &error)) << error;
+    const auto parsed = nlohmann::json::parse(merged);
+    EXPECT_EQ(parsed.at("FIntSmoothClusterTaskQueueMaxParallelTasks"), "14");
+    // ForceCacheSize values are bytes, not MiB; tiny fixed values cause
+    // immediate eviction instead of preserving the normal asset caches.
+    EXPECT_FALSE(parsed.contains("FIntMeshContentProviderForceCacheSize"));
+    EXPECT_FALSE(parsed.contains("FIntSlimContentProviderForceCacheSize"));
+  }
+}
+
+TEST(PerformancePolicyTest, PreservesExplicitAssetCacheByteBudgets) {
+  const nlohmann::json requested = {
+      {"FIntMeshContentProviderForceCacheSize", "268435456"},
+      {"FIntSlimContentProviderForceCacheSize", "134217728"},
+  };
+  std::string merged;
+  std::string error;
+  ASSERT_TRUE(MergePerformanceClientSettingsOverrides(
+      {true, 14}, requested.dump(), &merged, &error)) << error;
+  const auto parsed = nlohmann::json::parse(merged);
+  for (const auto& [name, value] : requested.items()) {
+    EXPECT_EQ(parsed.at(name), value) << name;
+  }
+}
+
 TEST(PerformancePolicyTest, LatencyModePreservesRobloxManagedWorkerPools) {
   PerformancePolicy policy =
       ParsePerformancePolicy("true", "0", "auto", "latency");

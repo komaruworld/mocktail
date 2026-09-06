@@ -32,8 +32,8 @@ import unittest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ANALYZER_PATH = PROJECT_ROOT / "scripts" / "derive_roblox_host_abi_profile.py"
 REFERENCE_PROFILE_PATH = PROJECT_ROOT / "config" / "roblox_host_abi_reference.json"
-REFERENCE_PAYLOAD_ID = "2628-1686400865ae0e408cd7bd67de7a439625c6fd13"
-CANDIDATE_PAYLOAD_ID = "2718-48fc8ee1fb36fc39072fd8619154ce90eea4b316"
+REFERENCE_PAYLOAD_ID = "2908-63c5109637b7d7b2bdb8ed8f858023ff5ef49326"
+CANDIDATE_PAYLOAD_ID = "2998-ade08266c67aee88ec9c1d00902150e1684dad3a"
 PAYLOAD_ROOT = Path.home() / ".local" / "share" / "mocktail" / "payloads"
 REFERENCE_LIBRARY = PAYLOAD_ROOT / REFERENCE_PAYLOAD_ID / "libroblox.so"
 CANDIDATE_LIBRARY = PAYLOAD_ROOT / CANDIDATE_PAYLOAD_ID / "libroblox.so"
@@ -45,16 +45,7 @@ LATEST_CANDIDATE_LIBRARY = PAYLOAD_ROOT / LATEST_CANDIDATE_PAYLOAD_ID / "librobl
 LATEST_CANDIDATE_METADATA = (
     PAYLOAD_ROOT / LATEST_CANDIDATE_PAYLOAD_ID / "roblox_payload.json"
 )
-LATEST_REFERENCE_PROFILE = next(
-    iter(
-        sorted(
-            (PAYLOAD_ROOT.parent / "host_abi_profiles").glob(
-                f"{LATEST_REFERENCE_PAYLOAD_ID}-*.json"
-            )
-        )
-    ),
-    Path("/nonexistent"),
-)
+LATEST_REFERENCE_PROFILE = REFERENCE_PROFILE_PATH
 
 
 def load_analyzer():
@@ -138,10 +129,10 @@ class ReferenceProfileTest(unittest.TestCase):
         sidecar = ANALYZER.validated_sidecar(REFERENCE_PROFILE_PATH)
 
         self.assertEqual(sidecar["payload_id"], REFERENCE_PAYLOAD_ID)
-        self.assertEqual(sidecar["profile"]["init_array_count"], 3481)
+        self.assertEqual(sidecar["profile"]["init_array_count"], 3556)
         self.assertEqual(
             sidecar["profile"]["native_pre_jni_bootstrap"]["registry_slot"],
-            "0x71ed428",
+            "0x7a14898",
         )
         self.assertFalse(sidecar.get("status") == "supported")
 
@@ -447,10 +438,10 @@ class RegistrySlotDerivationTest(unittest.TestCase):
     and REFERENCE_LIBRARY.is_file()
     and CANDIDATE_LIBRARY.is_file()
     and CANDIDATE_METADATA.is_file(),
-    "local exact 2628 and 2718 payloads are unavailable",
+    "local exact 2908 and 2998 payloads are unavailable",
 )
 class RealPayloadAcceptanceTest(unittest.TestCase):
-    def test_exact_2628_to_2718_derivation(self) -> None:
+    def test_exact_2908_to_2998_derivation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "profile.json"
             compatibility = Path(temporary) / "compatibility.json"
@@ -462,6 +453,8 @@ class RealPayloadAcceptanceTest(unittest.TestCase):
                     str(REFERENCE_LIBRARY),
                     "--reference-profile",
                     str(REFERENCE_PROFILE_PATH),
+                    "--reference-compatibility",
+                    str(PROJECT_ROOT / "config" / "roblox_compatibility.json"),
                     "--candidate-lib",
                     str(CANDIDATE_LIBRARY),
                     "--payload-metadata",
@@ -483,21 +476,29 @@ class RealPayloadAcceptanceTest(unittest.TestCase):
             self.assertEqual(sidecar["payload_id"], CANDIDATE_PAYLOAD_ID)
             self.assertEqual(
                 sidecar["payload_sha256"],
-                "4ecb8f47537996c44cb60cecfd58ba6b5c394d77daa2716ba4ceebe30b8695a7",
+                "4343a6a900d1fca27ff8e10b9d9c86bee40a5d0ba547cb29903b7769f4f42a9d",
             )
             self.assertEqual(
                 sidecar["profile"]["native_allocator"],
-                {"allocate": "0x1c6933a", "deallocate": "0x1c6e2de"},
+                {"allocate": "0x1d2bf82", "deallocate": "0x1d2f9d9"},
             )
-            self.assertEqual(sidecar["profile"]["init_array_count"], 3511)
+            self.assertEqual(sidecar["profile"]["init_array_count"], 3570)
             self.assertEqual(
                 sidecar["profile"]["native_pre_jni_bootstrap"],
                 {
-                    "registry_initializer": "0x201d36d",
-                    "registry_slot": "0x730b718",
+                    "registry_initializer": "0x21e8e09",
+                    "registry_slot": "0x7af4598",
                 },
             )
             self.assertEqual(manifest["profiles"][0]["status"], "experimental")
+            self.assertEqual(
+                manifest["profiles"][0]["user_game_settings_fullscreen_setter_rva"],
+                "0x45ad8aa",
+            )
+            self.assertEqual(
+                manifest["profiles"][0]["fmod_output_device_bridge"]["vtable_rva"],
+                "0x6c58040",
+            )
 
 
 @unittest.skipUnless(
