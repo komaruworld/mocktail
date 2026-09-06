@@ -28,13 +28,41 @@
 #include <utility>
 #include <vector>
 
+#include <openssl/evp.h>
+
 #include "compat/elf_build_id.h"
-#include "mocktail/sha256.h"
 
 namespace mocktail::compat {
 namespace {
 
 using Json = nlohmann::json;
+
+std::string FormatHex(const unsigned char* data, std::size_t size,
+                      std::size_t max_chars = 0) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  const std::size_t limit =
+      (max_chars > 0 && max_chars < size * 2U) ? max_chars : size * 2U;
+  std::string hex;
+  hex.reserve(limit);
+  for (std::size_t i = 0; i < size && hex.size() < limit; ++i) {
+    hex.push_back(kHex[(data[i] >> 4) & 0x0f]);
+    if (hex.size() < limit) {
+      hex.push_back(kHex[data[i] & 0x0f]);
+    }
+  }
+  return hex;
+}
+
+std::string ComputeSha256Hex(std::string_view bytes,
+                             std::size_t max_chars = 0) {
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned int len = 0;
+  if (EVP_Digest(bytes.data(), bytes.size(), digest, &len, EVP_sha256(),
+                 nullptr) != 1) {
+    return {};
+  }
+  return FormatHex(digest, len, max_chars);
+}
 
 constexpr std::size_t kMaximumProfileBytes = 1024 * 1024;
 constexpr std::size_t kMaximumReceiptBytes = 64 * 1024;
@@ -862,7 +890,7 @@ bool ValidateCanaryAttestation(const std::string& attestation_path,
     return false;
   }
 
-  evidence->sha256 = foundation::ComputeSha256Hex(attestation_bytes);
+  evidence->sha256 = ComputeSha256Hex(attestation_bytes);
   evidence->run_id = std::move(run_id);
   return true;
 }
@@ -1013,7 +1041,7 @@ bool ValidateReceipt(const std::string& receipt_path,
       .append(canary_evidence[1].sha256)
       .append("\n");
   const std::string expected_generation =
-      foundation::ComputeSha256Hex(generation_evidence).substr(0, 40);
+      ComputeSha256Hex(generation_evidence, 40);
   if (generation != expected_generation) {
     *error = "approval receipt evidence generation does not match";
     return false;
@@ -1066,19 +1094,31 @@ FileSha256Result ComputeFileSha256(const std::string& path) {
   if (!input) {
     return {{}, "cannot open file for SHA-256: " + path};
   }
-  foundation::Sha256 sha256;
+  std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
+      EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+  if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1) {
+    return {{}, "cannot initialize SHA-256 digest context for: " + path};
+  }
   std::array<unsigned char, 128 * 1024> buffer{};
   while (input) {
     input.read(reinterpret_cast<char*>(buffer.data()), buffer.size());
     const std::streamsize read = input.gcount();
     if (read > 0) {
-      sha256.Update(buffer.data(), static_cast<std::size_t>(read));
+      if (EVP_DigestUpdate(ctx.get(), buffer.data(),
+                           static_cast<std::size_t>(read)) != 1) {
+        return {{}, "cannot update SHA-256 digest for: " + path};
+      }
     }
   }
   if (!input.eof()) {
     return {{}, "cannot read file for SHA-256: " + path};
   }
-  return {sha256.FinalHex(), {}};
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned int len = 0;
+  if (EVP_DigestFinal_ex(ctx.get(), digest, &len) != 1) {
+    return {{}, "cannot finalize SHA-256 digest for: " + path};
+  }
+  return {FormatHex(digest, len), {}};
 }
 
 const HostAbiProfile* FindLoadedExternalHostAbiProfile(
@@ -1161,11 +1201,7 @@ ExternalHostAbiProfileResult LoadExternalHostAbiProfile(
     return Failure(
         "external host ABI profile SHA-256 does not match payload bytes");
   }
-  foundation::Sha256 profile_hasher;
-  profile_hasher.Update(
-      reinterpret_cast<const unsigned char*>(profile_bytes.data()),
-      profile_bytes.size());
-  const std::string profile_sha256 = profile_hasher.FinalHex();
+  const std::string profile_sha256 = ComputeSha256Hex(profile_bytes);
   if (!ValidateProfileAgainstElf(*canonical_payload, profile->profile,
                                  profile->derivation_code_rvas, &path_error)) {
     return Failure(path_error);
