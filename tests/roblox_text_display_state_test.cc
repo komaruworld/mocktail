@@ -371,10 +371,9 @@ TEST(RobloxTextDisplayStateTest, MatchesApkHorizontalGravityEnum) {
   EXPECT_TRUE(overlay.Shutdown().ok());
 }
 
-TEST(RobloxTextDisplayStateTest,
-     KeepsTopNavigationSearchTextClearOfLeadingIcon) {
+TEST(RobloxTextDisplayStateTest, UsesNativeTextOriginRegardlessOfFieldPosition) {
   RobloxTextSurfaceOverlay overlay;
-  ASSERT_TRUE(overlay.Initialize({2560, 1440}).ok());
+  ASSERT_TRUE(overlay.Initialize({2560, 1440, 1.145833F}).ok());
   RobloxTextDisplaySink sink = overlay.sink();
   const std::string text = "search text";
 
@@ -392,21 +391,67 @@ TEST(RobloxTextDisplayStateTest,
 
     MocktailTextOverlayFrameInfo frame;
     EXPECT_TRUE(overlay.QueryFrame(&frame));
+    EXPECT_EQ(frame.x, show.area_x);
+    EXPECT_EQ(frame.y, show.area_y);
+    EXPECT_EQ(frame.width, static_cast<uint32_t>(width));
     std::vector<std::uint8_t> rgba(frame.rgba_bytes);
     EXPECT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
     return FindAlphaBounds(frame, rgba);
   };
 
-  // Geometry captured from the Roblox top navigation search field. Its
-  // NativeTextBoxInfo spans the magnifying-glass icon but exposes no padding.
+  // Moving or resizing a field must not invent an icon margin inside the
+  // native text rectangle. The caret at byte zero marks its text origin.
   const AlphaBounds search = render(1, 34, 1047, 36);
   const AlphaBounds ordinary = render(2, 200, 1047, 36);
+  const AlphaBounds narrow = render(3, 34, 320, 36);
   ASSERT_TRUE(search.valid());
   ASSERT_TRUE(ordinary.valid());
-  EXPECT_GE(search.minimum_x, 38);
-  EXPECT_LE(search.minimum_x, 55);
-  EXPECT_GT(search.minimum_x - ordinary.minimum_x, 20);
-  EXPECT_LT(search.minimum_x - ordinary.minimum_x, 45);
+  ASSERT_TRUE(narrow.valid());
+  EXPECT_EQ(search.minimum_x, 0);
+  EXPECT_EQ(ordinary.minimum_x, 0);
+  EXPECT_EQ(narrow.minimum_x, 0);
+  EXPECT_EQ(search.maximum_x, ordinary.maximum_x);
+  EXPECT_EQ(search.maximum_x, narrow.maximum_x);
+  EXPECT_TRUE(overlay.Shutdown().ok());
+}
+
+TEST(RobloxTextDisplayStateTest, LongSearchTextScrollsWithinNativeWidth) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({2560, 1440, 1.145833F}).ok());
+  RobloxTextDisplaySink sink = overlay.sink();
+  const std::string text(512, 'M');
+  RobloxTextDisplayUpdate show = Show(1, text, 0);
+  show.area_y = 34;
+  show.area_width = 1047;
+  show.area_height = 36;
+  show.font_size = 18.0F;
+
+  const auto render = [&](int32_t cursor) {
+    show.cursor_utf16 = cursor;
+    show.selection_begin_utf16 = cursor;
+    show.selection_end_utf16 = cursor;
+    sink.update(sink.context, show);
+    MocktailTextOverlayFrameInfo frame;
+    EXPECT_TRUE(overlay.QueryFrame(&frame));
+    EXPECT_EQ(frame.x, show.area_x);
+    EXPECT_EQ(frame.width, static_cast<uint32_t>(show.area_width));
+    std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+    EXPECT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+    return FindAlphaBounds(frame, rgba);
+  };
+
+  const AlphaBounds beginning = render(0);
+  const AlphaBounds end = render(static_cast<int32_t>(text.size()));
+  const AlphaBounds returned_to_beginning = render(0);
+  ASSERT_TRUE(beginning.valid());
+  ASSERT_TRUE(end.valid());
+  // Glyph bearings may leave a small gap; there must be no field inset.
+  EXPECT_LE(beginning.minimum_x, 3);
+  // Only the caret's own clearance may remain at the right edge.
+  EXPECT_GE(end.maximum_x, show.area_width - 3);
+  EXPECT_LT(end.maximum_x, show.area_width);
+  EXPECT_EQ(returned_to_beginning.minimum_x, beginning.minimum_x);
+  EXPECT_EQ(returned_to_beginning.maximum_x, beginning.maximum_x);
   EXPECT_TRUE(overlay.Shutdown().ok());
 }
 
