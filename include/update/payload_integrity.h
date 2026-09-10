@@ -5,8 +5,31 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
+
+struct evp_md_ctx_st;
 
 namespace mocktail::update {
+
+class FileDigest final {
+ public:
+  FileDigest();
+  ~FileDigest();
+  FileDigest(const FileDigest&) = delete;
+  FileDigest& operator=(const FileDigest&) = delete;
+
+  bool valid() const noexcept { return context_ != nullptr; }
+  bool Update(const void* data, std::size_t size);
+  bool Update(std::string_view bytes);
+  std::string FinalHex(std::size_t max_chars = 0);
+
+ private:
+  struct evp_md_ctx_st* context_ = nullptr;
+};
+
+std::string HashText(std::string_view text, std::string* error = nullptr);
+std::string HashText(std::string_view text, std::size_t max_hex_chars,
+                     std::string* error = nullptr);
 
 struct PayloadMetadata {
   std::string package_name;

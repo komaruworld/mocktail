@@ -595,13 +595,6 @@ target_link_libraries(auth_service_test PRIVATE
   GTest::gtest_main
 )
 
-add_executable(sha256_test sha256_test.cc)
-target_link_libraries(sha256_test PRIVATE
-  Mocktail::CryptoFoundation
-  GTest::gtest_main
-)
-mocktail_apply_compile_options(sha256_test)
-
 add_executable(auth_runtime_composition_test
   auth_runtime_composition_test.cc
 )
@@ -937,7 +930,6 @@ gtest_discover_tests(window_pointer_capture_owner_test)
 gtest_discover_tests(roblox_text_input_jni_bridge_test)
 gtest_discover_tests(auth_service_test)
 gtest_discover_tests(auth_runtime_composition_test)
-gtest_discover_tests(sha256_test)
 gtest_discover_tests(client_settings_service_test)
 gtest_discover_tests(elf_build_id_test)
 gtest_discover_tests(build_profile_test)

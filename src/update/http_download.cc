@@ -15,7 +15,7 @@
 #include <mutex>
 #include <string>
 
-#include "mocktail/sha256.h"
+#include "update/payload_integrity.h"
 
 namespace mocktail::update {
 namespace {
@@ -184,9 +184,10 @@ struct FileWriter {
   // Includes any resumed prefix, so the limit covers the whole file.
   std::size_t written = 0;
   // Null while resuming; the digest is then taken in one pass at the end.
-  foundation::Sha256* sha256 = nullptr;
+  FileDigest* sha256 = nullptr;
   bool exceeded = false;
   bool write_failed = false;
+  bool hash_failed = false;
 };
 
 std::size_t WriteFileBytes(char* data, std::size_t size, std::size_t count,
@@ -213,30 +214,13 @@ std::size_t WriteFileBytes(char* data, std::size_t size, std::size_t count,
     offset += static_cast<std::size_t>(result);
   }
   if (writer->sha256 != nullptr) {
-    writer->sha256->Update(reinterpret_cast<unsigned char*>(data), bytes);
+    if (!writer->sha256->Update(data, bytes)) {
+      writer->hash_failed = true;
+      return 0;
+    }
   }
   writer->written += bytes;
   return bytes;
-}
-
-std::string HashCompletedFile(const std::filesystem::path& path) {
-  const int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (descriptor < 0) return {};
-  foundation::Sha256 sha256;
-  std::array<char, 256U * 1024U> buffer{};
-  while (true) {
-    const ssize_t bytes = read(descriptor, buffer.data(), buffer.size());
-    if (bytes == 0) break;
-    if (bytes < 0) {
-      if (errno == EINTR) continue;
-      close(descriptor);
-      return {};
-    }
-    sha256.Update(reinterpret_cast<unsigned char*>(buffer.data()),
-                  static_cast<std::size_t>(bytes));
-  }
-  close(descriptor);
-  return sha256.FinalHex();
 }
 
 bool Configure(CURL* handle, const HttpTransferRequest& request,
@@ -427,7 +411,13 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
       result.error = "cannot configure HTTPS download";
       return result;
     }
-    foundation::Sha256 sha256;
+    FileDigest sha256;
+    if (!resuming && !sha256.valid()) {
+      close(descriptor);
+      std::filesystem::remove(temporary, filesystem_error);
+      result.error = "cannot initialize sha256 digest";
+      return result;
+    }
     FileWriter writer{descriptor, request.maximum_bytes,
                       static_cast<std::size_t>(existing),
                       resuming ? nullptr : &sha256, false, false};
@@ -447,8 +437,10 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
     curl_easy_getinfo(handle.get(), CURLINFO_RESPONSE_CODE, &http_status);
     const bool synced = fsync(descriptor) == 0;
     close(descriptor);
-    if (status != CURLE_OK || writer.write_failed || !synced) {
-      if (writer.exceeded) {
+    if (status != CURLE_OK || writer.write_failed || writer.hash_failed || !synced) {
+      if (writer.hash_failed) {
+        result.error = "cannot compute SHA-256 digest during download";
+      } else if (writer.exceeded) {
         result.error = "HTTPS download exceeds its size limit";
       } else if (writer.write_failed || !synced) {
         result.error = "cannot persist HTTPS download";
@@ -494,7 +486,15 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
       return result;
     }
     result.bytes_written = writer.written;
-    result.sha256 = resuming ? HashCompletedFile(temporary) : sha256.FinalHex();
+    result.sha256 = resuming ? HashRegularFile(temporary, &result.error)
+                             : sha256.FinalHex();
+    if (result.sha256.empty()) {
+      std::filesystem::remove(temporary, filesystem_error);
+      if (result.error.empty()) {
+        result.error = "cannot finalize SHA-256 digest of downloaded file";
+      }
+      return result;
+    }
     result.final_url = current;
     return result;
   }

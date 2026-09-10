@@ -18,8 +18,6 @@
 #include <thread>
 #include <vector>
 
-#include "mocktail/sha256.h"
-
 namespace mocktail::update {
 namespace {
 
@@ -63,57 +61,74 @@ std::string ReadMetadata(const std::filesystem::path& path,
   return contents;
 }
 
-// foundation::Sha256 is a portable implementation and runs at roughly 180 MB/s
-// here; OpenSSL reaches the CPU's SHA extensions and measures 8x faster on the
-// same bytes. A payload is several hundred MiB, so file hashing uses OpenSSL.
-// The digests are identical, and foundation::Sha256 stays in use for the small
-// inputs elsewhere in the updater.
-class FileDigest final {
- public:
-  FileDigest() : context_(EVP_MD_CTX_new()) {
-    if (context_ != nullptr &&
-        EVP_DigestInit_ex(context_, EVP_sha256(), nullptr) != 1) {
-      EVP_MD_CTX_free(context_);
-      context_ = nullptr;
+std::string FormatHex(const unsigned char* data, std::size_t size,
+                      std::size_t max_chars = 0) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  const std::size_t limit =
+      (max_chars > 0 && max_chars < size * 2U) ? max_chars : size * 2U;
+  std::string hex;
+  hex.reserve(limit);
+  for (std::size_t i = 0; i < size && hex.size() < limit; ++i) {
+    hex.push_back(kHex[(data[i] >> 4) & 0x0f]);
+    if (hex.size() < limit) {
+      hex.push_back(kHex[data[i] & 0x0f]);
     }
   }
-
-  ~FileDigest() {
-    if (context_ != nullptr) EVP_MD_CTX_free(context_);
-  }
-
-  FileDigest(const FileDigest&) = delete;
-  FileDigest& operator=(const FileDigest&) = delete;
-
-  bool valid() const { return context_ != nullptr; }
-
-  bool Update(const unsigned char* bytes, std::size_t size) {
-    return context_ != nullptr &&
-           EVP_DigestUpdate(context_, bytes, size) == 1;
-  }
-
-  std::string FinalHex() {
-    unsigned char digest[EVP_MAX_MD_SIZE] = {};
-    unsigned int size = 0;
-    if (context_ == nullptr ||
-        EVP_DigestFinal_ex(context_, digest, &size) != 1 || size != 32U) {
-      return {};
-    }
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string hex;
-    hex.reserve(size * 2U);
-    for (unsigned int index = 0; index < size; ++index) {
-      hex.push_back(kHex[digest[index] >> 4]);
-      hex.push_back(kHex[digest[index] & 0x0FU]);
-    }
-    return hex;
-  }
-
- private:
-  EVP_MD_CTX* context_ = nullptr;
-};
+  return hex;
+}
 
 }  // namespace
+
+FileDigest::FileDigest() : context_(EVP_MD_CTX_new()) {
+  if (context_ != nullptr &&
+      EVP_DigestInit_ex(context_, EVP_sha256(), nullptr) != 1) {
+    EVP_MD_CTX_free(context_);
+    context_ = nullptr;
+  }
+}
+
+FileDigest::~FileDigest() {
+  if (context_ != nullptr) EVP_MD_CTX_free(context_);
+}
+
+bool FileDigest::Update(const void* data, std::size_t size) {
+  if (size == 0) return context_ != nullptr;
+  return context_ != nullptr && data != nullptr &&
+         EVP_DigestUpdate(context_, data, size) == 1;
+}
+
+bool FileDigest::Update(std::string_view bytes) {
+  return Update(bytes.data(), bytes.size());
+}
+
+std::string FileDigest::FinalHex(std::size_t max_chars) {
+  unsigned char digest[EVP_MAX_MD_SIZE] = {};
+  unsigned int size = 0;
+  if (context_ == nullptr ||
+      EVP_DigestFinal_ex(context_, digest, &size) != 1 || size != 32U) {
+    return {};
+  }
+  return FormatHex(digest, size, max_chars);
+}
+
+std::string HashText(std::string_view text, std::size_t max_hex_chars,
+                     std::string* error) {
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned int len = 0;
+  if (EVP_Digest(text.data(), text.size(), digest, &len, EVP_sha256(),
+                 nullptr) != 1 ||
+      len != 32U) {
+    if (error != nullptr && error->empty()) {
+      *error = "cannot compute SHA-256 text digest";
+    }
+    return {};
+  }
+  return FormatHex(digest, len, max_hex_chars);
+}
+
+std::string HashText(std::string_view text, std::string* error) {
+  return HashText(text, 64, error);
+}
 
 std::string HashRegularFile(const std::filesystem::path& path,
                             std::string* output_error) {
@@ -239,16 +254,27 @@ std::string HashAssetTree(const std::filesystem::path& root,
     *error = first_error;
     return {};
   }
-  foundation::Sha256 tree;
+  FileDigest tree;
+  if (!tree.valid()) {
+    *error = "cannot initialise asset tree digest";
+    return {};
+  }
   for (std::size_t index = 0; index < relative_files.size(); ++index) {
-    tree.Update(digests[index]);
-    tree.Update("  ");
-    tree.Update(relative_files[index].generic_string());
     const unsigned char terminator = 0;
-    tree.Update(&terminator, 1);
+    if (!tree.Update(digests[index]) || !tree.Update("  ") ||
+        !tree.Update(relative_files[index].generic_string()) ||
+        !tree.Update(&terminator, 1)) {
+      *error = "cannot update asset tree digest";
+      return {};
+    }
   }
   if (file_count != nullptr) *file_count = relative_files.size();
-  return tree.FinalHex();
+  const std::string tree_hex = tree.FinalHex();
+  if (tree_hex.empty()) {
+    *error = "cannot finalise asset tree digest";
+    return {};
+  }
+  return tree_hex;
 }
 
 PayloadIntegrityResult InspectPreparedPayload(

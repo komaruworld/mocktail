@@ -19,7 +19,6 @@
 #include <string_view>
 
 #include "compat/elf_build_id.h"
-#include "mocktail/sha256.h"
 #include "update/payload_integrity.h"
 
 namespace mocktail::update {
@@ -142,10 +141,6 @@ bool CopyImmutable(const std::filesystem::path& source,
                    std::string* error) {
   const std::string contents = ReadRegular(source, false, error);
   return error->empty() && WriteExclusive(destination, contents, 0444, error);
-}
-
-std::string HashText(std::string_view contents) {
-  return foundation::ComputeSha256Hex(contents);
 }
 
 std::string UtcTimestamp() {
@@ -271,7 +266,7 @@ std::string PayloadRuntimeFingerprint(
   evidence.append("assets=")
       .append(payload.metadata.asset_tree_sha256)
       .append("\n");
-  return HashText(evidence);
+  return HashText(evidence, error);
 }
 
 CandidateApprovalResult CreateCandidateApproval(
@@ -301,8 +296,10 @@ CandidateApprovalResult CreateCandidateApproval(
                               &result.error)) {
     return result;
   }
-  const std::string profile_sha256 = HashText(profile_bytes);
-  const std::string compatibility_sha256 = HashText(compatibility_bytes);
+  const std::string profile_sha256 = HashText(profile_bytes, &result.error);
+  const std::string compatibility_sha256 =
+      HashText(compatibility_bytes, &result.error);
+  if (!result.error.empty()) return result;
   const std::string runtime_sha256 =
       HashRegularFile(options.runtime_binary, &result.error);
   const compat::BuildIdResult runtime_build_id =
@@ -342,7 +339,8 @@ CandidateApprovalResult CreateCandidateApproval(
         {"readiness_log_sha256", log_sha256},
     };
     attestations[index] = attestation.dump(2) + "\n";
-    attestation_hashes[index] = HashText(attestations[index]);
+    attestation_hashes[index] = HashText(attestations[index], &result.error);
+    if (!result.error.empty()) return result;
   }
   std::string generation_evidence;
   generation_evidence.append("runtime_build_id=")
@@ -359,7 +357,8 @@ CandidateApprovalResult CreateCandidateApproval(
   generation_evidence.append("canary_2=")
       .append(attestation_hashes[1])
       .append("\n");
-  result.generation = HashText(generation_evidence).substr(0, 40);
+  result.generation = HashText(generation_evidence, 40, &result.error);
+  if (!result.error.empty()) return result;
   const std::string stem = payload.payload_id + "-" + result.generation;
   result.profile = options.store_root / "host_abi_profiles" / (stem + ".json");
   result.compatibility_manifest =
@@ -462,8 +461,9 @@ bool ValidateCandidateApproval(const std::filesystem::path& store_root,
   }
   const std::string fingerprint = PayloadRuntimeFingerprint(
       store_root / "payloads" / payload.payload_id, payload, error);
-  const std::string profile_sha256 = HashText(profile_bytes);
-  const std::string compatibility_sha256 = HashText(compatibility_bytes);
+  const std::string profile_sha256 = HashText(profile_bytes, error);
+  const std::string compatibility_sha256 =
+      HashText(compatibility_bytes, error);
   if (!error->empty()) return false;
   const std::string canary_runtime_sha256 =
       receipt->value("canary_runtime_sha256", "");
@@ -510,7 +510,8 @@ bool ValidateCandidateApproval(const std::filesystem::path& store_root,
     const std::string bytes = ReadRegular(attestation_path, true, error);
     const auto attestation = ParseJson(bytes, error);
     if (!error->empty() || !attestation.has_value()) return false;
-    attestation_hashes[index] = HashText(bytes);
+    attestation_hashes[index] = HashText(bytes, error);
+    if (!error->empty()) return false;
     run_ids[index] = attestation->value("run_id", "");
     if (attestation->value("schema_version", 0) != 1 ||
         attestation->value("status", "") != "passed" ||
@@ -551,8 +552,10 @@ bool ValidateCandidateApproval(const std::filesystem::path& store_root,
   generation_evidence.append("canary_2=")
       .append(attestation_hashes[1])
       .append("\n");
-  if (HashText(generation_evidence).substr(0, 40) != *generation) {
-    *error = "approval evidence generation does not match";
+  const std::string computed_generation =
+      HashText(generation_evidence, 40, error);
+  if (!error->empty() || computed_generation != *generation) {
+    if (error->empty()) *error = "approval evidence generation does not match";
     return false;
   }
   return true;

@@ -640,6 +640,28 @@ TEST_F(ExternalHostAbiProfileLoaderTest,
 }
 
 TEST_F(ExternalHostAbiProfileLoaderTest,
+       RejectsCandidateCanaryWhenProfileHashingFails) {
+  ExternalHostAbiProfileRequest request = BaseRequest();
+  request.candidate_canary = true;
+  request.candidate_process_authorization = true;
+  request.explicit_unverified_authorization = true;
+
+  struct ScopedFault {
+    ScopedFault() { SetHostAbiProfileHashingFaultForTesting(true); }
+    ~ScopedFault() { SetHostAbiProfileHashingFaultForTesting(false); }
+  } fault;
+
+  const ExternalHostAbiProfileResult result =
+      LoadExternalHostAbiProfile(request);
+
+  EXPECT_FALSE(result);
+  EXPECT_NE(
+      result.error.find("cannot compute external host ABI profile SHA-256"),
+      std::string::npos);
+  EXPECT_EQ(FindHostAbiProfile(build_id_), nullptr);
+}
+
+TEST_F(ExternalHostAbiProfileLoaderTest,
        LoadsExactCandidateIntoLookupRegistry) {
   ExternalHostAbiProfileRequest request = BaseRequest();
   request.candidate_canary = true;
