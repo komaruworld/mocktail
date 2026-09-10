@@ -19,11 +19,10 @@ namespace runtime {
 namespace {
 
 // Keep TM1 until its replacement's mobile MipPackStream path works with the
-// host Vulkan adapter. Request original image assets through an empty texture
-// transcode rollout: the mobile ETC2 software fallback drops the first mip on
-// desktop GPUs, blurring UI/world textures and causing high-quality reloads.
+// host Vulkan adapter. Let Roblox select its texture transcode rollout; forcing
+// an empty rollout makes TM1 treat TexturePack metadata as image data.
 constexpr char kVulkanClientSettingsOverrides[] =
-    R"({"FStringGraphicsTextureManager2DenyPattern2":".*","FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*","FFlagTextureTranscodeNewRollout":"True","FStringTextureTranscodeRollout":""})";
+    R"({"FStringGraphicsTextureManager2DenyPattern2":".*","FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*"})";
 
 constexpr const char* kIcdDirectories[] = {
     "/usr/share/vulkan/icd.d",
