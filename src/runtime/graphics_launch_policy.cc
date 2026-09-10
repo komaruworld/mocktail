@@ -18,9 +18,11 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
-// Keep TM1 until its replacement's mobile MipPackStream path works with the
-// host Vulkan adapter. Let Roblox select its texture transcode rollout; forcing
-// an empty rollout makes TM1 treat TexturePack metadata as image data.
+// TextureManager2 selects its mobile MipPackStream path on Android Vulkan and
+// can keep world textures at low-resolution mips. TM1 preserves full texture
+// fidelity until that path is compatible with the host Vulkan adapter. Let
+// Roblox select its texture transcode rollout; forcing an empty rollout makes
+// TM1 treat TexturePack metadata as image data.
 constexpr char kVulkanClientSettingsOverrides[] =
     R"({"FStringGraphicsTextureManager2DenyPattern2":".*","FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*"})";
 

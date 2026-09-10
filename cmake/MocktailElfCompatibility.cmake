@@ -44,7 +44,7 @@ target_link_libraries(mocktail_compat PUBLIC
   nlohmann_json::nlohmann_json
   Threads::Threads
 )
-target_link_libraries(mocktail_compat PRIVATE Mocktail::CryptoFoundation)
+target_link_libraries(mocktail_compat PRIVATE OpenSSL::Crypto)
 target_compile_features(mocktail_compat PUBLIC cxx_std_17)
 
 if(COMMAND mocktail_apply_compile_options)

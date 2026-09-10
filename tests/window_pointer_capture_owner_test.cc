@@ -80,7 +80,7 @@ TEST(WindowPointerCaptureOwnerTest, TextAndFocusAlwaysReleaseCapture) {
 
   EXPECT_TRUE(owner.Pump(true));
   EXPECT_FALSE(owner.captured());
-  EXPECT_TRUE(owner.cursor_visible());
+  EXPECT_FALSE(owner.cursor_visible());
   EXPECT_TRUE(owner.Pump(false));
   EXPECT_TRUE(owner.captured());
   EXPECT_TRUE(owner.OnFocusLost());
@@ -230,7 +230,7 @@ TEST(WindowPointerCaptureOwnerTest, TextAndFocusCancelRightDragCapture) {
 
   EXPECT_TRUE(owner.OnRightButton(true, true));
   EXPECT_FALSE(owner.captured());
-  EXPECT_TRUE(owner.cursor_visible());
+  EXPECT_FALSE(owner.cursor_visible());
   EXPECT_TRUE(owner.Pump(false));
   EXPECT_TRUE(owner.captured());
   EXPECT_TRUE(owner.OnFocusLost());
@@ -262,10 +262,32 @@ TEST(WindowPointerCaptureOwnerTest, FocusGainHidesTheSystemCursorImmediately) {
   ASSERT_GT(backend.calls.size(), calls_before);
   EXPECT_FALSE(backend.calls.back().cursor_visible);
 
-  // An active text field keeps the system cursor, focus or not.
+  // Text input releases capture but Roblox still owns the visible cursor.
   EXPECT_TRUE(owner.OnFocusLost());
-  EXPECT_TRUE(owner.OnFocusGained(true));
   EXPECT_TRUE(owner.cursor_visible());
+  EXPECT_TRUE(owner.OnFocusGained(true));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_FALSE(owner.cursor_visible());
+}
+
+TEST(WindowPointerCaptureOwnerTest, TextInputWithoutNativeCursorShowsSystemCursor) {
+  FakeBackend backend;
+  QueryState query{false, false};
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+
+  EXPECT_TRUE(owner.Pump(true));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.cursor_visible());
+
+  EXPECT_TRUE(owner.OnRightButton(true, true));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.cursor_visible());
+
+  query.succeeds = true;
+  EXPECT_TRUE(owner.Pump(true));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_FALSE(owner.cursor_visible());
 }
 
 }  // namespace

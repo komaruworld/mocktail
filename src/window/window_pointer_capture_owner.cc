@@ -95,8 +95,9 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   const bool right_drag_active = right_button_held_;
   const bool capture_requested =
       (right_drag_active || native_capture_active) && !text_input_active;
-  const bool cursor_visible =
-      text_input_active || (!client_active && !right_drag_active);
+  // Text input releases capture, but Roblox still draws its own cursor.
+  // Show the system pointer only when the native client cannot provide one.
+  const bool cursor_visible = !client_active && !capture_requested;
   return Apply(capture_requested, cursor_visible);
 }
 

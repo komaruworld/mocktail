@@ -243,36 +243,6 @@ struct TextBytePosition {
   int height = 0;
 };
 
-int LeadingTextInset(const RobloxTextOverlayPresentation& presentation,
-                     int frame_width, int frame_height) {
-  const int ordinary_inset = std::clamp(frame_width / 12, 8, 14);
-  if (presentation.multiline || presentation.text_wrapped ||
-      presentation.x_alignment != 0 || frame_height <= 0) {
-    return ordinary_inset;
-  }
-
-  // NativeTextBoxInfo has no padding or compound-drawable fields. Roblox's
-  // top navigation search boxes use a very wide TextBox with a leading icon
-  // layered inside that rectangle, so faithfully using x would paint editor
-  // text over the icon. Reserve one icon cell plus its margins for that
-  // recognizable layout while leaving ordinary and in-experience fields
-  // unchanged.
-  const int64_t width = frame_width;
-  const int64_t height = frame_height;
-  const int64_t y = presentation.geometry.y;
-  const bool wide_top_navigation_field =
-      width >= height * 12 && y >= 0 && y <= height * 3;
-  if (!wide_top_navigation_field) {
-    return ordinary_inset;
-  }
-  // The decoration occupies one square cell. Keep the normal inter-element
-  // gap after it; reserving two full heights visibly pushes place-search text
-  // toward the middle of the field on scaled desktops.
-  const int decorated_inset = static_cast<int>(std::min<int64_t>(
-      height + ordinary_inset / 2, std::min<int64_t>(width / 3, 160)));
-  return std::max(ordinary_inset, decorated_inset);
-}
-
 TextBytePosition TextPosition(TTF_Text* layout, std::size_t byte_offset,
                               int text_width) {
   if (layout == nullptr) {
@@ -461,10 +431,11 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
       static_cast<std::size_t>(width * height * 4), 0);
   const int frame_width = static_cast<int>(width);
   const int frame_height = static_cast<int>(height);
-  const int ordinary_padding = std::clamp(frame_width / 12, 8, 14);
-  const int clip_left = std::min(
-      LeadingTextInset(presentation, frame_width, frame_height), frame_width);
-  const int clip_right = std::max(clip_left, frame_width - ordinary_padding);
+  // Use Roblox's horizontal text bounds directly. Inventing padding from
+  // the field's width or position shifts text away from its native origin
+  // and makes long lines scroll before they reach the field's actual edge.
+  const int clip_left = 0;
+  const int clip_right = frame_width;
   const int clip_top = 3;
   const int clip_bottom = std::max(clip_top, frame_height - 3);
   const int available_width = std::max(1, clip_right - clip_left);
