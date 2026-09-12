@@ -138,6 +138,8 @@ struct RobloxInputSnapshot {
   uint64_t keyboard_events = 0;
   uint64_t ignored_text_events = 0;
   uint64_t text_events = 0;
+  // Zero after the host editor finishes, even if Roblox sends no hide callback.
+  uint64_t text_focus_generation = 0;
   uint64_t native_errors = 0;
   uint32_t active_mouse_buttons = 0;
   uint32_t active_touches = 0;

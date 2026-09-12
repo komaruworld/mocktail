@@ -431,13 +431,12 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
       static_cast<std::size_t>(width * height * 4), 0);
   const int frame_width = static_cast<int>(width);
   const int frame_height = static_cast<int>(height);
-  // Use Roblox's horizontal text bounds directly. Inventing padding from
-  // the field's width or position shifts text away from its native origin
-  // and makes long lines scroll before they reach the field's actual edge.
+  // Use Roblox's text bounds directly. Extra padding shifts the native text
+  // origin, scrolls long lines too early and clips compact chat fields.
   const int clip_left = 0;
   const int clip_right = frame_width;
-  const int clip_top = 3;
-  const int clip_bottom = std::max(clip_top, frame_height - 3);
+  const int clip_top = 0;
+  const int clip_bottom = frame_height;
   const int available_width = std::max(1, clip_right - clip_left);
   const bool wrapped_layout =
       presentation.multiline || presentation.text_wrapped;

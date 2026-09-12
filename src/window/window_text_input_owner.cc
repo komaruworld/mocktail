@@ -120,7 +120,10 @@ bool WindowTextInputOwner::Pump() {
   }
 
   if (command.type == CommandType::kHide) {
-    if (!active_ || active_generation_ != command.generation) {
+    // A hide can replace both a pending show and the hide of the previous
+    // editor. It must also stop that older editor if the new show was never
+    // pumped (Roblox briefly focuses an empty TextBox when closing chat).
+    if (!active_ || active_generation_ > command.generation) {
       return true;
     }
     return StopAndClear();

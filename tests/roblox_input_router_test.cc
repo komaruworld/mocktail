@@ -434,6 +434,20 @@ TEST_F(RobloxInputRouterTest, FocusedTextSuppressesDuplicateHardwareEditKeys) {
   EXPECT_EQ(router_.Snapshot().text_events, 2u);
 }
 
+TEST_F(RobloxInputRouterTest, ReportsHostTextFocusCompletion) {
+  for (const auto scancode : {SDL_SCANCODE_RETURN, SDL_SCANCODE_ESCAPE}) {
+    ASSERT_TRUE(router_.BeginTextFocusSession({42, 3, "", false, false}).ok());
+    EXPECT_EQ(router_.Snapshot().text_focus_generation, 3U);
+    ASSERT_TRUE(router_.HandleEvent(Event(platform::KeyEvent{
+        true, false, static_cast<uint32_t>(scancode), 0, 0})).status.ok());
+    EXPECT_EQ(router_.Snapshot().text_focus_generation, 0U);
+  }
+  ASSERT_TRUE(router_.BeginTextFocusSession({43, 4, "", true, false}).ok());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::KeyEvent{
+      true, false, SDL_SCANCODE_RETURN, SDLK_RETURN, 0})).status.ok());
+  EXPECT_EQ(router_.Snapshot().text_focus_generation, 4U);
+}
+
 TEST(RobloxInputRouterClipboardTest,
      CtrlVPastesWithoutForwardingTheLetterKeyToRoblox) {
   Probe probe;

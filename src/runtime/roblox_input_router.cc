@@ -526,7 +526,10 @@ RobloxInputDispatchResult RobloxInputRouter::HandleEvent(
 
 RobloxInputSnapshot RobloxInputRouter::Snapshot() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return snapshot_;
+  RobloxInputSnapshot snapshot = snapshot_;
+  const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
+  snapshot.text_focus_generation = text.focused ? text.generation : 0;
+  return snapshot;
 }
 
 RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(

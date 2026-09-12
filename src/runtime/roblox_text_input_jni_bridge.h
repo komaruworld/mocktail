@@ -27,6 +27,7 @@ class RobloxTextInputJniBridgeBackend {
   virtual Status EndTextFocusSession(int64_t textbox_handle,
                                      uint64_t generation,
                                      bool notify_native) = 0;
+  virtual bool IsTextFocusSessionActive(uint64_t generation) = 0;
   virtual Status ReplaceFocusedTextFromEngine(
       uint64_t generation, std::string authoritative_utf8) = 0;
   virtual Status QueryCurrentTextBoxInfo(

@@ -107,6 +107,34 @@ TEST(WindowTextInputOwnerTest, ReappliesAreaAfterResizeWithoutRestart) {
   EXPECT_EQ(backend.areas.size(), 2u);
 }
 
+TEST(WindowTextInputOwnerTest, CoalescedNewerHideStopsThePreviousEditor) {
+  RecordingBackend backend;
+  WindowTextInputOwner owner(&backend);
+  owner.SetEnabled(true);
+  ASSERT_TRUE(owner.RequestShowTextInput(3, kArea, kOptions));
+  ASSERT_TRUE(owner.Pump());
+  ASSERT_TRUE(owner.active());
+
+  // Closing Roblox chat hides the current editor, then briefly focuses and
+  // hides another TextBox before the next SDL pump.
+  ASSERT_TRUE(owner.RequestHideTextInput(3));
+  ASSERT_TRUE(owner.RequestShowTextInput(4, {}, kOptions));
+  ASSERT_TRUE(owner.RequestHideTextInput(4));
+  ASSERT_TRUE(owner.Pump());
+  EXPECT_FALSE(owner.active());
+  EXPECT_EQ(owner.active_generation(), 0u);
+  EXPECT_EQ(backend.calls,
+            (std::vector<char>{'F', 'A', 'S', 'T', 'C', 'F'}));
+
+  ASSERT_TRUE(owner.RequestShowTextInput(5, kArea, kOptions));
+  ASSERT_TRUE(owner.Pump());
+  EXPECT_TRUE(owner.active());
+  EXPECT_EQ(owner.active_generation(), 5u);
+  EXPECT_FALSE(owner.RequestHideTextInput(4));
+  EXPECT_TRUE(owner.Pump());
+  EXPECT_TRUE(owner.active());
+}
+
 TEST(WindowTextInputOwnerTest, FocusLossAndShutdownClearInputState) {
   RecordingBackend backend;
   WindowTextInputOwner owner(&backend);

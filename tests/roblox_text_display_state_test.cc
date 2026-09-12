@@ -85,6 +85,32 @@ TEST(RobloxTextDisplayStateTest, RejectsDetachedFallbackForMissingGeometry) {
   EXPECT_FALSE(geometry.used_fallback);
 }
 
+TEST(RobloxTextDisplayStateTest, RendersCompactChatFields) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({1630, 985, 1.145833F}).ok());
+  const std::string text = "chat test";
+  auto show = Show(1, text, 9);
+  // Actual NativeTextBoxInfo from MIC UP; 17px is a valid chat line.
+  show.area_x = 38;
+  show.area_y = 328;
+  show.area_width = 387;
+  show.area_height = 17;
+  show.font_size = 14.0F;
+  overlay.sink().update(overlay.sink().context, show);
+  EXPECT_TRUE(mocktail_text_overlay_may_present());
+  MocktailTextOverlayFrameInfo frame{};
+  ASSERT_TRUE(overlay.QueryFrame(&frame));
+  ASSERT_NE(frame.visible, 0U);
+  EXPECT_EQ(frame.width, 387U);
+  EXPECT_EQ(frame.height, 17U);
+  std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+  ASSERT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+  const auto bounds = FindAlphaBounds(frame, rgba);
+  ASSERT_TRUE(bounds.valid());
+  EXPECT_GT(bounds.maximum_x - bounds.minimum_x, 10);
+  EXPECT_TRUE(overlay.Shutdown().ok());
+}
+
 TEST(RobloxTextDisplayStateTest,
      PreservesNativeExtentForCompositorSourceClipping) {
   const std::string text = "edge";

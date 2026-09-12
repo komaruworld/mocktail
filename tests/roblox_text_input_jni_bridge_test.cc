@@ -57,6 +57,10 @@ class FakeBackend final : public RobloxTextInputJniBridgeBackend {
     return replace_status;
   }
 
+  bool IsTextFocusSessionActive(uint64_t generation) override {
+    return active && active_generation == generation;
+  }
+
   Status QueryCurrentTextBoxInfo(
       RobloxNativeTextBoxInfoQueryResult* result) override {
     calls.push_back("query:" + std::to_string(active_generation));
@@ -227,6 +231,54 @@ TEST(RobloxTextInputJniBridgeTest, CommandsDrainInGenerationOrder) {
   ASSERT_EQ(backend->owner_transitions.size(), 2u);
   EXPECT_TRUE(backend->owner_transitions.front());
   EXPECT_FALSE(backend->owner_transitions.back());
+}
+
+TEST(RobloxTextInputJniBridgeTest,
+     HostCompletionHidesInputWithoutNativeHideAndDropsLateUpdates) {
+  jnivm::VM vm;
+  auto backend = std::make_shared<FakeBackend>();
+  std::unique_ptr<RobloxTextInputJniBridge> bridge;
+  ASSERT_TRUE(
+      RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(ShowRequest(42, "draft")));
+  ASSERT_TRUE(backend->Pump());
+  backend->calls.clear();
+
+  // Enter/Escape closes the host editor; Android hides RbxKeyboard locally
+  // and does not guarantee a native hideKeyboard callback in response.
+  backend->active = false;
+  ASSERT_TRUE(vm.DispatchRobloxTextInputReplaceText("late echo"));
+  ASSERT_TRUE(backend->Pump());
+  EXPECT_EQ(backend->calls, (std::vector<std::string>{"hide:1"}));
+  for (int i = 0; i < 16; ++i) ASSERT_TRUE(backend->Pump());
+  EXPECT_EQ(backend->calls.size(), 1U);
+
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(ShowRequest(43, "next")));
+  ASSERT_TRUE(backend->Pump());
+  EXPECT_TRUE(backend->active);
+  EXPECT_EQ(backend->active_generation, 2U);
+  EXPECT_TRUE(bridge->Shutdown().ok());
+}
+
+TEST(RobloxTextInputJniBridgeTest,
+     HostCompletionPreservesAnAlreadyQueuedNewFocus) {
+  jnivm::VM vm;
+  auto backend = std::make_shared<FakeBackend>();
+  std::unique_ptr<RobloxTextInputJniBridge> bridge;
+  ASSERT_TRUE(
+      RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(ShowRequest(42, "draft")));
+  ASSERT_TRUE(backend->Pump());
+  backend->calls.clear();
+  backend->active = false;
+  ASSERT_TRUE(vm.DispatchRobloxTextInputReplaceText("late echo"));
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(ShowRequest(43, "next")));
+  ASSERT_TRUE(backend->Pump());
+  EXPECT_EQ(backend->calls,
+            (std::vector<std::string>{"hide:1", "begin:2", "show:2"}));
+  EXPECT_TRUE(backend->active);
+  EXPECT_EQ(backend->last_initial_text, "next");
+  EXPECT_TRUE(bridge->Shutdown().ok());
 }
 
 TEST(RobloxTextInputJniBridgeTest,

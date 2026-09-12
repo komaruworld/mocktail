@@ -14,8 +14,6 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
-constexpr int kMinimumNativeWidth = 32;
-constexpr int kMinimumNativeHeight = 18;
 constexpr char kPasswordBullet[] = "\xE2\x80\xA2";
 
 void SecureClear(std::string* value) {
@@ -83,8 +81,8 @@ bool ValidateAndCountUtf8(const char* text, std::size_t size,
 bool NativeGeometryIntersectsViewport(
     const RobloxTextDisplayUpdate& update,
     const RobloxTextOverlayViewport& viewport) {
-  if (!viewport.valid() || update.area_width < kMinimumNativeWidth ||
-      update.area_height < kMinimumNativeHeight) {
+  if (!viewport.valid() || update.area_width <= 0 ||
+      update.area_height <= 0) {
     return false;
   }
   const int64_t right = static_cast<int64_t>(update.area_x) +

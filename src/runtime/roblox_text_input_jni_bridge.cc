@@ -142,6 +142,9 @@ class ProductionTextInputBackend final
     return runtime_->EndTextFocusSession(textbox_handle, generation,
                                          notify_native);
   }
+  bool IsTextFocusSessionActive(uint64_t generation) override {
+    return runtime_->Snapshot().text_focus_generation == generation;
+  }
   Status ReplaceFocusedTextFromEngine(uint64_t generation,
                                       std::string authoritative_utf8) override {
     return runtime_->ReplaceFocusedTextFromEngine(
@@ -557,6 +560,44 @@ struct RobloxTextInputJniBridge::State {
         command.ClearSensitiveData();
       }
       return CompleteTerminalOnMainThread("queue");
+    }
+
+    // RbxKeyboard hides its own editor after Enter/Escape. The native side
+    // need not echo hideKeyboard, so reconcile the host editor before polling
+    // properties or replaying delayed text updates from that focus session.
+    if (applied_active &&
+        !backend->IsTextFocusSessionActive(applied_generation)) {
+      const uint64_t ended_generation = applied_generation;
+      if (!backend->RequestHideTextInput(ended_generation)) {
+        for (Command& command : pending) command.ClearSensitiveData();
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          EnterTerminalLocked("SDL text-input completion hide was rejected");
+        }
+        return CompleteTerminalOnMainThread("host-focus-end");
+      }
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (active_generation == ended_generation) {
+          desired_active = false;
+          active_handle = 0;
+          active_info = {};
+          active_geometry = {};
+          has_active_geometry = false;
+          geometry_refresh_pumps = 0;
+        }
+      }
+      for (auto it = pending.begin(); it != pending.end();) {
+        if (it->generation == ended_generation) {
+          it->ClearSensitiveData();
+          it = pending.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      applied_active = false;
+      applied_generation = 0;
+      applied_handle = 0;
     }
 
     AppendGeometryRefresh(&pending);

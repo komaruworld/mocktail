@@ -71,21 +71,38 @@ TEST(WindowPointerCaptureOwnerTest, FollowsNativeMouseLockState) {
   EXPECT_FALSE(owner.cursor_visible());
 }
 
-TEST(WindowPointerCaptureOwnerTest, TextAndFocusAlwaysReleaseCapture) {
+TEST(WindowPointerCaptureOwnerTest, TextInputPreservesNativeShiftLock) {
   FakeBackend backend;
   QueryState query{true, true};
   WindowPointerCaptureOwner owner(&backend);
   ASSERT_TRUE(owner.RegisterQuery(Query, &query));
   ASSERT_TRUE(owner.Pump(false));
 
+  // Opening chat must not turn relative motion into absolute motion while
+  // Roblox still requests center lock: the pointer would reach the window edge
+  // and camera rotation would stop during typing.
+  EXPECT_TRUE(owner.Pump(true));
+  EXPECT_TRUE(owner.captured());
+  EXPECT_FALSE(owner.cursor_visible());
+
+  // Roblox can release its lock to let the user interact with a text field.
+  query.locked_center = false;
   EXPECT_TRUE(owner.Pump(true));
   EXPECT_FALSE(owner.captured());
-  EXPECT_FALSE(owner.cursor_visible());
+  query.locked_center = true;
+  EXPECT_TRUE(owner.Pump(true));
+  EXPECT_TRUE(owner.captured());
+
   EXPECT_TRUE(owner.Pump(false));
   EXPECT_TRUE(owner.captured());
   EXPECT_TRUE(owner.OnFocusLost());
   EXPECT_FALSE(owner.captured());
-  EXPECT_TRUE(owner.OnFocusGained(false));
+  // Regular pumps continue while the window is unfocused. A stale native
+  // lock must not recapture the pointer before focus actually returns.
+  EXPECT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(owner.captured());
+  EXPECT_TRUE(owner.cursor_visible());
+  EXPECT_TRUE(owner.OnFocusGained(true));
   EXPECT_TRUE(owner.captured());
 }
 
