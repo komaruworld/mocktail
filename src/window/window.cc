@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "mocktail/graphics/gles_text_overlay_compositor.h"
 #include "mocktail/graphics/present_mode_policy.h"
 #include "mocktail/platform/display_refresh_capabilities.h"
 #include "mocktail/platform/sdl_application_metadata.h"
@@ -151,6 +152,7 @@ static std::unique_ptr<SdlTextInputBackend> g_text_input_backend;
 static std::unique_ptr<WindowTextInputOwner> g_text_input_owner;
 static std::unique_ptr<SdlPointerCaptureBackend> g_pointer_capture_backend;
 static std::unique_ptr<WindowPointerCaptureOwner> g_pointer_capture_owner;
+static std::unique_ptr<graphics::GlesTextOverlayCompositor> g_gles_text_overlay;
 static char g_preferred_egl_library[4096];
 static char g_preferred_gles_library[4096];
 static bool g_auto_angle_retry_attempted = false;
@@ -1573,6 +1575,19 @@ bool SwapBuffers() {
     return false;
   }
 
+  if (g_gles_text_overlay == nullptr) {
+    graphics::GlesTextOverlaySource source;
+    source.may_present = reinterpret_cast<decltype(source.may_present)>(
+        dlsym(RTLD_DEFAULT, "mocktail_text_overlay_may_present"));
+    source.query = reinterpret_cast<decltype(source.query)>(
+        dlsym(RTLD_DEFAULT, "mocktail_text_overlay_query"));
+    source.copy = reinterpret_cast<decltype(source.copy)>(
+        dlsym(RTLD_DEFAULT, "mocktail_text_overlay_copy"));
+    g_gles_text_overlay =
+        std::make_unique<graphics::GlesTextOverlayCompositor>(source);
+  }
+  (void)g_gles_text_overlay->Draw(g_state.sdl_window);
+
   if (!SDL_GL_SwapWindow(g_state.sdl_window)) {
     fprintf(stderr, "  [window] SDL_GL_SwapWindow failed: %s\n",
             SDL_GetError());
@@ -2336,6 +2351,10 @@ void Shutdown() {
   g_pointer_capture_backend.reset();
   g_text_input_owner.reset();
   g_text_input_backend.reset();
+  // PresentLifecycleGate has drained every compositor call. If the render
+  // context is on another thread, destroying that context releases its GL
+  // resources below.
+  g_gles_text_overlay.reset();
   if (!g_state.direct_vulkan && g_state.egl_context != nullptr) {
     SDL_GL_MakeCurrent(g_state.sdl_window, nullptr);
   }

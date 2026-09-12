@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// Process-local ABI with libvulkan.so. Pixels are RGBA8; consumers must copy a
+// Process-local ABI for host compositors. Pixels are RGBA8; consumers must copy a
 // matching revision before the producer clears its storage.
 struct MocktailTextOverlayFrameInfo {
   static constexpr std::uint32_t kAbiVersion = 2;

@@ -9,6 +9,7 @@ get_filename_component(MOCKTAIL_PLATFORM_GRAPHICS_ROOT
 
 find_package(SDL3 3.4 REQUIRED CONFIG)
 find_path(MOCKTAIL_EGL_INCLUDE_DIR EGL/egl.h REQUIRED)
+find_path(MOCKTAIL_GLES3_INCLUDE_DIR GLES3/gl3.h REQUIRED)
 
 set(MOCKTAIL_WINDOW_ICON_PNG
   "${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/packaging/icons/hicolor/48x48/apps/space.bigrat.mocktail.png"
@@ -103,6 +104,18 @@ target_link_libraries(mocktail_graphics_foundation PRIVATE
 target_compile_features(mocktail_graphics_foundation PUBLIC cxx_std_17)
 add_library(Mocktail::GraphicsFoundation ALIAS mocktail_graphics_foundation)
 
+add_library(mocktail_gles_text_overlay STATIC
+  ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/gles_text_overlay_compositor.cc
+)
+target_include_directories(mocktail_gles_text_overlay
+  PUBLIC ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/include
+  PRIVATE ${MOCKTAIL_GLES3_INCLUDE_DIR}
+)
+target_link_libraries(mocktail_gles_text_overlay PUBLIC SDL3::SDL3)
+target_compile_features(mocktail_gles_text_overlay PUBLIC cxx_std_17)
+mocktail_apply_compile_options(mocktail_gles_text_overlay)
+add_library(Mocktail::GlesTextOverlay ALIAS mocktail_gles_text_overlay)
+
 add_library(mocktail_sdl_vulkan_wsi STATIC
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/sdl_vulkan_wsi.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/android_vulkan_wsi_adapter.cc
@@ -120,6 +133,16 @@ target_compile_features(mocktail_sdl_vulkan_wsi PUBLIC cxx_std_17)
 add_library(Mocktail::SdlVulkanWsi ALIAS mocktail_sdl_vulkan_wsi)
 
 if(BUILD_TESTING AND TARGET GTest::gtest_main)
+  add_executable(gles_text_overlay_compositor_test
+    ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/tests/gles_text_overlay_compositor_test.cc
+  )
+  target_include_directories(gles_text_overlay_compositor_test PRIVATE
+    ${MOCKTAIL_GLES3_INCLUDE_DIR}
+  )
+  target_link_libraries(gles_text_overlay_compositor_test PRIVATE
+    Mocktail::GlesTextOverlay
+    GTest::gtest_main
+  )
   add_executable(bionic_egl_bridge_test
     ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/tests/bionic_egl_bridge_test.cc
   )
@@ -153,6 +176,7 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
     GTest::gtest_main
   )
   include(GoogleTest)
+  gtest_discover_tests(gles_text_overlay_compositor_test)
   gtest_discover_tests(bionic_egl_bridge_test)
   gtest_discover_tests(platform_graphics_foundation_test)
   gtest_discover_tests(display_refresh_capabilities_test)
