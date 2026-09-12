@@ -8,7 +8,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(Mocktail
-  VERSION 1.0.3
+  VERSION 1.0.4
   DESCRIPTION "Android x86-64 Roblox compatibility runtime for Linux"
   LANGUAGES CXX
 )
