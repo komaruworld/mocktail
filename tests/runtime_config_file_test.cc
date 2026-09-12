@@ -99,6 +99,7 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
       LoadRuntimeConfig(MapEnvironment(), file);
   ASSERT_TRUE(loaded) << loaded.error;
   EXPECT_TRUE(loaded.file_loaded);
+  EXPECT_FALSE(loaded.config.vr_enabled());
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
@@ -113,6 +114,58 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
   EXPECT_FALSE(loaded.config.input_capabilities().touch_enabled);
   EXPECT_TRUE(loaded.config.desktop_playability());
   EXPECT_EQ(loaded.config.device_profile().name, "pc-windows-11");
+}
+
+TEST(RuntimeConfigFileTest,
+     VrEnvironmentOverridesYamlIncludingExplicitDisable) {
+  TemporaryDirectory temporary;
+  const auto file = temporary.Write("version: 1\nvr:\n  enabled: true\n");
+  const auto enabled = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(enabled) << enabled.error;
+  EXPECT_TRUE(enabled.config.vr_enabled());
+  const auto disabled =
+      LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_VR_ENABLED", "0"}}), file);
+  ASSERT_TRUE(disabled) << disabled.error;
+  EXPECT_FALSE(disabled.config.vr_enabled());
+  const auto invalid = LoadRuntimeConfig(
+      MapEnvironment({{"MOCKTAIL_VR_ENABLED", "maybe"}}), file);
+  EXPECT_FALSE(invalid);
+  EXPECT_NE(invalid.error.find("VR configuration"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, RejectsMalformedVrSectionAndUnsupportedKeys) {
+  TemporaryDirectory temporary;
+  for (const auto* yaml :
+       {"vr: true\n", "vr:\n  enabled: perhaps\n", "vr:\n  enabled: [true]\n",
+        "vr:\n  enable: true\n", "vr:\n  enabled: true\n  enabled: false\n"}) {
+    const auto result =
+        LoadRuntimeConfig(MapEnvironment(), temporary.Write(yaml));
+    EXPECT_FALSE(result) << yaml;
+  }
+}
+
+TEST(RuntimeConfigFileTest, ExportsResolvedVrStateAndRejectsInvalidState) {
+  const char* previous = std::getenv("MOCKTAIL_VR_ENABLED");
+  const std::optional<std::string> saved =
+      previous ? std::optional<std::string>(previous) : std::nullopt;
+  std::string error;
+  const auto enabled = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_VR_ENABLED", "on"}}));
+  EXPECT_TRUE(ExportRuntimeConfigEnvironment(enabled, &error)) << error;
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ENABLED"), "1");
+  EXPECT_TRUE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(MapEnvironment()), &error))
+      << error;
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ENABLED"), "0");
+  EXPECT_FALSE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(
+          MapEnvironment({{"MOCKTAIL_VR_ENABLED", "invalid"}})),
+      &error));
+  EXPECT_STREQ(std::getenv("MOCKTAIL_VR_ENABLED"), "0");
+  if (saved)
+    setenv("MOCKTAIL_VR_ENABLED", saved->c_str(), 1);
+  else
+    unsetenv("MOCKTAIL_VR_ENABLED");
 }
 
 TEST(RuntimeConfigBootstrapTest,

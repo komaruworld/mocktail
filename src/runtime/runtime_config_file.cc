@@ -168,6 +168,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "device.keyboard",
       "runtime.headless",
       "runtime.roblox_library",
+      "vr.enabled",
       "appearance.theme",
       "graphics.backend",
       "graphics.frame_rate_limit",
@@ -307,6 +308,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_THEME"] = *theme;
+  }
+  if (const auto enabled = value("vr.enabled"); enabled.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*enabled, &parsed)) {
+      *error = "vr.enabled must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_VR_ENABLED"] = parsed ? "1" : "0";
   }
   if (const auto backend = value("graphics.backend"); backend.has_value()) {
     if (RuntimeConfig::ParseGraphicsBackend(*backend) ==
@@ -656,7 +665,7 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
           *error = "device must be a preset scalar or detailed mapping";
           valid = false;
         }
-      } else if (key == "runtime" || key == "appearance" ||
+      } else if (key == "runtime" || key == "appearance" || key == "vr" ||
                  key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
                  key == "compatibility" || key == "network") {
@@ -725,6 +734,9 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
   result.config = RuntimeConfig::FromEnvironment(layered);
   if (!result.config.frame_rate().valid()) {
     result.error = "frame-rate policy is invalid";
+  } else if (!result.config.vr_valid()) {
+    result.error = "VR configuration is invalid: MOCKTAIL_VR_ENABLED must be "
+                   "1/0, true/false, or on/off";
   } else if (!result.config.device_profile_valid()) {
     result.error = "device profile is invalid";
   } else if (!result.config.input_capabilities().touch_enabled &&
@@ -761,6 +773,10 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
 
 bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                                     std::string* error) {
+  if (!config.vr_valid()) {
+    if (error != nullptr) *error = "cannot export an invalid VR configuration";
+    return false;
+  }
   if (!config.device_profile_valid()) {
     if (error != nullptr) {
       *error = "cannot export an invalid device profile";
@@ -812,6 +828,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
   const DeviceProfile& device = config.device_profile();
   const bool base_exported =
       SetEnvironmentValue("MOCKTAIL_HEADLESS", config.headless() ? "1" : "0",
+                          error) &&
+      SetEnvironmentValue("MOCKTAIL_VR_ENABLED", config.vr_enabled() ? "1" : "0",
                           error) &&
       SetEnvironmentValue("MOCKTAIL_DEVICE_PROFILE", std::string(device.name),
                           error) &&

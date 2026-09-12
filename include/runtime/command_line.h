@@ -1,6 +1,7 @@
 #ifndef MOCKTAIL_RUNTIME_COMMAND_LINE_H_
 #define MOCKTAIL_RUNTIME_COMMAND_LINE_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,7 @@ enum class WindowMode {
 struct CommandLineOptions {
   CommandMode mode = CommandMode::kRun;
   WindowMode window_mode = WindowMode::kUnspecified;
+  std::optional<bool> vr_enabled;
   std::string program_name = "mocktail";
   std::string roblox_library_path;
   std::string graphics_backend;

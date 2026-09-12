@@ -2,6 +2,34 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License")
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME OpenXrSimulatorLauncher
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/simulator_launcher_test.py"
+    "${CMAKE_BINARY_DIR}/mocktail-vr-simulated")
+if(MOCKTAIL_ENABLE_VR)
+  add_library(mocktail_test_openxr_runtime MODULE
+    vr/fake_openxr_runtime.cc vr/fake_openxr_preview.cc)
+  target_link_libraries(mocktail_test_openxr_runtime PRIVATE
+    OpenXR::headers Vulkan::Headers)
+  target_compile_definitions(mocktail_test_openxr_runtime PRIVATE
+    XR_USE_GRAPHICS_API_VULKAN)
+  set_target_properties(mocktail_test_openxr_runtime PROPERTIES
+    CXX_VISIBILITY_PRESET hidden)
+  mocktail_apply_compile_options(mocktail_test_openxr_runtime)
+  add_test(NAME OpenXrProbeContract
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/probe_contract_test.py"
+      "$<TARGET_FILE:mocktail_vr_probe>" "$<TARGET_FILE:mocktail_test_openxr_runtime>")
+  add_test(NAME OpenXrPreviewContract
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/preview_contract_test.py"
+      "$<TARGET_FILE:mocktail_vr_probe>" "$<TARGET_FILE:mocktail_test_openxr_runtime>"
+      "$<TARGET_FILE:mocktail>")
+  set_tests_properties(OpenXrPreviewContract PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+else()
+  add_test(NAME OpenXrProbeDisabled
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vr/probe_contract_test.py"
+      "$<TARGET_FILE:mocktail_vr_probe>" --disabled "$<TARGET_FILE:mocktail>")
+endif()
+
 add_executable(jnivm_test
   jnivm_test.cc
 )

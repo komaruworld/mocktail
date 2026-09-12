@@ -67,6 +67,13 @@ graphics:
   # Optional presentation synchronization override: auto, on, or off.
   # vsync: off
 
+vr:
+  # Boolean (default: false): launch the Roblox experimental VR path.
+  # Only Build ID 2998 is currently accepted; eye resources and OpenXR output
+  # are NOT yet connected. Standalone scene: mocktail-vr-probe --scene.
+  # Use --no-vr to launch Roblox normally.
+  enabled: false
+
 performance:
   # Boolean (default: false): size Roblox scheduler/render queues from every
   # physical CPU core. A place's Lua/main thread can still remain serial.

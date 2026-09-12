@@ -77,6 +77,8 @@ class RuntimeConfig {
   static RuntimeConfig FromEnvironment(const Environment& environment);
 
   bool headless() const { return headless_; }
+  bool vr_enabled() const { return vr_enabled_; }
+  bool vr_valid() const { return vr_valid_; }
   const std::filesystem::path& roblox_library_path() const {
     return roblox_library_path_;
   }
@@ -135,6 +137,8 @@ class RuntimeConfig {
 
  private:
   bool headless_ = false;
+  bool vr_enabled_ = false;
+  bool vr_valid_ = true;
   std::filesystem::path roblox_library_path_ = "rbx_bin/libroblox.so";
   GraphicsBackend graphics_backend_ = GraphicsBackend::kVulkan;
   std::string graphics_backend_name_ = "direct-vulkan";

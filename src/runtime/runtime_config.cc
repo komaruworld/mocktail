@@ -170,6 +170,8 @@ std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy) {
 RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   RuntimeConfig config;
   config.headless_ = LegacyEnabled(environment, "MOCKTAIL_HEADLESS");
+  config.vr_enabled_ =
+      ReadBoolean(environment, "MOCKTAIL_VR_ENABLED", false, &config.vr_valid_);
   config.roblox_library_path_ = environment.GetOr(
       "ROBLOX_LIB_PATH", config.roblox_library_path_.string());
   config.graphics_backend_name_ = environment.GetOr(

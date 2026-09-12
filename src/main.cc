@@ -308,6 +308,36 @@ int main(int argc, char* argv[]) {
   }
   mocktail::runtime::ScrubCommandLineLaunchArguments(&command_line.options,
                                                      argc, argv);
+
+  const mocktail::runtime::RuntimeConfigBootstrapResult config_bootstrap =
+      mocktail::runtime::EnsureRuntimeConfigFile(paths.config_file());
+  if (!config_bootstrap) {
+    std::cerr << "[FATAL] Cannot prepare " << paths.config_file() << ": "
+              << config_bootstrap.error << '\n';
+    if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+      (void)mocktail::runtime::ShowFailureDialog(
+          environment, "Mocktail could not prepare its configuration.");
+    }
+    return EXIT_FAILURE;
+  }
+  mocktail::runtime::RuntimeConfigLoadResult runtime_config =
+      mocktail::runtime::LoadRuntimeConfig(environment, paths.config_file());
+  if (!runtime_config) {
+    std::cerr << "[FATAL] Cannot load " << paths.config_file() << ": "
+              << runtime_config.error << '\n';
+    if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+      (void)mocktail::runtime::ShowFailureDialog(
+          environment, "Mocktail could not load its configuration.");
+    }
+    return EXIT_FAILURE;
+  }
+  // The standalone OpenXR scene belongs to mocktail-vr-probe --scene.
+  // Continue through Roblox startup to inspect its native VR device.
+  if (runtime_config.config.vr_enabled()) {
+    std::cerr << "  [vr] Roblox VR initialization requested (experimental); "
+                 "stereo eye resources and OpenXR output are not yet connected. "
+                 "Standalone scene: mocktail-vr-probe --scene\n";
+  }
   mocktail::runtime::SessionLog session_log;
   mocktail::runtime::FailureSupportBundleGuard support_bundle_guard(
       environment, paths,
@@ -354,28 +384,6 @@ int main(int argc, char* argv[]) {
       }
       return EXIT_FAILURE;
     }
-  }
-  const mocktail::runtime::RuntimeConfigBootstrapResult config_bootstrap =
-      mocktail::runtime::EnsureRuntimeConfigFile(paths.config_file());
-  if (!config_bootstrap) {
-    std::cerr << "[FATAL] Cannot prepare " << paths.config_file() << ": "
-              << config_bootstrap.error << '\n';
-    if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
-      (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Mocktail could not prepare its configuration.");
-    }
-    return EXIT_FAILURE;
-  }
-  mocktail::runtime::RuntimeConfigLoadResult runtime_config =
-      mocktail::runtime::LoadRuntimeConfig(environment, paths.config_file());
-  if (!runtime_config) {
-    std::cerr << "[FATAL] Cannot load " << paths.config_file() << ": "
-              << runtime_config.error << '\n';
-    if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
-      (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Mocktail could not load its configuration.");
-    }
-    return EXIT_FAILURE;
   }
   if (runtime_config.config.use_system_proxy()) {
     const mocktail::runtime::SystemProxyResult system_proxy =

@@ -4,3 +4,6 @@
 [submodule "third_party/Vulkan-Headers"]
 	path = third_party/Vulkan-Headers
 	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "third_party/OpenXR-SDK"]
+	path = third_party/OpenXR-SDK
+	url = https://github.com/KhronosGroup/OpenXR-SDK.git

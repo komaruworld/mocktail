@@ -2476,7 +2476,8 @@ jobject BuildAppBridgeInitParams(JNIEnv* env, jstring client_settings,
   SetStringField(env, params, "userAgent", user_agent.c_str());
   SetBooleanField(env, params, "isTablet", JNI_FALSE);
   SetBooleanField(env, params, "isPotato", JNI_FALSE);
-  SetBooleanField(env, params, "isVrDevice", JNI_FALSE);
+  SetBooleanField(env, params, "isVrDevice",
+                  IsEnabled("MOCKTAIL_VR_ENABLED") ? JNI_TRUE : JNI_FALSE);
   SetStringField(env, params, "buildVariant", "googleProdRelease");
   SetObjectField(env, params, "vrContext", "Landroid/app/Activity;",
                  activity);
@@ -4507,6 +4508,18 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
 
   const mocktail::compat::BuildProfile& build_profile =
       *profile_result.profile;
+  // The experimental VR ABI has only been observed on the active 2998
+  // payload. Do not pass VR device parameters to unrelated builds, even when
+  // they have a general-purpose compatibility profile. Eye initialization and
+  // OpenXR projection are not yet implemented; this is a diagnostic launch.
+  if (IsEnabled("MOCKTAIL_VR_ENABLED") &&
+      build_profile.elf_build_id !=
+          "ade08266c67aee88ec9c1d00902150e1684dad3a") {
+    std::cerr << "[FATAL] Experimental Roblox VR requires exact Build ID "
+                 "ade08266c67aee88ec9c1d00902150e1684dad3a; loaded "
+              << build_profile.elf_build_id << "\n";
+    return EXIT_FAILURE;
+  }
   const mocktail::compat::HostAbiProfile* host_abi_profile =
       mocktail::compat::FindHostAbiProfile(build_profile.elf_build_id);
   const bool experiment_allowed =
