@@ -107,6 +107,10 @@ Direct AppImage, DEB, and RPM downloads are available from the
 Put a JSON object in `$XDG_CONFIG_HOME/mocktail/fflags.json` (usually
 `~/.config/mocktail/fflags.json`). Mocktail applies it on the next launch.
 
+PC profiles use the legacy Charts page by default to avoid the blank screen
+caused by `Color3` errors in the newer SDUI page. An explicit
+`FFlagLuaAppChartsAppPage` override takes precedence over this default.
+
 ```json
 {
   "FFlagExample": "True",

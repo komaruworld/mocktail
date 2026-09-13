@@ -357,6 +357,10 @@ bool MergeDesktopAppPolicyClientSettingsOverride(std::string_view policy_json,
     return false;
   }
   overrides[std::string(kDesktopAppPolicyOverride)] = policy_json;
+  // The SDUI Charts page in 2.736/2.738 can pass a table to TextColor3 and
+  // leave the whole LuaApp blank. Default to the working legacy page while
+  // preserving explicit user overrides for testing newer UI patches.
+  overrides.emplace("FFlagLuaAppChartsAppPage", "False");
   *merged_json = overrides.dump();
   return true;
 }

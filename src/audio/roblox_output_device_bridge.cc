@@ -28,8 +28,6 @@ namespace {
 
 constexpr std::size_t kOutputCountVtableIndex = 5;
 constexpr std::size_t kOutputInfoVtableIndex = 6;
-constexpr std::size_t kCurrentOutputVtableIndex = 7;
-constexpr std::size_t kSelectOutputVtableIndex = 17;
 constexpr std::size_t kGuestStringSize = 24;
 constexpr std::size_t kGuestDeviceInfoSize = kGuestStringSize * 2 + 1;
 constexpr std::size_t kStringConstructorContractSize = 24;
@@ -94,7 +92,8 @@ bool IsRelroImageRange(std::uintptr_t image_base, std::uintptr_t rva,
   return IsProgramHeaderRange(image_base, rva, size, PT_GNU_RELRO, 0);
 }
 
-bool SetVtableWritable(std::uintptr_t* vtable, bool writable) {
+bool SetVtableWritable(std::uintptr_t* vtable, std::size_t select_index,
+                       bool writable) {
   if (vtable == nullptr) {
     return false;
   }
@@ -106,7 +105,7 @@ bool SetVtableWritable(std::uintptr_t* vtable, bool writable) {
   const std::uintptr_t first =
       reinterpret_cast<std::uintptr_t>(vtable + kOutputCountVtableIndex);
   const std::uintptr_t last =
-      reinterpret_cast<std::uintptr_t>(vtable + kSelectOutputVtableIndex + 1);
+      reinterpret_cast<std::uintptr_t>(vtable + select_index + 1);
   if (last <= first) {
     return false;
   }
@@ -145,7 +144,9 @@ bool HasExpectedFmodStringConstructorContract(const std::uint8_t* code,
 bool HasExpectedFmodOutputDeviceVtable(
     const std::uintptr_t* vtable, std::uintptr_t image_base,
     const compat::FmodOutputDeviceBridgeProfile& profile) {
-  return vtable != nullptr && image_base != 0 &&
+  const std::size_t kCurrentOutputVtableIndex = profile.current_vtable_index();
+  const std::size_t kSelectOutputVtableIndex = profile.select_vtable_index();
+  return vtable != nullptr && image_base != 0 && profile.valid_vtable_layout() &&
          vtable[kOutputCountVtableIndex] ==
              image_base + profile.count_method_rva &&
          vtable[kOutputInfoVtableIndex] ==
@@ -190,6 +191,9 @@ Status RobloxOutputDeviceBridge::Install(const compat::BuildProfile& profile) {
   if (!profile.allow_host_abi_bridges) {
     return FailedPrecondition(
         "FMOD output-device profile requires host ABI bridges");
+  }
+  if (!profile.fmod_output_device_bridge->valid_vtable_layout()) {
+    return FailedPrecondition("unsupported FMOD output-device vtable layout");
   }
 
   RobloxOutputDeviceBridge* expected = nullptr;
@@ -342,6 +346,8 @@ Status RobloxOutputDeviceBridge::Activate(std::uintptr_t image_base) {
 }
 
 Status RobloxOutputDeviceBridge::PatchVtableLocked() {
+  const std::size_t kCurrentOutputVtableIndex = profile_.current_vtable_index();
+  const std::size_t kSelectOutputVtableIndex = profile_.select_vtable_index();
   if (profile_.vtable_rva >
       std::numeric_limits<std::uintptr_t>::max() -
           (kSelectOutputVtableIndex + 1) * sizeof(std::uintptr_t)) {
@@ -381,7 +387,7 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
       vtable_[kCurrentOutputVtableIndex],
       vtable_[kSelectOutputVtableIndex],
   };
-  if (!SetVtableWritable(vtable_, true)) {
+  if (!SetVtableWritable(vtable_, kSelectOutputVtableIndex, true)) {
     return Status::Error(StatusCode::kPlatformError,
                          "cannot make FmodAudioDevice vtable writable");
   }
@@ -394,7 +400,7 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
                    FunctionAddress(&GetCurrentOutputDevice), __ATOMIC_RELEASE);
   __atomic_store_n(&vtable_[kSelectOutputVtableIndex],
                    FunctionAddress(&SetCurrentOutputDevice), __ATOMIC_RELEASE);
-  if (!SetVtableWritable(vtable_, false)) {
+  if (!SetVtableWritable(vtable_, kSelectOutputVtableIndex, false)) {
     __atomic_store_n(&vtable_[kOutputCountVtableIndex], original_methods_[0],
                      __ATOMIC_RELEASE);
     __atomic_store_n(&vtable_[kOutputInfoVtableIndex], original_methods_[1],
@@ -403,7 +409,7 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
                      __ATOMIC_RELEASE);
     __atomic_store_n(&vtable_[kSelectOutputVtableIndex], original_methods_[3],
                      __ATOMIC_RELEASE);
-    (void)SetVtableWritable(vtable_, false);
+    (void)SetVtableWritable(vtable_, kSelectOutputVtableIndex, false);
     return Status::Error(StatusCode::kPlatformError,
                          "cannot restore FmodAudioDevice RELRO protection");
   }
@@ -411,7 +417,10 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
 }
 
 bool RobloxOutputDeviceBridge::RestoreVtableLocked() {
-  if (vtable_ == nullptr || !SetVtableWritable(vtable_, true)) {
+  const std::size_t kCurrentOutputVtableIndex = profile_.current_vtable_index();
+  const std::size_t kSelectOutputVtableIndex = profile_.select_vtable_index();
+  if (vtable_ == nullptr ||
+      !SetVtableWritable(vtable_, kSelectOutputVtableIndex, true)) {
     return false;
   }
   __atomic_store_n(&vtable_[kOutputCountVtableIndex], original_methods_[0],
@@ -422,7 +431,7 @@ bool RobloxOutputDeviceBridge::RestoreVtableLocked() {
                    __ATOMIC_RELEASE);
   __atomic_store_n(&vtable_[kSelectOutputVtableIndex], original_methods_[3],
                    __ATOMIC_RELEASE);
-  return SetVtableWritable(vtable_, false);
+  return SetVtableWritable(vtable_, kSelectOutputVtableIndex, false);
 }
 
 int RobloxOutputDeviceBridge::GetOutputDeviceCount(void* self) {

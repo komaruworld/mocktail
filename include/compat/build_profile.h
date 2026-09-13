@@ -1,6 +1,7 @@
 #ifndef MOCKTAIL_COMPAT_BUILD_PROFILE_H_
 #define MOCKTAIL_COMPAT_BUILD_PROFILE_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -22,6 +23,18 @@ struct FmodOutputDeviceBridgeProfile {
   std::uintptr_t info_method_rva = 0;
   std::uintptr_t current_method_rva = 0;
   std::uintptr_t select_method_rva = 0;
+  // Roblox 2.738 inserted device-list methods before the current/select slots.
+  int vtable_layout_version = 1;
+
+  bool valid_vtable_layout() const {
+    return vtable_layout_version == 1 || vtable_layout_version == 2;
+  }
+  std::size_t current_vtable_index() const {
+    return vtable_layout_version == 2 ? 8 : 7;
+  }
+  std::size_t select_vtable_index() const {
+    return vtable_layout_version == 2 ? 19 : 17;
+  }
 };
 
 struct BuildProfile {

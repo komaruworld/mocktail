@@ -2,6 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
+#include <fstream>
+#include <iterator>
 #include <string>
 
 #ifndef MOCKTAIL_TEST_SOURCE_DIR
@@ -147,6 +151,39 @@ TEST(BuildProfileTest, RejectsInvalidManifest) {
 
   EXPECT_FALSE(result);
   EXPECT_FALSE(result.error.empty());
+}
+
+TEST(BuildProfileTest, ParsesOnlyKnownFmodVtableLayouts) {
+  std::ifstream input(kManifestPath);
+  const std::string manifest{std::istreambuf_iterator<char>(input), {}};
+  const std::string marker = "\"fmod_output_device_bridge\": {";
+  const auto position = manifest.find(marker);
+  ASSERT_NE(position, std::string::npos);
+  char path[] = "/tmp/mocktail-fmod-profile-XXXXXX";
+  const int descriptor = mkstemp(path);
+  ASSERT_GE(descriptor, 0);
+  close(descriptor);
+  for (const std::string layout : {"1", "2", "0", "3", "true", "\"2\"", "null"}) {
+    auto document = manifest;
+    document.insert(position + marker.size(),
+                    "\"vtable_layout_version\":" + layout + ",");
+    { std::ofstream output(path); output << document; }
+    const auto result = FindBuildProfile(
+        path, "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21");
+    if (layout == "1" || layout == "2") {
+      EXPECT_TRUE(result) << result.error;
+      if (result.profile && result.profile->fmod_output_device_bridge) {
+        const auto& bridge = *result.profile->fmod_output_device_bridge;
+        EXPECT_EQ(bridge.current_vtable_index(), layout == "2" ? 8U : 7U);
+        EXPECT_EQ(bridge.select_vtable_index(), layout == "2" ? 19U : 17U);
+      } else {
+        ADD_FAILURE() << "parsed layout lost its FMOD profile";
+      }
+    } else {
+      EXPECT_FALSE(result) << layout;
+    }
+  }
+  unlink(path);
 }
 
 }  // namespace

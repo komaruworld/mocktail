@@ -119,9 +119,18 @@ bool ParseOptionalFmodOutputDeviceBridge(
     return false;
   }
 
+  int layout = 1;
+  const auto layout_field = field->find("vtable_layout_version");
+  if (layout_field != field->end()) {
+    if (!layout_field->is_number_integer() ||
+        (*layout_field != 1 && *layout_field != 2)) {
+      return false;
+    }
+    layout = layout_field->get<int>();
+  }
   *bridge_profile = FmodOutputDeviceBridgeProfile{
       *vtable_rva,      *string_constructor_rva, *count_method_rva,
-      *info_method_rva, *current_method_rva,     *select_method_rva,
+      *info_method_rva, *current_method_rva,     *select_method_rva, layout,
   };
   return true;
 }

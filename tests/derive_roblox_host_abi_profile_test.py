@@ -27,6 +27,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,8 @@ LATEST_CANDIDATE_METADATA = (
     PAYLOAD_ROOT / LATEST_CANDIDATE_PAYLOAD_ID / "roblox_payload.json"
 )
 LATEST_REFERENCE_PROFILE = REFERENCE_PROFILE_PATH
+DEVICE_LISTS_PAYLOAD_ID = "3092-5f0704edd9064f566ee3d6df2bd2fabbcc709f03"
+DEVICE_LISTS_LIBRARY = PAYLOAD_ROOT / DEVICE_LISTS_PAYLOAD_ID / "libroblox.so"
 
 
 def load_analyzer():
@@ -535,6 +538,73 @@ class RealRuntimeCompatibilityAcceptanceTest(unittest.TestCase):
                 },
             },
         )
+
+
+@unittest.skipUnless(
+    ANALYZER.capstone is not None
+    and CANDIDATE_LIBRARY.is_file()
+    and DEVICE_LISTS_LIBRARY.is_file(),
+    "local exact 2998 and 3092 payloads are unavailable",
+)
+class DeviceListsRuntimeCompatibilityAcceptanceTest(unittest.TestCase):
+    EXPECTED_BRIDGE = {
+        "vtable_rva": "0x6cd3ce0",
+        "string_constructor_rva": "0x1d7a038",
+        "count_method_rva": "0x320c676",
+        "info_method_rva": "0x320c716",
+        "current_method_rva": "0x320c6c6",
+        "select_method_rva": "0x320bf78",
+        "vtable_layout_version": 2,
+    }
+
+    def derive(self, reference, candidate):
+        return ANALYZER.derive_runtime_compatibility(
+            reference, candidate,
+            (PROJECT_ROOT / "config" / "roblox_compatibility.json",),
+        )
+
+    def test_2998_to_3092_keeps_fullscreen_and_shifted_audio_slots(self):
+        with ANALYZER.ElfImage(CANDIDATE_LIBRARY) as reference, ANALYZER.ElfImage(
+            DEVICE_LISTS_LIBRARY
+        ) as candidate:
+            derived = self.derive(reference, candidate)
+        self.assertEqual(derived, {
+            "user_game_settings_fullscreen_setter_rva": "0x45c5f42",
+            "fmod_output_device_bridge": self.EXPECTED_BRIDGE,
+        })
+
+    def test_ambiguous_device_list_vtables_are_rejected(self):
+        original = ANALYZER.relative_relocation_map
+        with ANALYZER.ElfImage(CANDIDATE_LIBRARY) as reference, ANALYZER.ElfImage(
+            DEVICE_LISTS_LIBRARY
+        ) as candidate:
+            def duplicated(image):
+                relocations = original(image)
+                if image is candidate:
+                    vtable = int(self.EXPECTED_BRIDGE["vtable_rva"], 16)
+                    duplicate = vtable + 0x400
+                    candidate.require_relro_rva(duplicate, 20 * 8)
+                    for slot in (5, 6, 8, 19):
+                        relocations[duplicate + slot * 8] = relocations[vtable + slot * 8]
+                return relocations
+            with mock.patch.object(ANALYZER, "relative_relocation_map", duplicated):
+                with self.assertRaisesRegex(ANALYZER.AnalyzerError, "matched 2 candidate"):
+                    self.derive(reference, candidate)
+
+    def test_device_list_profile_can_be_used_as_a_reference(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / "compatibility.json"
+            manifest.write_text(json.dumps({"schema_version": 1, "profiles": [{
+                "elf_build_id": DEVICE_LISTS_PAYLOAD_ID.split("-", 1)[1],
+                "allow_host_abi_bridges": True,
+                "fmod_output_device_bridge": self.EXPECTED_BRIDGE,
+            }]}))
+            with ANALYZER.ElfImage(DEVICE_LISTS_LIBRARY) as reference, ANALYZER.ElfImage(
+                DEVICE_LISTS_LIBRARY
+            ) as candidate:
+                derived = ANALYZER.derive_runtime_compatibility(
+                    reference, candidate, (manifest,))
+            self.assertEqual(derived["fmod_output_device_bridge"], self.EXPECTED_BRIDGE)
 
 
 if __name__ == "__main__":

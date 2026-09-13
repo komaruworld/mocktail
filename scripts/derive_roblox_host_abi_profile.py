@@ -1271,6 +1271,33 @@ def has_fmod_string_constructor_contract(image: ElfImage, rva: int) -> bool:
         return False
 
 
+def has_fmod_device_lists_select_contract(image: ElfImage, rva: int) -> bool:
+    # Keep in sync with compat/fmod_output_device_contract.h. The fixed bytes
+    # bind the int-index ABI, count slot, clamp, and FMOD system-object offset.
+    expected = bytes.fromhex(
+        "55 48 89 e5 41 57 41 56 41 54 53 48 83 ec 50 41 "
+        "89 f7 49 89 fe 4c 8b 25 00 00 00 00 49 8b 04 24 "
+        "48 89 45 d8 80 3d 00 00 00 00 00 74 25 49 8b 04 "
+        "24 48 3b 45 d8 0f 85 00 00 00 00 4c 89 f7 44 89 "
+        "fe 48 83 c4 50 5b 41 5c 41 5e 41 5f 5d e9 00 00 "
+        "00 00 49 8b 06 4c 89 f7 ff 50 28 44 39 f8 0f 8e "
+        "00 00 00 00 31 db 45 85 ff 41 0f 4f df 49 8b 7e "
+        "28 89 de e8 00 00 00 00"
+    )
+    try:
+        image.require_code_rva(rva, len(expected))
+        offset = image.rva_to_offset(rva, len(expected))
+        code = image.bytes_at(offset, len(expected), "FMOD device-list selector")
+    except AnalyzerError:
+        return False
+    relocated = {index for start in (24, 38, 55, 78, 96, 116)
+                 for index in range(start, start + 4)}
+    return len(code) == len(expected) and all(
+        index in relocated or actual == wanted
+        for index, (actual, wanted) in enumerate(zip(code, expected))
+    )
+
+
 def load_reference_runtime_profile(
     paths: Sequence[Path], reference_build_id: str
 ) -> dict[str, Any]:
@@ -1306,7 +1333,7 @@ def load_reference_runtime_profile(
                 }
                 if (
                     not isinstance(bridge, dict)
-                    or set(bridge) != fields
+                    or set(bridge) not in (fields, fields | {"vtable_layout_version"})
                     or profile.get("allow_host_abi_bridges") is not True
                 ):
                     raise AnalyzerError(
@@ -1315,7 +1342,13 @@ def load_reference_runtime_profile(
                 discovered["fmod_output_device_bridge"] = {
                     field: parse_rva(value, f"reference FMOD {field}")
                     for field, value in bridge.items()
+                    if field != "vtable_layout_version"
                 }
+                layout = bridge.get("vtable_layout_version", 1)
+                if type(layout) is not int or layout not in (1, 2):
+                    raise AnalyzerError("reference FMOD vtable layout is unsupported")
+                if layout != 1:
+                    discovered["fmod_output_device_bridge"]["vtable_layout_version"] = layout
             for field, value in discovered.items():
                 if field in result and result[field] != value:
                     raise AnalyzerError(
@@ -1329,12 +1362,13 @@ def derive_fmod_output_device_bridge(
     reference: ElfImage,
     candidate: ElfImage,
     source: dict[str, int],
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    source_layout = source.get("vtable_layout_version", 1)
     indexes = {
         "count_method_rva": 5,
         "info_method_rva": 6,
-        "current_method_rva": 7,
-        "select_method_rva": 17,
+        "current_method_rva": 8 if source_layout == 2 else 7,
+        "select_method_rva": 19 if source_layout == 2 else 17,
     }
     source_vtable = source["vtable_rva"]
     reference.require_relro_rva(source_vtable, (max(indexes.values()) + 1) * 8)
@@ -1368,16 +1402,20 @@ def derive_fmod_output_device_bridge(
             minimum_anchor_bytes=3,
         ),
     ).rva
-    select_method = unique_semantic_signature_match(
-        reference,
-        candidate,
-        SignatureSpec(
-            "fmod-output-select",
-            source["select_method_rva"],
-            18,
-            minimum_anchor_bytes=3,
-        ),
-    ).rva
+    try:
+        select_method = unique_semantic_signature_match(
+            reference,
+            candidate,
+            SignatureSpec(
+                "fmod-output-select",
+                source["select_method_rva"],
+                18,
+                minimum_anchor_bytes=3,
+            ),
+        ).rva
+    except AnalyzerError:
+        # The device-list layout has a separately checked selector contract.
+        select_method = None
     count_candidates = {
         match.rva
         for match in find_signature_matches(
@@ -1416,32 +1454,35 @@ def derive_fmod_output_device_bridge(
             continue
         vtable = offset - indexes["info_method_rva"] * 8
         count_method = relocations.get(vtable + indexes["count_method_rva"] * 8)
-        current_method = relocations.get(
-            vtable + indexes["current_method_rva"] * 8
-        )
-        if (
-            vtable % 8 == 0
-            and count_method in count_candidates
-            and current_method in current_candidates
-            and count_method != current_method
-            and relocations.get(vtable + indexes["select_method_rva"] * 8)
-            == select_method
-        ):
+        for layout, current_index, select_index in ((1, 7, 17), (2, 8, 19)):
+            current_method = relocations.get(vtable + current_index * 8)
+            selected = relocations.get(vtable + select_index * 8)
+            if (
+                vtable % 8 != 0
+                or count_method not in count_candidates
+                or current_method not in current_candidates
+                or count_method == current_method
+                or selected is None
+            ):
+                continue
             try:
-                candidate.require_relro_rva(
-                    vtable, (max(indexes.values()) + 1) * 8
-                )
+                candidate.require_relro_rva(vtable, (select_index + 1) * 8)
             except AnalyzerError:
                 continue
-            vtables.append((vtable, count_method, current_method))
+            if layout == 1:
+                if source_layout != 1 or select_method is None or selected != select_method:
+                    continue
+            elif not has_fmod_device_lists_select_contract(candidate, selected):
+                continue
+            vtables.append((vtable, count_method, current_method, selected, layout))
     if len(vtables) != 1:
         raise AnalyzerError(
             f"FMOD output vtable matched {len(vtables)} candidate locations"
         )
-    vtable, count_method, current_method = vtables[0]
+    vtable, count_method, current_method, select_method, layout = vtables[0]
     if not has_fmod_string_constructor_contract(candidate, string_constructor):
         raise AnalyzerError("candidate FMOD string constructor contract changed")
-    return {
+    result = {
         "vtable_rva": format_rva(vtable),
         "string_constructor_rva": format_rva(string_constructor),
         "count_method_rva": format_rva(count_method),
@@ -1449,6 +1490,9 @@ def derive_fmod_output_device_bridge(
         "current_method_rva": format_rva(current_method),
         "select_method_rva": format_rva(select_method),
     }
+    if layout != 1:
+        result["vtable_layout_version"] = layout
+    return result
 
 
 def derive_runtime_compatibility(

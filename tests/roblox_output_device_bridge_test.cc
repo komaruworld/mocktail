@@ -7,6 +7,7 @@
 #include <string>
 
 #include "audio/roblox_output_device_bridge_internal.h"
+#include "compat/fmod_output_device_contract.h"
 
 namespace mocktail::audio {
 namespace {
@@ -54,6 +55,52 @@ TEST(RobloxOutputDeviceBridgeTest, BuildsStableDistinctHostGuids) {
   EXPECT_NE(first, internal::MakeOutputDeviceGuid(18, "USB Headset"));
   EXPECT_NE(first, internal::MakeOutputDeviceGuid(17, "HDMI Output"));
   EXPECT_EQ(internal::MakeOutputDeviceGuid(0, "ignored"), "mocktail:default");
+}
+
+TEST(RobloxOutputDeviceBridgeTest, UsesDeviceListSlotsWithoutReusingLegacySlots) {
+  constexpr std::uintptr_t kImageBase = 0x10000000;
+  auto profile = TestProfile();
+  profile.vtable_layout_version = 2;
+  std::array<std::uintptr_t, 20> vtable{};
+  vtable[5] = kImageBase + profile.count_method_rva;
+  vtable[6] = kImageBase + profile.info_method_rva;
+  vtable[8] = kImageBase + profile.current_method_rva;
+  vtable[19] = kImageBase + profile.select_method_rva;
+  EXPECT_TRUE(internal::HasExpectedFmodOutputDeviceVtable(
+      vtable.data(), kImageBase, profile));
+  profile.vtable_layout_version = 1;
+  EXPECT_FALSE(internal::HasExpectedFmodOutputDeviceVtable(
+      vtable.data(), kImageBase, profile));
+  profile.vtable_layout_version = 2;
+  ++vtable[19];
+  EXPECT_FALSE(internal::HasExpectedFmodOutputDeviceVtable(
+      vtable.data(), kImageBase, profile));
+}
+
+TEST(RobloxOutputDeviceBridgeTest, RejectsAnUnknownLayoutBeforeInstalling) {
+  compat::BuildProfile profile;
+  profile.allow_host_abi_bridges = true;
+  profile.fmod_output_device_bridge = TestProfile();
+  profile.fmod_output_device_bridge->vtable_layout_version = 3;
+  RobloxOutputDeviceBridge bridge;
+  EXPECT_EQ(bridge.Install(profile).code(), StatusCode::kFailedPrecondition);
+}
+
+TEST(RobloxOutputDeviceBridgeTest, DeviceListSelectorKeepsArgumentsAndCountSlotExact) {
+  std::string relocated(compat::kFmodDeviceListsSelectContract,
+                        compat::kFmodDeviceListsSelectContractSize);
+  for (const std::size_t start : {24, 38, 55, 78, 96, 116}) {
+    relocated.replace(start, 4, 4, '\x17');
+  }
+  EXPECT_TRUE(compat::HasFmodDeviceListsSelectContract(relocated));
+  // Device index register, branch into legacy path, count slot, system offset.
+  for (const std::size_t index : {17, 44, 90, 112}) {
+    auto changed = relocated;
+    changed[index] ^= 1;
+    EXPECT_FALSE(compat::HasFmodDeviceListsSelectContract(changed));
+  }
+  relocated.pop_back();
+  EXPECT_FALSE(compat::HasFmodDeviceListsSelectContract(relocated));
 }
 
 TEST(RobloxOutputDeviceBridgeTest, EnforcesSingleProcessOwner) {
