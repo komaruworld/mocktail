@@ -878,6 +878,42 @@ bool OpenXrBackend::InitializeSessionResourcesLocked(std::string *error) {
       xr_blend_mode_ = static_cast<int>(blends[index]);
     }
 
+    std::uint32_t view_count = 0;
+    const XrInstance instance = static_cast<XrInstance>(xr_instance_);
+    CheckXr(instance,
+            xrEnumerateViewConfigurationViews(
+                instance, static_cast<XrSystemId>(xr_system_),
+                XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &view_count,
+                nullptr),
+            "xrEnumerateViewConfigurationViews count");
+    Require(view_count >= 2,
+            "OpenXR primary stereo configuration exposes fewer than two views");
+
+    std::vector<XrViewConfigurationView> config_views(view_count);
+    for (auto& view : config_views) {
+      view = XrInfo<XrViewConfigurationView>(XR_TYPE_VIEW_CONFIGURATION_VIEW);
+    }
+
+    CheckXr(instance,
+            xrEnumerateViewConfigurationViews(
+                instance, static_cast<XrSystemId>(xr_system_),
+                XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, view_count,
+                &view_count, config_views.data()),
+            "xrEnumerateViewConfigurationViews");
+
+    xr_eye_width_[0] = config_views[0].recommendedImageRectWidth;
+    xr_eye_height_[0] = config_views[0].recommendedImageRectHeight;
+    xr_eye_width_[1] = config_views[1].recommendedImageRectWidth;
+    xr_eye_height_[1] = config_views[1].recommendedImageRectHeight;
+
+    Require(xr_eye_width_[0] != 0 && xr_eye_height_[0] != 0 &&
+                xr_eye_width_[1] != 0 && xr_eye_height_[1] != 0,
+            "OpenXR returned zero recommended stereo eye extent");
+
+    Log("  [vr-backend] OpenXR recommended eye extents L=%ux%u R=%ux%u\n",
+        xr_eye_width_[0], xr_eye_height_[0], xr_eye_width_[1],
+        xr_eye_height_[1]);
+
     if (!CreateSwapchains(error)) {
       TeardownSessionLocked("swapchain failure", session_recovery_pending_);
       return false;
@@ -936,11 +972,10 @@ bool OpenXrBackend::CreateSwapchains(std::string* error) {
     Require(chosen != VK_FORMAT_UNDEFINED,
             "the runtime exposes no 8-bit RGBA swapchain format");
 
-    // Default eye extent until the guest eye images are bound; the simulator
-    // runtime advertises 500x500-capable limits, and DebugDeviceVR renders
-    // 500x500. Re-created lazily if the recorded eye extent differs.
-    const std::uint32_t width = 500;
-    const std::uint32_t height = 500;
+    const std::uint32_t width =
+        std::max(xr_eye_width_[0], xr_eye_width_[1]);
+    const std::uint32_t height =
+        std::max(xr_eye_height_[0], xr_eye_height_[1]);
     for (int eye = 0; eye < 2; ++eye) {
       auto create_info =
           XrInfo<XrSwapchainCreateInfo>(XR_TYPE_SWAPCHAIN_CREATE_INFO);
@@ -1352,6 +1387,22 @@ ScriptedPoseSample OpenXrBackend::ComputeScriptedPose(
 ScriptedPoseSample OpenXrBackend::PublishedHeadPose() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return published_pose_;
+}
+
+bool OpenXrBackend::RecommendedEyeExtent(std::uint32_t* width,
+                                         std::uint32_t* height) const {
+  if (width == nullptr || height == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (xr_instance_ == nullptr || xr_system_ == 0 ||
+      xr_eye_width_[0] == 0 || xr_eye_height_[0] == 0 ||
+      xr_eye_width_[1] == 0 || xr_eye_height_[1] == 0) {
+    return false;
+  }
+  *width = std::max(xr_eye_width_[0], xr_eye_width_[1]);
+  *height = std::max(xr_eye_height_[0], xr_eye_height_[1]);
+  return true;
 }
 
 bool OpenXrBackend::TakeControllerDelivery(ControllerDelivery* out) {

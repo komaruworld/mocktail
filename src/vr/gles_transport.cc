@@ -309,9 +309,8 @@ void GlesTransport::Bind(unsigned target, unsigned framebuffer,
   if (it == storage.end())
     return;
   const auto &size = it->second;
-  // DebugDeviceVR currently creates single-sample 500x500 RGBA eyes.
   // Reject unsupported formats/extents instead of copying unrelated pixels.
-  if (size.width != 500 || size.height != 500 || size.samples != 0 ||
+  if (size.samples != 0 ||
       (size.format != GL_RGBA8 && size.format != GL_RGBA &&
        size.format != GL_SRGB8_ALPHA8))
     return;

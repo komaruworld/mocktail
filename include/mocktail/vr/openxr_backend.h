@@ -161,6 +161,7 @@ class OpenXrBackend final {
   // hands[0]=left, hands[1]=right carry this frame's tracked controller grip
   // poses (metres, LOCAL space) when a controller layer is active.
   ScriptedPoseSample PublishedHeadPose() const;
+  bool RecommendedEyeExtent(std::uint32_t* width, std::uint32_t* height) const;
   void NotePoseApplied(void* owner, std::uint64_t frame);
 
   // Controller input delivery, consumed by the window-thread input runtime
@@ -289,6 +290,8 @@ class OpenXrBackend final {
   void* xr_session_ = nullptr;
   void* xr_local_space_ = nullptr;
   void* xr_view_space_ = nullptr;
+  std::uint32_t xr_eye_width_[2] = {};
+  std::uint32_t xr_eye_height_[2] = {};
   EyeSwapchain eye_swapchains_[2];
   int xr_blend_mode_ = 0;
   // Runtime name captured at xrCreateInstance so the bind-time diagnostics line

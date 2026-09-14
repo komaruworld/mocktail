@@ -1067,6 +1067,18 @@ void RobloxVrDeviceBridge::TryInitializeEyes(void *self) {
   const auto initializer = reinterpret_cast<EyeInitializerFn>(
       image_base_.load(std::memory_order_acquire) +
       profile_.eye_initializer_rva);
+
+  if (auto* backend = ActiveVrBackend()) {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    if (backend->RecommendedEyeExtent(&width, &height)) {
+      *reinterpret_cast<std::uint32_t*>(bytes + kWidthOffset) = width;
+      *reinterpret_cast<std::uint32_t*>(bytes + kHeightOffset) = height;
+      Log("  [vr-device][evidence] using OpenXR recommended eye extent %ux%u\n",
+          width, height);
+    }
+  }
+
   Log("  [vr-device][evidence] eye-init-begin self=%p device=%p tid=%" PRIu64
       " presents=%" PRIu64 "\n",
       self, device, CurrentThreadId(),
