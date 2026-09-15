@@ -295,6 +295,40 @@ TEST(PayloadUpdatePreflightTest, KeepsLastUpdaterFailureOverWarnings) {
   EXPECT_EQ(result.details, "supported fallback also failed");
 }
 
+TEST(PayloadUpdatePreflightTest, CollectsMocktailUpdateNotice) {
+  ScopedVariable stderr_variable(
+      "MOCKTAIL_TEST_UPDATE_STDERR",
+      "[native-updater] notice-heading: Update Mocktail for new Roblox\n"
+      "[native-updater] notice: Roblox 2.738 is out.\n"
+      "[native-updater] notice: \n"
+      "[native-updater] notice: Use your software center, or run:\n"
+      "[native-updater] notice-command: flatpak update space.bigrat.mocktail\n"
+      "[native-updater] kept Roblox 2.736.1408 (2998)");
+  const MapEnvironment environment = NativeEnvironment();
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  const auto result = RunPayloadUpdatePreflight(environment, paths);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(result.notice.heading, "Update Mocktail for new Roblox");
+  EXPECT_EQ(result.notice.body,
+            "Roblox 2.738 is out.\n\nUse your software center, or run:");
+  EXPECT_EQ(result.notice.command, "flatpak update space.bigrat.mocktail");
+}
+
+TEST(PayloadUpdatePreflightTest, NoticeNeverReplacesTheFailureDetails) {
+  ScopedVariable exit_variable("MOCKTAIL_TEST_UPDATE_EXIT", "1");
+  ScopedVariable stderr_variable(
+      "MOCKTAIL_TEST_UPDATE_STDERR",
+      "[native-updater] notice-heading: Roblox update pending\n"
+      "[native-updater] notice: A Mocktail update is needed.\n"
+      "[native-updater] no Roblox payload could be installed");
+  const MapEnvironment environment = NativeEnvironment();
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  const auto result = RunPayloadUpdatePreflight(environment, paths);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.details, "no Roblox payload could be installed");
+  EXPECT_EQ(result.notice.body, "A Mocktail update is needed.");
+}
+
 TEST(PayloadUpdatePreflightTest, LeavesDetailsEmptyWhenUpdaterSucceeds) {
   ScopedVariable stderr_variable(
       "MOCKTAIL_TEST_UPDATE_STDERR",
@@ -304,6 +338,7 @@ TEST(PayloadUpdatePreflightTest, LeavesDetailsEmptyWhenUpdaterSucceeds) {
   const auto result = RunPayloadUpdatePreflight(environment, paths);
   ASSERT_TRUE(result) << result.error;
   EXPECT_TRUE(result.details.empty());
+  EXPECT_TRUE(result.notice.empty());
 }
 
 }  // namespace

@@ -9,6 +9,7 @@ LIBC ?= auto
 MODE ?= standalone
 CMAKE_TOOLCHAIN_FILE ?=
 CMAKE_SYSROOT ?=
+RELEASE_CHECK ?= OFF
 RELEASE_BUILD_DIR ?=
 PORTABLE_MODE ?= standalone
 PORTABLE_CANONICAL_MODE := $(if $(filter dynamic minimal,$(PORTABLE_MODE)),thin,$(if $(filter full static,$(PORTABLE_MODE)),standalone,$(PORTABLE_MODE)))
@@ -29,7 +30,8 @@ define build_native_runtime
 		-DBUILD_TESTING="$(2)" \
 		-DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
 		$(if $(strip $(CMAKE_TOOLCHAIN_FILE)),-DCMAKE_TOOLCHAIN_FILE="$(CMAKE_TOOLCHAIN_FILE)") \
-		$(if $(strip $(CMAKE_SYSROOT)),-DCMAKE_SYSROOT="$(CMAKE_SYSROOT)")
+		$(if $(strip $(CMAKE_SYSROOT)),-DCMAKE_SYSROOT="$(CMAKE_SYSROOT)") \
+		-DMOCKTAIL_RELEASE_CHECK="$(RELEASE_CHECK)"
 	@cmake --build "$(BUILD_DIR)" -j"$(JOBS)"
 endef
 
@@ -76,6 +78,7 @@ portable-test: release-runtime ## Verify portable packaging and relocation
 
 standalone: appimage ## Build the standalone x86-64 AppImage
 
+appimage: RELEASE_CHECK = ON
 appimage: release-runtime ## Build AppImage (APPIMAGE_FORMAT=classic|anylinux)
 	@MOCKTAIL_APPIMAGE_FORMAT="$(APPIMAGE_FORMAT)" \
 		MOCKTAIL_ANYLINUX_PACKAGER="$(ANYLINUX_PACKAGER)" \

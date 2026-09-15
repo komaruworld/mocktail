@@ -100,15 +100,21 @@ void WaitForHelper(int helper_pid) {
 
 bool SpawnOneShot(const std::filesystem::path& helper,
                   std::string_view option,
-                  std::string_view message) {
-  std::string helper_string = helper.string();
-  std::string option_string(option);
-  std::string message_string(message.substr(0, kMaximumMessageBytes));
-  char* arguments[] = {helper_string.data(), option_string.data(),
-                       message_string.data(), nullptr};
+                  const std::vector<std::string_view>& fields) {
+  std::vector<std::string> strings;
+  strings.reserve(fields.size() + 2);
+  strings.push_back(helper.string());
+  strings.emplace_back(option);
+  for (const std::string_view field : fields) {
+    strings.emplace_back(field.substr(0, kMaximumMessageBytes));
+  }
+  std::vector<char*> arguments;
+  arguments.reserve(strings.size() + 1);
+  for (std::string& value : strings) arguments.push_back(value.data());
+  arguments.push_back(nullptr);
   pid_t child = -1;
-  const int spawn_status =
-      posix_spawn(&child, helper.c_str(), nullptr, nullptr, arguments, environ);
+  const int spawn_status = posix_spawn(&child, helper.c_str(), nullptr,
+                                       nullptr, arguments.data(), environ);
   if (spawn_status != 0) {
     return false;
   }
@@ -186,7 +192,7 @@ bool ShowFailureDialog(const Environment& environment,
     return false;
   }
   const std::filesystem::path helper = DialogHelper(environment);
-  return !helper.empty() && SpawnOneShot(helper, "--message", message);
+  return !helper.empty() && SpawnOneShot(helper, "--message", {message});
 }
 
 bool ShowWarningDialog(const Environment& environment,
@@ -195,7 +201,19 @@ bool ShowWarningDialog(const Environment& environment,
     return false;
   }
   const std::filesystem::path helper = DialogHelper(environment);
-  return !helper.empty() && SpawnOneShot(helper, "--warning", message);
+  return !helper.empty() && SpawnOneShot(helper, "--warning", {message});
+}
+
+bool ShowUpdateNoticeDialog(const Environment& environment,
+                            std::string_view heading, std::string_view body,
+                            std::string_view command) {
+  if (!FailureDialogsEnabled(environment)) {
+    return false;
+  }
+  const std::filesystem::path helper = DialogHelper(environment);
+  return !helper.empty() &&
+         SpawnOneShot(helper, "--update-notice",
+                      {heading, body, command});
 }
 
 FailureDialogMonitor::FailureDialogMonitor(int socket, int helper_pid)

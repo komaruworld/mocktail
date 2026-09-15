@@ -708,6 +708,10 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
   PayloadStore store(paths.data_root, paths.compatibility_manifest,
                      paths.runtime_binary);
   const PayloadStoreResult current = store.VerifyCurrent();
+  if (current) {
+    result.active_version_name = current.version_name;
+    result.active_version_code = current.version_code;
+  }
   PayloadStoreResult installed = current;
   if (!current && !current.payload_id.empty() &&
       !current.host_abi_profile.empty() &&
@@ -745,6 +749,8 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     }();
     if (latest) {
       latest_version = latest;
+      result.latest_version_name = latest.version_name;
+      result.latest_version_code = latest.version_code;
       if (current && SameVersion(current, latest)) {
         result.payload_id = current.payload_id;
         result.message = "latest Roblox " + latest.version_name + " (" +
@@ -823,10 +829,14 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
       continue;
     }
     examined.push_back(candidate.staged.payload_id);
+    const bool provider_latest =
+        latest_version.has_value() &&
+        plan.identity.version_code == latest_version->version_code;
     if (request.startup_preflight && current &&
         RejectedForRuntime(paths, candidate,
                            request.canary_graphics_backend)) {
       blocked = description + " already failed probation with this runtime";
+      result.latest_rejected = result.latest_rejected || provider_latest;
       continue;
     }
 
@@ -872,6 +882,8 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     if (candidate_error.empty() && promoted) {
       result.changed = !current || current.payload_id != promoted.payload_id;
       result.payload_id = promoted.payload_id;
+      result.active_version_name = promoted.version_name;
+      result.active_version_code = promoted.version_code;
       result.message =
           candidate.exact_supported
               ? "installed exact-supported Roblox " + promoted.version_name +
@@ -889,6 +901,7 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request) {
     if (candidate_rejected) {
       RecordRejection(paths, candidate, request.canary_graphics_backend,
                       candidate_error);
+      result.latest_rejected = result.latest_rejected || provider_latest;
     }
     blocked = description + " was rejected: " + candidate_error;
   }
