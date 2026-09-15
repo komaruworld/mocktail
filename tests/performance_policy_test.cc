@@ -150,13 +150,16 @@ TEST(PerformancePolicyTest, WorkerModesRetainRobloxManagedAssetCacheSizes) {
     // immediate eviction instead of preserving the normal asset caches.
     EXPECT_FALSE(parsed.contains("FIntMeshContentProviderForceCacheSize"));
     EXPECT_FALSE(parsed.contains("FIntSlimContentProviderForceCacheSize"));
+    // The host-sized video-memory policy must not be capped by worker mode.
+    EXPECT_FALSE(parsed.contains("FIntRenderTextureTotalBudgetMB"));
   }
 }
 
-TEST(PerformancePolicyTest, PreservesExplicitAssetCacheByteBudgets) {
+TEST(PerformancePolicyTest, PreservesExplicitAssetCacheBudgets) {
   const nlohmann::json requested = {
       {"FIntMeshContentProviderForceCacheSize", "268435456"},
       {"FIntSlimContentProviderForceCacheSize", "134217728"},
+      {"FIntRenderTextureTotalBudgetMB", "768"},
   };
   std::string merged;
   std::string error;

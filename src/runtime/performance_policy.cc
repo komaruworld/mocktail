@@ -250,9 +250,10 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
     const bool manual_quality =
         quality_str == "auto" || quality_str == "0" || quality_str == "manual";
 
-    // ForceCacheSize settings are byte counts. Let Roblox size its mesh and
-    // SLIM content caches; values like 256/128 would cap them to a few bytes.
-    const std::array<ClientSetting, 68> rendering_settings = {{
+    // Let Roblox size its asset caches and total texture residency. Fixed
+    // limits conflict with the host-sized texture memory policy merged below;
+    // ForceCacheSize settings are also byte counts, not MiB.
+    const std::array<ClientSetting, 67> rendering_settings = {{
         {"FIntSmoothClusterTaskQueueMaxParallelTasks", workers},
         {"FIntOcclusionWorkerThreadCount", occlusion_workers},
         {"FFlagMovePrerenderV2", "True"},
@@ -283,7 +284,6 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FIntTerrainGpuMeshMemoryTargetMib", "32"},
         {"FIntAvatarMeshMemoryMax", "33554432"},
         {"FIntSmoothTerrainPhysicsCacheSize", "32"},
-        {"FIntRenderTextureTotalBudgetMB", "128"},
         {"FIntRenderTextureOrphanBudgetMB", "8"},
         {"FFlagDebugTerrainVTCompressedTextures", "True"},
         {"FFlagStreamingObserverMemoryOptimization", "True"},
