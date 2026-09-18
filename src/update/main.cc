@@ -3,6 +3,7 @@
 #include <array>
 #include <charconv>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -16,7 +17,9 @@
 #include "update/apkpure_provider.h"
 #include "update/compatibility_catalog.h"
 #include "update/host_abi_deriver.h"
+#include "update/mocktail_release.h"
 #include "update/payload_store.h"
+#include "update/update_config.h"
 #include "update/update_coordinator.h"
 #include "update/zip_archive.h"
 
@@ -28,6 +31,18 @@
 #ifndef MOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST
 #define MOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST \
   "config/roblox_signing_certificates.json"
+#endif
+
+#ifndef MOCKTAIL_PROJECT_VERSION
+#define MOCKTAIL_PROJECT_VERSION "unknown"
+#endif
+
+#ifndef MOCKTAIL_RELEASE_CHECK
+#define MOCKTAIL_RELEASE_CHECK 0
+#endif
+
+#ifndef MOCKTAIL_RELEASE_REPOSITORY
+#define MOCKTAIL_RELEASE_REPOSITORY ""
 #endif
 
 namespace {
@@ -177,6 +192,71 @@ void Usage(std::ostream& output) {
             "  rollback\n";
 }
 
+// Where a package manager or Flatpak delivers Mocktail, the release check is
+// compiled out and only the Roblox notice remains.
+std::optional<mocktail::update::MocktailRelease> LatestRelease(
+    const mocktail::update::UpdatePaths& paths) {
+#if MOCKTAIL_RELEASE_CHECK
+  const mocktail::update::UpdateConfigResult configured =
+      mocktail::update::LoadUpdateConfig(paths.config_file);
+  if (!configured || !configured.config.mocktail_release_check) return {};
+  mocktail::update::MocktailReleaseCheckOptions options;
+  options.repository = MOCKTAIL_RELEASE_REPOSITORY;
+  options.state_file = paths.state_root / "mocktail-release.json";
+  options.now = std::time(nullptr);
+  options.fetch = mocktail::update::DownloadBytes;
+  const mocktail::update::MocktailReleaseCheck check =
+      mocktail::update::CheckMocktailRelease(options);
+  if (!check.error.empty()) {
+    std::cerr << "[native-updater] warning: " << check.error << '\n';
+  }
+  return check.latest;
+#else
+  (void)paths;
+  return {};
+#endif
+}
+
+void EmitNoticeText(std::string_view field, std::string_view text) {
+  std::size_t begin = 0;
+  while (begin <= text.size()) {
+    const std::size_t end = text.find('\n', begin);
+    const std::string_view line = text.substr(
+        begin, end == std::string_view::npos ? std::string_view::npos
+                                             : end - begin);
+    std::cerr << "[native-updater] " << field << ": " << line << '\n';
+    if (end == std::string_view::npos) break;
+    begin = end + 1;
+  }
+}
+
+void ReportMocktailUpdate(const mocktail::update::UpdatePaths& paths,
+                          const mocktail::update::UpdateResult& updated) {
+  mocktail::update::RobloxUpdateState roblox;
+  roblox.active_version_name = updated.active_version_name;
+  roblox.active_version_code = updated.active_version_code;
+  roblox.latest_version_name = updated.latest_version_name;
+  roblox.latest_version_code = updated.latest_version_code;
+  roblox.latest_rejected = updated.latest_rejected;
+  const mocktail::update::UpdateNotice notice =
+      mocktail::update::ComposeUpdateNotice(MOCKTAIL_PROJECT_VERSION,
+                                            LatestRelease(paths), roblox);
+  const std::filesystem::path state_file =
+      paths.state_root / "mocktail-release.json";
+  if (notice.empty() ||
+      (updated && notice.key == mocktail::update::ReadNotifiedKey(state_file))) {
+    return;
+  }
+  EmitNoticeText("notice-heading", notice.heading);
+  EmitNoticeText("notice", notice.body);
+  if (!notice.command.empty()) {
+    EmitNoticeText("notice-command", notice.command);
+  }
+  std::string error;
+  if (!mocktail::update::RecordNotifiedKey(state_file, notice.key, &error)) {
+    std::cerr << "[native-updater] warning: " << error << '\n';
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -358,6 +438,8 @@ int main(int argc, char** argv) {
   for (const std::string& warning : updated.warnings) {
     std::cerr << "[native-updater] warning: " << warning << '\n';
   }
+  // Must run before the outcome line, which the launcher reads as the failure.
+  if (request.startup_preflight) ReportMocktailUpdate(paths, updated);
   if (!updated) {
     std::cerr << "[native-updater] " << updated.error << '\n';
     return 1;

@@ -9,12 +9,21 @@
 namespace mocktail {
 namespace runtime {
 
+struct MocktailUpdateNotice {
+  std::string heading;
+  std::string body;
+  std::string command;
+
+  bool empty() const { return heading.empty() && body.empty(); }
+};
+
 struct PayloadUpdatePreflightResult {
   bool attempted = false;
   std::string error;
   // Last failure the updater reported on its own stderr. Empty when the
   // updater never ran or never explained itself.
   std::string details;
+  MocktailUpdateNotice notice;
 
   explicit operator bool() const { return error.empty(); }
 };

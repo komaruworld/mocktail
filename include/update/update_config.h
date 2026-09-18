@@ -10,6 +10,7 @@ namespace mocktail::update {
 struct UpdateConfig {
   bool automatic = true;
   bool launch_after_update = false;
+  bool mocktail_release_check = true;
   std::string source = "apk-pure";
 };
 
