@@ -601,6 +601,139 @@ TEST_F(RobloxInputRouterTest, NativeFailuresAreObservableAndCounted) {
   EXPECT_EQ(router_.Snapshot().mouse_events, 0U);
 }
 
+TEST_F(RobloxInputRouterTest,
+       LocksMouseMotionAndButtonToCenterWhenNativeLockActive) {
+  {
+    const RobloxInputDispatchResult lock = router_.HandleEvent(
+        Event(platform::WindowPointerModeEvent{true, false}));
+    EXPECT_EQ(lock.state, RobloxInputDispatchState::kStateUpdated);
+    EXPECT_EQ(lock.kind, RobloxInputEventKind::kPointerMode);
+  }
+
+  // Even when incoming event reports coordinates away from center, motion is
+  // locked to center (guest_width/2 = 640, guest_height/2 = 360).
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      100.0f, 200.0f, 15.0f, -8.0f, 0}))
+                  .dispatched());
+  ASSERT_EQ(probe_.mouse_moves.size(), 1U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].y, 360.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_x, 15.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_y, -8.0f);
+
+  // Mouse clicks also dispatch at center (e.g. shooting gun at crosshair).
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      true, SDL_BUTTON_LEFT, 1, 100.0f, 200.0f}))
+                  .dispatched());
+  ASSERT_EQ(probe_.mouse_buttons.size(), 1U);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].y, 360.0f);
+}
+
+TEST_F(RobloxInputRouterTest,
+       UncapturedZeroPositionMotionAccumulatesInsteadOfPinning) {
+  {
+    const RobloxInputDispatchResult mode = router_.HandleEvent(
+        Event(platform::WindowPointerModeEvent{false, false}));
+    EXPECT_EQ(mode.state, RobloxInputDispatchState::kStateUpdated);
+    EXPECT_EQ(mode.kind, RobloxInputEventKind::kPointerMode);
+  }
+
+  // The host pointer is free, so a compositor that still reports 0, 0 with
+  // deltas moves the guest's own cursor instead of freezing it at the origin.
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      0.0f, 0.0f, 10.0f, 20.0f, 0}))
+                  .dispatched());
+  ASSERT_EQ(probe_.mouse_moves.size(), 1U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].x, 10.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].y, 20.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_x, 10.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].delta_y, 20.0f);
+}
+
+TEST_F(RobloxInputRouterTest, TextFocusLetsPointerLeaveTheCenterLock) {
+  {
+    const RobloxInputDispatchResult mode = router_.HandleEvent(
+        Event(platform::WindowPointerModeEvent{false, true}));
+    EXPECT_EQ(mode.state, RobloxInputDispatchState::kStateUpdated);
+    EXPECT_EQ(mode.kind, RobloxInputEventKind::kPointerMode);
+  }
+  ASSERT_TRUE(router_.BeginTextFocusSession({42, 1, "", false, false}).ok());
+  EXPECT_TRUE(router_.Snapshot().text_focus_active);
+
+  // A focused Roblox TextBox means the player is typing and has to reach guest
+  // UI such as the chat channel selector. The window layer publishes that
+  // release; the router must then let absolute coordinates through untouched.
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      100.0f, 200.0f, 15.0f, -8.0f, 0}))
+                  .dispatched());
+  ASSERT_EQ(probe_.mouse_moves.size(), 1U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].x, 100.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[0].y, 200.0f);
+
+  // Ending the session lets the window layer take the pointer back, and the
+  // camera lock returns to crosshair-centred dispatch.
+  ASSERT_TRUE(router_.EndTextFocusSession(42, 1, true).ok());
+  EXPECT_FALSE(router_.Snapshot().text_focus_active);
+  const RobloxInputDispatchResult restore = router_.HandleEvent(
+      Event(platform::WindowPointerModeEvent{true, false}));
+  EXPECT_EQ(restore.state, RobloxInputDispatchState::kStateUpdated);
+  EXPECT_EQ(restore.kind, RobloxInputEventKind::kPointerMode);
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseMotionEvent{
+                      100.0f, 200.0f, 15.0f, -8.0f, 0}))
+                  .dispatched());
+  ASSERT_EQ(probe_.mouse_moves.size(), 2U);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves[1].y, 360.0f);
+}
+
+TEST_F(RobloxInputRouterTest, TextFocusLetsClicksReachGuestUi) {
+  {
+    const RobloxInputDispatchResult mode = router_.HandleEvent(
+        Event(platform::WindowPointerModeEvent{false, true}));
+    EXPECT_EQ(mode.state, RobloxInputDispatchState::kStateUpdated);
+    EXPECT_EQ(mode.kind, RobloxInputEventKind::kPointerMode);
+  }
+  ASSERT_TRUE(router_.BeginTextFocusSession({42, 1, "", false, false}).ok());
+
+  // Clicks must land on the real pointer position too, otherwise the chat
+  // channel selector cannot be pressed at all.
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      true, SDL_BUTTON_LEFT, 1, 100.0f, 200.0f}))
+                  .dispatched());
+  ASSERT_EQ(probe_.mouse_buttons.size(), 1U);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].x, 100.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].y, 200.0f);
+}
+
+// The window layer decides whether text entry releases the capture. When Roblox
+// keeps reporting lock-center the pointer stays in relative mode, so coordinates
+// must keep being pinned to the crosshair: letting a placeholder coordinate
+// through would make the camera jump on every click.
+TEST_F(RobloxInputRouterTest, CapturedGuestLockKeepsPinningDuringTextEntry) {
+  {
+    const RobloxInputDispatchResult mode = router_.HandleEvent(
+        Event(platform::WindowPointerModeEvent{true, true}));
+    EXPECT_EQ(mode.state, RobloxInputDispatchState::kStateUpdated);
+    EXPECT_EQ(mode.kind, RobloxInputEventKind::kPointerMode);
+  }
+  ASSERT_TRUE(router_.BeginTextFocusSession({42, 1, "", false, false}).ok());
+
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      true, SDL_BUTTON_LEFT, 1, 300.0f, 400.0f}))
+                  .dispatched());
+  ASSERT_EQ(probe_.mouse_buttons.size(), 1U);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].x, 640.0f);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons[0].y, 360.0f);
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

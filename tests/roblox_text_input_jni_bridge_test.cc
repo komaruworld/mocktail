@@ -116,11 +116,21 @@ class FakeBackend final : public RobloxTextInputJniBridgeBackend {
     return allow_hide;
   }
 
+  bool TextFocusActive() const override { return text_focus_active; }
+
+  bool RequestHostTextInputRelease() override {
+    calls.push_back("host-release");
+    return allow_host_release;
+  }
+
   bool Pump() { return pump == nullptr || pump(pump_context); }
 
   bool allow_registration = true;
   bool allow_show = true;
   bool allow_hide = true;
+  bool allow_host_release = true;
+  // The editor session stays focused until a test ends it host-side.
+  bool text_focus_active = true;
   bool owner_enabled = false;
   bool active = false;
   int register_calls = 0;
@@ -231,6 +241,69 @@ TEST(RobloxTextInputJniBridgeTest, CommandsDrainInGenerationOrder) {
   ASSERT_EQ(backend->owner_transitions.size(), 2u);
   EXPECT_TRUE(backend->owner_transitions.front());
   EXPECT_FALSE(backend->owner_transitions.back());
+}
+
+// A session the host ends itself (click outside the TextBox, Escape, or window
+// focus loss) never has to produce a guest hide callback. Without this
+// reconcile SDL stayed in text-input mode -- and the pointer capture owner kept
+// the pointer released -- for the rest of the run once typing was over.
+TEST(RobloxTextInputJniBridgeTest, HostEndedSessionReleasesTextInputWithoutAGuestHide) {
+  jnivm::VM vm;
+  auto backend = std::make_shared<FakeBackend>();
+  std::unique_ptr<RobloxTextInputJniBridge> bridge;
+  ASSERT_TRUE(
+      RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(ShowRequest(42, "initial")));
+  ASSERT_TRUE(backend->Pump());
+  backend->calls.clear();
+
+  // The editor session is over, but the guest never echoed a hide.
+  backend->text_focus_active = false;
+  EXPECT_TRUE(backend->Pump());
+  EXPECT_EQ(backend->calls, (std::vector<std::string>{"host-release"}));
+
+  // The reconcile is idempotent: later pumps stay quiet.
+  backend->calls.clear();
+  EXPECT_TRUE(backend->Pump());
+  EXPECT_TRUE(backend->calls.empty());
+  EXPECT_TRUE(bridge->Shutdown().ok());
+}
+
+TEST(RobloxTextInputJniBridgeTest, FocusedSessionKeepsTextInputAlive) {
+  jnivm::VM vm;
+  auto backend = std::make_shared<FakeBackend>();
+  std::unique_ptr<RobloxTextInputJniBridge> bridge;
+  ASSERT_TRUE(
+      RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(ShowRequest(42, "initial")));
+  ASSERT_TRUE(backend->Pump());
+  backend->calls.clear();
+
+  backend->text_focus_active = true;
+  EXPECT_TRUE(backend->Pump());
+  EXPECT_TRUE(backend->calls.empty());
+  EXPECT_TRUE(bridge->Shutdown().ok());
+}
+
+TEST(RobloxTextInputJniBridgeTest, FailedHostReleaseFailsClosed) {
+  jnivm::VM vm;
+  auto backend = std::make_shared<FakeBackend>();
+  std::unique_ptr<RobloxTextInputJniBridge> bridge;
+  ASSERT_TRUE(
+      RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+  ASSERT_TRUE(vm.DispatchRobloxTextInputShow(ShowRequest(42, "initial")));
+  ASSERT_TRUE(backend->Pump());
+
+  backend->allow_host_release = false;
+  backend->text_focus_active = false;
+  EXPECT_FALSE(backend->Pump());
+  EXPECT_FALSE(backend->owner_enabled);
+  EXPECT_EQ(backend->calls,
+            (std::vector<std::string>{"begin:1", "show:1", "host-release"}));
+  const Status shutdown = bridge->Shutdown();
+  EXPECT_FALSE(shutdown.ok());
+  EXPECT_EQ(shutdown.message(),
+            "SDL text-input release failed after a host-side session end");
 }
 
 TEST(RobloxTextInputJniBridgeTest,

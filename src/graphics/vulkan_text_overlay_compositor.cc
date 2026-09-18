@@ -202,6 +202,42 @@ struct VulkanTextOverlayCompositor::Impl {
   OverlayQueryFn overlay_query = nullptr;
   OverlayCopyFn overlay_copy = nullptr;
 
+  // Every gate below forwards the application present unchanged, so a
+  // missing text overlay leaves no trace on its own. Log each distinct
+  // bail-out reason once so a single run identifies the failing link instead
+  // of requiring a debugger.
+  enum OverlaySkipReason : std::uint32_t {
+    kSkipNoMayPresent = 1U << 0,
+    kSkipMayPresentFalse = 1U << 1,
+    kSkipNoDevice = 1U << 2,
+    kSkipDeviceDisabled = 1U << 3,
+    kSkipNoCallbacks = 1U << 4,
+    kSkipQueryFailed = 1U << 5,
+    kSkipAbiMismatch = 1U << 6,
+    kSkipNotVisible = 1U << 7,
+    kSkipNoRevision = 1U << 8,
+    kSkipNoSource = 1U << 9,
+  };
+  std::atomic<std::uint32_t> logged_skip_reasons{0};
+
+  void LogOverlaySkipOnce(
+      std::uint32_t reason, const char* detail,
+      const MocktailTextOverlayFrameInfo* frame = nullptr) {
+    if ((logged_skip_reasons.fetch_or(reason, std::memory_order_relaxed) &
+         reason) != 0) {
+      return;
+    }
+    if (frame != nullptr) {
+      std::fprintf(stderr,
+                   "  [text-overlay] no composite (%s): abi=%u visible=%u "
+                   "revision=%llu\n",
+                   detail, frame->abi_version, frame->visible,
+                   static_cast<unsigned long long>(frame->revision));
+      return;
+    }
+    std::fprintf(stderr, "  [text-overlay] no composite (%s)\n", detail);
+  }
+
   static void LockQueue(void* context, std::uint32_t, std::uint32_t) {
     if (context != nullptr) {
       static_cast<DeviceState*>(context)->queue_mutex.lock();
@@ -951,12 +987,15 @@ VkResult VulkanTextOverlayCompositor::QueuePresent(
   // so an inactive overlay forwards the original present without touching the
   // registry or the imported queue lock. libplacebo only shares VkQueue while
   // an overlay is actually compositing.
-  if (impl_->overlay_may_present != nullptr &&
-      !impl_->overlay_may_present()) {
+  if (impl_->overlay_may_present == nullptr) {
+    impl_->LogOverlaySkipOnce(Impl::kSkipNoMayPresent,
+                              "mocktail_text_overlay_may_present unresolved");
+  } else if (!impl_->overlay_may_present()) {
+    impl_->LogOverlaySkipOnce(Impl::kSkipMayPresentFalse,
+                              "mocktail_text_overlay_may_present() is false");
     impl_->SetOverlayActive(false);
     return fallback(queue, present_info);
-  }
-  if (impl_->overlay_may_present != nullptr) {
+  } else {
     impl_->SetOverlayActive(true);
   }
 
@@ -977,6 +1016,16 @@ VkResult VulkanTextOverlayCompositor::QueuePresent(
   }
   if (device == nullptr || !device->enabled ||
       !overlay_callbacks_available) {
+    if (device == nullptr) {
+      impl_->LogOverlaySkipOnce(Impl::kSkipNoDevice,
+                                "present queue is not registered");
+    } else if (!device->enabled) {
+      impl_->LogOverlaySkipOnce(Impl::kSkipDeviceDisabled,
+                                "overlay device is disabled");
+    } else {
+      impl_->LogOverlaySkipOnce(Impl::kSkipNoCallbacks,
+                                "overlay query/copy symbols unresolved");
+    }
     return impl_->CallFallback(shared_queue_mutex, queue, present_info,
                                fallback);
   }
@@ -987,10 +1036,35 @@ VkResult VulkanTextOverlayCompositor::QueuePresent(
   std::lock_guard<std::mutex> overlay_lock(device->overlay_mutex);
 
   MocktailTextOverlayFrameInfo frame{};
-  if (!impl_->overlay_query(&frame) ||
-      frame.abi_version != MocktailTextOverlayFrameInfo::kAbiVersion ||
-      frame.visible == 0 || frame.revision == 0 ||
-      !impl_->EnsureSource(device, frame)) {
+  const auto OverlayFrameReady = [&]() {
+    if (!impl_->overlay_query(&frame)) {
+      impl_->LogOverlaySkipOnce(Impl::kSkipQueryFailed,
+                                "mocktail_text_overlay_query() returned false");
+      return false;
+    }
+    if (frame.abi_version != MocktailTextOverlayFrameInfo::kAbiVersion) {
+      impl_->LogOverlaySkipOnce(Impl::kSkipAbiMismatch,
+                                "text overlay ABI version mismatch", &frame);
+      return false;
+    }
+    if (frame.visible == 0) {
+      impl_->LogOverlaySkipOnce(Impl::kSkipNotVisible,
+                                "overlay frame is not visible", &frame);
+      return false;
+    }
+    if (frame.revision == 0) {
+      impl_->LogOverlaySkipOnce(Impl::kSkipNoRevision,
+                                "overlay frame has no revision", &frame);
+      return false;
+    }
+    if (!impl_->EnsureSource(device, frame)) {
+      impl_->LogOverlaySkipOnce(Impl::kSkipNoSource,
+                                "overlay source preparation failed", &frame);
+      return false;
+    }
+    return true;
+  };
+  if (!OverlayFrameReady()) {
     return impl_->CallFallback(shared_queue_mutex, queue, present_info,
                                fallback);
   }

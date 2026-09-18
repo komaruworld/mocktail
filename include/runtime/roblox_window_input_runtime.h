@@ -41,6 +41,8 @@ class RobloxWindowInputRuntime final {
   static void PlatformEventCallback(void* context,
                                     const platform::PlatformEvent& event);
   static bool MouseLockQueryCallback(void* context, bool* locked_center);
+  static void PointerModeChangeCallback(void* context, bool captured,
+                                        bool text_entry_active);
   static void GamepadEventCallback(void* context,
                                    const platform::PlatformEvent& event);
 
@@ -50,6 +52,7 @@ class RobloxWindowInputRuntime final {
   platform::SdlGamepadManager gamepads_;
   bool observer_registered_ = false;
   bool mouse_lock_query_registered_ = false;
+  bool pointer_mode_callback_registered_ = false;
   bool initialized_ = false;
 };
 

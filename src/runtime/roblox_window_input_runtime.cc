@@ -71,6 +71,9 @@ Status RobloxWindowInputRuntime::Initialize() {
                          "SDL mouse lock query owner is unavailable");
   }
   mouse_lock_query_registered_ = true;
+  window::SetPointerModeChangeCallback(
+      &RobloxWindowInputRuntime::PointerModeChangeCallback, this);
+  pointer_mode_callback_registered_ = true;
   initialized_ = true;
   if (runtime_.SupportsGamepads()) {
     const Status gamepad_status = gamepads_.Initialize(
@@ -123,6 +126,10 @@ Status RobloxWindowInputRuntime::Shutdown() {
   if (mouse_lock_query_registered_) {
     window::ClearMouseLockQueryCallback();
     mouse_lock_query_registered_ = false;
+  }
+  if (pointer_mode_callback_registered_) {
+    window::ClearPointerModeChangeCallback();
+    pointer_mode_callback_registered_ = false;
   }
   gamepads_.Shutdown();
   const RobloxInputSnapshot snapshot = runtime_.Snapshot();
@@ -204,9 +211,25 @@ bool RobloxWindowInputRuntime::MouseLockQueryCallback(void* context,
   if (context == nullptr || locked_center == nullptr) {
     return false;
   }
+  // Query-only: the host never mutates guest state here. The mode that the
+  // router follows is published separately through the change callback below.
   return static_cast<RobloxWindowInputRuntime*>(context)
       ->runtime_.GetMainWindowIsMouseLockedCenter(locked_center)
       .ok();
+}
+
+void RobloxWindowInputRuntime::PointerModeChangeCallback(
+    void* context, bool captured, bool text_entry_active) {
+  if (context == nullptr) {
+    return;
+  }
+  // Route the mode transition through the runtime's event path so the router
+  // updates its coordinate semantics as part of the event stream, matching how
+  // WindowFocusEvent/WindowResizedEvent drive snapshot_.focused/viewport. The
+  // window layer owns the decision; the router only follows it.
+  auto* self = static_cast<RobloxWindowInputRuntime*>(context);
+  (void)self->runtime_.HandleEvent(platform::PlatformEvent{
+      0, platform::WindowPointerModeEvent{captured, text_entry_active}});
 }
 
 }  // namespace runtime

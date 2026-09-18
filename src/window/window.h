@@ -82,6 +82,17 @@ void ClearPlatformEventObserver();
 // Applies MouseBehavior.LockCenter through SDL relative mouse mode.
 bool SetMouseLockQueryCallback(MouseLockQueryCallback callback, void* context);
 void ClearMouseLockQueryCallback();
+// Notifies the runtime when the effective pointer mode changes (guest
+// lock-center, host text entry, transient capture) so the input router can pin
+// coordinates to the crosshair from the event stream instead of guessing.
+void SetPointerModeChangeCallback(PointerModeChangeCallback callback,
+                                  void* context);
+void ClearPointerModeChangeCallback();
+// Stops SDL text input because the host ended the Roblox TextBox session itself
+// (click outside the field, Escape, or window focus loss). The guest's matching
+// hide callback is not guaranteed to arrive, and waiting for it left SDL in
+// text-input mode and the pointer released indefinitely. Main-thread only.
+void RequestHostTextInputRelease();
 
 // Clear waits for a pre-input callback already in flight.
 bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,

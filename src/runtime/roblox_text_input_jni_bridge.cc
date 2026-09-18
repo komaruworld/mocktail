@@ -177,6 +177,13 @@ class ProductionTextInputBackend final
   bool RequestHideTextInput(uint64_t generation) override {
     return window::RequestHideTextInput(generation);
   }
+  bool TextFocusActive() const override {
+    return runtime_->Snapshot().text_focus_active;
+  }
+  bool RequestHostTextInputRelease() override {
+    window::RequestHostTextInputRelease();
+    return true;
+  }
 
  private:
   const std::shared_ptr<RobloxWindowInputRuntime> runtime_;
@@ -545,6 +552,34 @@ struct RobloxTextInputJniBridge::State {
     }
   }
 
+  // A TextBox session the host ended itself (click outside the field, Escape,
+  // or window focus loss) never produces a hide callback when the guest's own
+  // focus bookkeeping disagrees, and a hide whose generation is stale is
+  // rejected outright. Either way SDL stayed in text-input mode, which also kept
+  // the pointer capture owner holding the pointer released after the player had
+  // finished typing. Reconcile against the editor session and clean up.
+  bool ReconcileHostEndedSession() {
+    if (!applied_active || backend->TextFocusActive()) {
+      return true;
+    }
+    std::fprintf(stderr,
+                 "  [input] Roblox TextBox session ended host-side; releasing "
+                 "SDL text input generation=%llu\n",
+                 static_cast<unsigned long long>(applied_generation));
+    applied_active = false;
+    applied_generation = 0;
+    applied_handle = 0;
+    if (backend->RequestHostTextInputRelease()) {
+      return true;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      EnterTerminalLocked(
+          "SDL text-input release failed after a host-side session end");
+    }
+    return CompleteTerminalOnMainThread("host-text-input-release");
+  }
+
   bool Drain() {
     std::deque<Command> pending;
     bool terminal = false;
@@ -771,7 +806,10 @@ struct RobloxTextInputJniBridge::State {
         break;
       }
     }
-    return success;
+    if (!success) {
+      return false;
+    }
+    return ReconcileHostEndedSession();
   }
 
   // Returns false exactly once so the event owner records the transition.

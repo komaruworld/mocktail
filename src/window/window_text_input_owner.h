@@ -52,6 +52,12 @@ class WindowTextInputOwner final {
   bool RequestShowTextInput(uint64_t generation, const TextInputArea& area,
                             const TextInputOptions& options);
   bool RequestHideTextInput(uint64_t generation);
+  // Ends the session because the host decided it is over, not because the guest
+  // asked. RequestHideTextInput has to match the guest's generation, so a
+  // rejected hide (a newer show was accepted in between) used to leave SDL in
+  // text-input mode -- and the pointer capture owner releasing the pointer --
+  // for the rest of the run. Main-thread only; safe to call at any time.
+  bool RequestHostRelease();
 
   // Drains the latest guest command. Replaced commands are intentionally
   // coalesced: SDL only needs the most recent desired text-input state.

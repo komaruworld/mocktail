@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 namespace mocktail {
@@ -305,6 +306,46 @@ TEST(WindowPointerCaptureOwnerTest, TextInputWithoutNativeCursorShowsSystemCurso
   EXPECT_TRUE(owner.Pump(true));
   EXPECT_FALSE(owner.captured());
   EXPECT_FALSE(owner.cursor_visible());
+}
+
+// The window layer is the single authority for the effective pointer mode. The
+// router pins coordinates to the crosshair from this push notification instead
+// of guessing from the guest's lagging lock report, so a transition must never
+// be missed -- including the one that happened before the observer registered.
+TEST(WindowPointerCaptureOwnerTest, PublishesEffectivePointerModeTransitions) {
+  FakeBackend backend;
+  QueryState query{true, true};
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+
+  std::vector<std::pair<bool, bool>> modes;
+  auto observe = [](void* context, bool captured, bool text_entry_active) {
+    static_cast<std::vector<std::pair<bool, bool>>*>(context)->push_back(
+        {captured, text_entry_active});
+  };
+  owner.SetPointerModeChangeCallback(observe, &modes);
+
+  // Registration alone must deliver the current mode, not just the next edge.
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_EQ(modes.size(), 1U);
+  EXPECT_EQ(modes[0], std::make_pair(true, false));
+
+  // Roblox keeps reporting lock-center while chat has text focus, so only the
+  // text-entry flag changes -- and that change is published too.
+  ASSERT_TRUE(owner.Pump(true));
+  ASSERT_EQ(modes.size(), 2U);
+  EXPECT_EQ(modes[1], std::make_pair(true, true));
+
+  ASSERT_TRUE(owner.Pump(true));
+  ASSERT_EQ(modes.size(), 2U);
+
+  query.locked_center = false;
+  for (int pump = 0; pump < 16; ++pump) {
+    ASSERT_TRUE(owner.Pump(false));
+  }
+  ASSERT_GE(modes.size(), 3U);
+  EXPECT_EQ(modes.back(), std::make_pair(false, false));
 }
 
 }  // namespace

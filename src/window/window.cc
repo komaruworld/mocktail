@@ -1493,6 +1493,19 @@ void ClearMouseLockQueryCallback() {
     g_pointer_capture_owner->ClearQuery();
   }
 }
+
+void SetPointerModeChangeCallback(PointerModeChangeCallback callback,
+                                  void* context) {
+  if (g_pointer_capture_owner != nullptr) {
+    g_pointer_capture_owner->SetPointerModeChangeCallback(callback, context);
+  }
+}
+
+void ClearPointerModeChangeCallback() {
+  if (g_pointer_capture_owner != nullptr) {
+    g_pointer_capture_owner->ClearPointerModeChangeCallback();
+  }
+}
 bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,
                                  void* context) {
   return g_pre_text_input_pump_gate.Register(callback, context);
@@ -1503,6 +1516,12 @@ void SetWindowTextInputOwnerEnabled(bool enabled) {
     g_text_input_owner->SetEnabled(enabled);
   }
 }
+void RequestHostTextInputRelease() {
+  if (g_text_input_owner != nullptr) {
+    g_text_input_owner->RequestHostRelease();
+  }
+}
+
 bool RequestShowTextInput(uint64_t generation, const TextInputArea& area,
                           const TextInputOptions& options) {
   return g_text_input_owner != nullptr &&

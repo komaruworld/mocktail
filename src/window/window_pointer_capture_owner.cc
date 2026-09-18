@@ -51,9 +51,31 @@ void WindowPointerCaptureOwner::ClearQuery() {
   condition_.notify_all();
 }
 
+void WindowPointerCaptureOwner::SetPointerModeChangeCallback(
+    PointerModeChangeCallback callback, void* context) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  pointer_mode_callback_ = callback;
+  pointer_mode_context_ = context;
+  // The observer registered after an earlier transition must still learn the
+  // current mode, so re-arm the notification instead of assuming it is current.
+  mode_notified_ = false;
+}
+
+void WindowPointerCaptureOwner::ClearPointerModeChangeCallback() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  pointer_mode_callback_ = nullptr;
+  pointer_mode_context_ = nullptr;
+  mode_notified_ = false;
+}
+
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   if (!focused_) {
-    return Apply(false, true);
+    // Losing focus releases the pointer, and every consumer of the effective
+    // mode has to hear about it or it would keep pinning coordinates to a
+    // crosshair nobody owns.
+    const bool applied = Apply(false, true);
+    NotifyPointerMode(false, text_input_active);
+    return applied;
   }
   MouseLockQueryCallback callback = nullptr;
   void* context = nullptr;
@@ -90,6 +112,31 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   }
   const bool native_lock_active = query_ok && locked_center;
   native_lock_observed_ = native_lock_active;
+  // Diagnostics: the APK's lock-center state drives pointer confinement. If the
+  // query fails, capture is never requested and the pointer stays free on
+  // Wayland/X11 -- a common symptom when a third-party launcher does not expose
+  // getMainWindowIsMouseLockedCenter.
+  if (!query_ok) {
+    std::fprintf(stderr,
+                 "  [input] mouse-lock query failed; pointer capture will NOT "
+                 "be requested (launcher/JNI gap?)\n");
+  } else if (native_lock_active != native_lock_active_prev_) {
+    std::fprintf(stderr, "  [input] APK mouse-lock-center state: %s\n",
+                 native_lock_active ? "LOCKED" : "unlocked");
+    native_lock_active_prev_ = native_lock_active;
+  }
+
+  // Text entry is a pointer mode, but it is not the host's decision to make:
+  // Roblox keeps reporting lock-center for as long as its own Shift Lock is on,
+  // and that report is what decides whether camera motion stays relative. Text
+  // editing therefore only suppresses the host's *fallback* RMB camera capture
+  // (see capture_requested below); it never overrides the guest's own lock.
+  if (text_input_active != text_entry_active_) {
+    std::fprintf(stderr, "  [input] pointer mode: text entry %s\n",
+                 text_input_active ? "began" : "ended");
+  }
+  text_entry_active_ = text_input_active;
+
   if (wait_for_native_unlock_after_right_drag_ && !native_lock_active) {
     wait_for_native_unlock_after_right_drag_ = false;
   }
@@ -104,7 +151,25 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   // When capture is released, Roblox still draws its own cursor.
   // Show the system pointer only when the native client cannot provide one.
   const bool cursor_visible = !client_active && !capture_requested;
-  return Apply(capture_requested, cursor_visible);
+  const bool applied = Apply(capture_requested, cursor_visible);
+  // Publish the effective mode as a single value so consumers never re-derive
+  // it from raw coordinates or from the guest's own lagging lock report.
+  NotifyPointerMode(capture_requested, text_input_active);
+  return applied;
+}
+
+void WindowPointerCaptureOwner::NotifyPointerMode(bool captured,
+                                                 bool text_entry_active) {
+  if (mode_notified_ && captured == mode_captured_notified_ &&
+      text_entry_active == mode_text_entry_notified_) {
+    return;
+  }
+  mode_notified_ = true;
+  mode_captured_notified_ = captured;
+  mode_text_entry_notified_ = text_entry_active;
+  if (pointer_mode_callback_ != nullptr) {
+    pointer_mode_callback_(pointer_mode_context_, captured, text_entry_active);
+  }
 }
 
 bool WindowPointerCaptureOwner::OnRightButton(bool pressed,
@@ -148,8 +213,10 @@ bool WindowPointerCaptureOwner::OnFocusLost() {
 
 bool WindowPointerCaptureOwner::Shutdown() {
   ClearQuery();
+  ClearPointerModeChangeCallback();
   focused_ = false;
   right_button_held_ = false;
+  text_entry_active_ = false;
   native_lock_observed_ = false;
   native_lock_was_active_before_right_drag_ = false;
   shift_key_pressed_during_right_drag_ = false;

@@ -316,6 +316,7 @@ Status RobloxInputRouter::Activate(RobloxInputViewport viewport,
   gamepads_.clear();
   mouse_x_ = 0.0f;
   mouse_y_ = 0.0f;
+  pointer_captured_ = false;
   return Status::Ok();
 }
 
@@ -342,6 +343,7 @@ Status RobloxInputRouter::Deactivate() {
   snapshot_.active_mouse_buttons = 0;
   snapshot_.active_touches = 0;
   snapshot_.active_keys = 0;
+  pointer_captured_ = false;
   return status;
 }
 
@@ -422,6 +424,19 @@ RobloxInputDispatchResult RobloxInputRouter::HandleEvent(
     }
     return Result(RobloxInputDispatchState::kStateUpdated,
                   RobloxInputEventKind::kFocus);
+  }
+
+  if (const auto* mode =
+          std::get_if<platform::WindowPointerModeEvent>(&event.payload)) {
+    // The window layer's effective pointer mode, already resolved from the
+    // guest's lock-center query, the host text-entry session, and transient
+    // captures. While captured the host holds the pointer in relative mode, so
+    // absolute coordinates carry no meaning and are pinned to the viewport
+    // center for the APK's FPS camera. Whether text entry releases that capture
+    // is the window layer's call; the router only follows the published mode.
+    pointer_captured_ = mode->captured;
+    return Result(RobloxInputDispatchState::kStateUpdated,
+                  RobloxInputEventKind::kPointerMode);
   }
 
   if (const auto* connection =
@@ -529,7 +544,17 @@ RobloxInputSnapshot RobloxInputRouter::Snapshot() const {
   RobloxInputSnapshot snapshot = snapshot_;
   const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
   snapshot.text_focus_generation = text.focused ? text.generation : 0;
+  snapshot.text_focus_active = text.focused;
   return snapshot;
+}
+
+bool RobloxInputRouter::PinsCoordinatesToCenterLocked() const {
+  // The guest ignores absolute coordinates only while it owns a locked pointer:
+  // the host holds the pointer in relative mode, so only deltas reach the
+  // camera and every absolute coordinate reported here is a placeholder. The
+  // window layer already folded text entry into this mode, so there is nothing
+  // to exclude here.
+  return pointer_captured_;
 }
 
 RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
@@ -543,17 +568,24 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
       CoordinateTransform(snapshot_.viewport);
   const float delta_x = transform.HostLogicalToGuestX(event.delta_x);
   const float delta_y = transform.HostLogicalToGuestY(event.delta_y);
+  const float center_x = std::round(transform.guest_width() * 0.5F);
+  const float center_y = std::round(transform.guest_height() * 0.5F);
+  const float max_x = std::max(0.0F, transform.guest_width() - 1.0F);
+  const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
 
-  if (event.x == 0.0f && event.y == 0.0f &&
-      (delta_x != 0.0f || delta_y != 0.0f)) {
+  if (PinsCoordinatesToCenterLocked()) {
+    mouse_x_ = center_x;
+    mouse_y_ = center_y;
+  } else if (event.x == 0.0f && event.y == 0.0f &&
+             (delta_x != 0.0f || delta_y != 0.0f)) {
+    // Relative motion with no reported position: carry the accumulated delta so
+    // the guest's own cursor still tracks input while the host is uncaptured.
     mouse_x_ += delta_x;
     mouse_y_ += delta_y;
   } else {
     mouse_x_ = transform.HostLogicalToGuestX(event.x);
     mouse_y_ = transform.HostLogicalToGuestY(event.y);
   }
-  const float max_x = std::max(0.0F, transform.guest_width() - 1.0F);
-  const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
   const float clamped_x = std::clamp(mouse_x_, 0.0f, max_x);
   const float clamped_y = std::clamp(mouse_y_, 0.0f, max_y);
 
@@ -575,21 +607,23 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
                   RobloxInputEventKind::kMouseButton,
                   Unsupported("SDL mouse button has no Android mapping"));
   }
-  if (event.x > 0.0f || event.y > 0.0f ||
-      (mouse_x_ == 0.0f && mouse_y_ == 0.0f)) {
-    const platform::SurfaceCoordinateTransform transform =
-        CoordinateTransform(snapshot_.viewport);
-    mouse_x_ = transform.HostLogicalToGuestX(event.x);
-    mouse_y_ = transform.HostLogicalToGuestY(event.y);
-  }
   const platform::SurfaceCoordinateTransform transform =
       CoordinateTransform(snapshot_.viewport);
   const float max_x = std::max(0.0F, transform.guest_width() - 1.0F);
   const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
+
+  const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
+  if (PinsCoordinatesToCenterLocked()) {
+    mouse_x_ = std::round(transform.guest_width() * 0.5F);
+    mouse_y_ = std::round(transform.guest_height() * 0.5F);
+  } else if (event.x > 0.0f || event.y > 0.0f ||
+             (mouse_x_ == 0.0f && mouse_y_ == 0.0f)) {
+    mouse_x_ = transform.HostLogicalToGuestX(event.x);
+    mouse_y_ = transform.HostLogicalToGuestY(event.y);
+  }
   const float clamped_x = std::clamp(mouse_x_, 0.0f, max_x);
   const float clamped_y = std::clamp(mouse_y_, 0.0f, max_y);
   if (event.pressed) {
-    const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
     if (text.focused) {
       (void)text_editor_.EndFocusSession(text.textbox_handle, text.generation,
                                          true);
@@ -876,6 +910,8 @@ const char* RobloxInputEventKindName(RobloxInputEventKind kind) {
       return "Text";
     case RobloxInputEventKind::kFocus:
       return "Focus";
+    case RobloxInputEventKind::kPointerMode:
+      return "PointerMode";
     case RobloxInputEventKind::kViewport:
       return "Viewport";
     case RobloxInputEventKind::kGamepadConnection:

@@ -103,6 +103,7 @@ enum class RobloxInputEventKind {
   kKeyboard,
   kText,
   kFocus,
+  kPointerMode,
   kViewport,
   kGamepadConnection,
   kGamepadButton,
@@ -141,6 +142,10 @@ struct RobloxInputSnapshot {
   // Zero after the host editor finishes, even if Roblox sends no hide callback.
   uint64_t text_focus_generation = 0;
   uint64_t native_errors = 0;
+  // True while a Roblox TextBox owns typing. The window layer drives the
+  // pointer mode from the guest query, which lags this state and can latch, so
+  // the bridge also reconciles SDL's text-input session against it.
+  bool text_focus_active = false;
   uint32_t active_mouse_buttons = 0;
   uint32_t active_touches = 0;
   uint32_t active_keys = 0;
@@ -220,6 +225,7 @@ class RobloxInputRouter final {
   Status DisconnectGamepadLocked(ActiveGamepad& gamepad);
   Status DisconnectGamepadsLocked();
   Status ReleasePressedInputsLocked();
+  bool PinsCoordinatesToCenterLocked() const;
   int32_t AllocatePointerIdLocked() const;
   std::vector<ActiveTouch>::iterator FindTouchIteratorLocked(int64_t touch_id,
                                                              int64_t finger_id);
@@ -237,6 +243,10 @@ class RobloxInputRouter final {
   std::vector<ActiveGamepad> gamepads_;
   float mouse_x_ = 0.0f;
   float mouse_y_ = 0.0f;
+  // True while absolute coordinates carry no meaning: the host holds the
+  // pointer in relative mode, so only deltas drive the camera. Published by the
+  // window layer as the effective pointer mode and followed here verbatim.
+  bool pointer_captured_ = false;
 };
 
 const char* RobloxInputDispatchStateName(RobloxInputDispatchState state);

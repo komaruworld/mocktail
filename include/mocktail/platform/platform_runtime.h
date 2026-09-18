@@ -222,11 +222,24 @@ struct GamepadButtonEvent {
   bool pressed = false;
 };
 
+// Emitted by the window layer whenever its effective pointer mode changes. The
+// window layer resolves the guest's lock-center query, the host text-entry
+// session, and transient captures into this single mode, so the router never
+// has to re-derive it from raw coordinates or from the guest's lagging report.
+// While captured, reported coordinates are pinned to the viewport center to
+// match the APK's FPS camera semantics, regardless of whether the host pointer
+// is physically confined (which may fail on some Wayland compositors).
+struct WindowPointerModeEvent {
+  bool captured = false;
+  bool text_entry_active = false;
+};
+
 using PlatformEventPayload =
-    std::variant<QuitEvent, WindowResizedEvent, WindowFocusEvent, KeyEvent,
-                 TextInputEvent, TextEditingEvent, MouseMotionEvent,
-                 MouseButtonEvent, MouseWheelEvent, TouchEvent,
-                 GamepadConnectionEvent, GamepadAxisEvent, GamepadButtonEvent>;
+    std::variant<QuitEvent, WindowResizedEvent, WindowFocusEvent,
+                 WindowPointerModeEvent, KeyEvent, TextInputEvent,
+                 TextEditingEvent, MouseMotionEvent, MouseButtonEvent,
+                 MouseWheelEvent, TouchEvent, GamepadConnectionEvent,
+                 GamepadAxisEvent, GamepadButtonEvent>;
 
 struct PlatformEvent {
   std::uint64_t timestamp_ns = 0;

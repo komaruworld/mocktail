@@ -100,6 +100,15 @@ bool WindowTextInputOwner::RequestHideTextInput(uint64_t generation) {
   return true;
 }
 
+bool WindowTextInputOwner::RequestHostRelease() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  has_pending_command_ = false;
+  if (!active_) {
+    return true;
+  }
+  return StopAndClear();
+}
+
 bool WindowTextInputOwner::Pump() {
   if (!enabled_.load(std::memory_order_acquire) || backend_ == nullptr) {
     return true;
@@ -242,10 +251,15 @@ bool SdlTextInputBackend::ClearArea() {
 
 bool SdlTextInputBackend::Start(const TextInputOptions& options) {
   if (window_ == nullptr) {
+    std::fprintf(stderr,
+                 "  [input] SDL_StartTextInput skipped: no SDL window\n");
     return false;
   }
   const SDL_PropertiesID properties = SDL_CreateProperties();
   if (properties == 0) {
+    std::fprintf(stderr,
+                 "  [input] SDL_StartTextInput failed: could not create "
+                 "properties\n");
     return false;
   }
   bool success = SDL_SetNumberProperty(
@@ -260,6 +274,14 @@ bool SdlTextInputBackend::Start(const TextInputOptions& options) {
     success = SDL_StartTextInputWithProperties(
         static_cast<SDL_Window*>(window_), properties);
   }
+  // Diagnostics: on Wayland this delegates to the text-input-v3 protocol. If
+  // the compositor (or a third-party launcher wrapping the window) does not
+  // support it, SDL reports success but no IME surface is rendered -- text is
+  // still typed via SDL_EVENT_TEXT_INPUT, which matches the "ghost input"
+  // symptom.
+  std::fprintf(stderr,
+               "  [input] SDL_StartTextInputWithProperties: %s\n",
+               success ? "OK" : "FAILED");
   SDL_DestroyProperties(properties);
   return success;
 }

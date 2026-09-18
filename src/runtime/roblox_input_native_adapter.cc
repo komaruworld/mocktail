@@ -172,11 +172,22 @@ Status RobloxInputNativeAdapter::GetMainWindowIsMouseLockedCenter(
   JNIEnv* env = nullptr;
   Status status = RequireReadyLocked(&env);
   if (!status.ok()) {
+    std::fprintf(stderr,
+                 "  [input] getMainWindowIsMouseLockedCenter query skipped: "
+                 "%s\n",
+                 status.message().c_str());
     return status;
   }
   *locked_center = symbols_.get_main_window_is_mouse_locked_center(
                        env, native_input_class_) == JNI_TRUE;
-  return CheckJniException(env, "nativeGetMainWindowIsMouseLockedCenter");
+  status = CheckJniException(env, "nativeGetMainWindowIsMouseLockedCenter");
+  if (!status.ok()) {
+    std::fprintf(stderr,
+                 "  [input] getMainWindowIsMouseLockedCenter FAILED (method "
+                 "missing in launcher APK?): %s\n",
+                 status.message().c_str());
+  }
+  return status;
 }
 
 Status RobloxInputNativeAdapter::QueryCurrentTextBoxInfo(
@@ -637,6 +648,11 @@ bool RobloxInputRuntime::SupportsGamepads() const {
 
 Status RobloxInputRuntime::GetMainWindowIsMouseLockedCenter(
     bool* locked_center) {
+  // Pure query: the window layer polls it once per frame and publishes the
+  // resulting effective pointer mode through WindowPointerModeEvent. Keeping
+  // this a getter (no side effects) preserves command-query separation and lets
+  // the router follow one host-side authority instead of the guest's own
+  // lagging view of its lock state.
   return adapter_.GetMainWindowIsMouseLockedCenter(locked_center);
 }
 

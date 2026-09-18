@@ -42,6 +42,13 @@ class RobloxTextInputJniBridgeBackend {
       uint64_t generation, const window::TextInputArea& area,
       const window::TextInputOptions& options) = 0;
   virtual bool RequestHideTextInput(uint64_t generation) = 0;
+  // True while the editor session is still focused. A host-side end (click
+  // outside the TextBox, Escape, window focus loss) clears it before the guest
+  // echoes a hide of its own, which is how the bridge notices that SDL text
+  // input -- and the released pointer that follows from it -- must be cleaned
+  // up without waiting for that echo.
+  virtual bool TextFocusActive() const = 0;
+  virtual bool RequestHostTextInputRelease() = 0;
 };
 
 // Guest callbacks enqueue commands that the SDL pre-pump drains on its main

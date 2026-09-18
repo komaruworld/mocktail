@@ -9,6 +9,13 @@ namespace mocktail {
 namespace window {
 
 using MouseLockQueryCallback = bool (*)(void* context, bool* locked_center);
+// Notifies observers when the *effective* pointer mode changes. This owner is
+// the single authority for that mode: it resolves the guest's lock-center
+// query, the host's text-entry session, and transient right-drag capture, so
+// consumers (the input router) never re-derive it from raw coordinates or from
+// the guest's lagging report. Push-based, so it fires only on transitions.
+using PointerModeChangeCallback = void (*)(void* context, bool captured,
+                                           bool text_entry_active);
 
 class PointerCaptureBackend {
  public:
@@ -27,6 +34,13 @@ class WindowPointerCaptureOwner final {
 
   bool RegisterQuery(MouseLockQueryCallback callback, void* context);
   void ClearQuery();
+  void SetPointerModeChangeCallback(PointerModeChangeCallback callback,
+                                    void* context);
+  void ClearPointerModeChangeCallback();
+  // Resolves the effective pointer mode for this frame. text_input_active is
+  // the host's text-entry state; see Pump() in the implementation for how the
+  // guest's lock-center query and the host's fallback RMB drag compose. The
+  // resulting mode is published through the change callback.
   bool Pump(bool text_input_active);
   // Android's lock-center query does not represent desktop RMB camera drag,
   // so the SDL owner tracks that transient capture source independently.
@@ -52,6 +66,7 @@ class WindowPointerCaptureOwner final {
 
  private:
   bool Apply(bool capture, bool cursor_visible);
+  void NotifyPointerMode(bool captured, bool text_entry_active);
 
   PointerCaptureBackend* backend_ = nullptr;
   std::mutex mutex_;
@@ -60,6 +75,16 @@ class WindowPointerCaptureOwner final {
   void* context_ = nullptr;
   std::size_t in_flight_ = 0;
   bool clearing_ = false;
+  PointerModeChangeCallback pointer_mode_callback_ = nullptr;
+  void* pointer_mode_context_ = nullptr;
+  bool native_lock_active_prev_ = false;
+  // Last text-entry state that was published. Tracked so the transition can be
+  // logged and the notification deduplicated; it never overrides the guest's
+  // own lock-center report.
+  bool text_entry_active_ = false;
+  bool mode_notified_ = false;
+  bool mode_captured_notified_ = false;
+  bool mode_text_entry_notified_ = false;
   bool focused_ = true;
   bool right_button_held_ = false;
   bool native_lock_observed_ = false;
