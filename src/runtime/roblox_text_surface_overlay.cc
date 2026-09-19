@@ -244,7 +244,7 @@ struct TextBytePosition {
 };
 
 TextBytePosition TextPosition(TTF_Text* layout, std::size_t byte_offset,
-                              int text_width) {
+                              int text_width, bool single_line) {
   if (layout == nullptr) {
     return {};
   }
@@ -259,7 +259,11 @@ TextBytePosition TextPosition(TTF_Text* layout, std::size_t byte_offset,
   position.y = substring.rect.y;
   position.height = substring.rect.h;
   if ((substring.flags & TTF_SUBSTRING_TEXT_END) != 0) {
-    position.x = std::min(text_width, substring.rect.x + substring.rect.w);
+    // Trailing whitespace has no ink, so the final cluster rect stops short of
+    // the laid-out width that a caret at the end of a single line sits behind.
+    position.x = single_line ? text_width
+                             : std::min(text_width,
+                                        substring.rect.x + substring.rect.w);
   }
   return position;
 }
@@ -501,11 +505,12 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
   TextBytePosition selection_end_position;
   if (layout != nullptr) {
     (void)TTF_GetTextSize(layout, &text_width, &text_height);
-    caret_position = TextPosition(layout, caret_byte, text_width);
-    selection_begin_position =
-        TextPosition(layout, selection_begin_byte, text_width);
+    caret_position =
+        TextPosition(layout, caret_byte, text_width, !wrapped_layout);
+    selection_begin_position = TextPosition(layout, selection_begin_byte,
+                                            text_width, !wrapped_layout);
     selection_end_position =
-        TextPosition(layout, selection_end_byte, text_width);
+        TextPosition(layout, selection_end_byte, text_width, !wrapped_layout);
   }
   if (!text.value.empty()) {
     // SDL_ttf implementations have historically differed on whether fg.a is
