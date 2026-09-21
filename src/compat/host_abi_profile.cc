@@ -6,6 +6,34 @@ namespace mocktail::compat {
 namespace {
 
 constexpr HostAbiProfile kProfiles[] = {
+    // Roblox 2.736.1408 arm64-v8a. Every RVA was derived from the AArch64
+    // payload of the same release as the x86-64 reference above, matched by
+    // allocator internals, init_array call graphs, and static state layout.
+    // Constructor policy mirrors x86-64 by semantic role: the pre-init
+    // entries 0..3 stay skipped, index 4 is mi_process_load (thread init
+    // checkpoint), index 5 is allocator wiring and index 6 is the lazy clock
+    // singleton getter, both excluded under host bridges only.
+    {"ed2b035768b1513561d0e6ea7f9bbec35b0e60e5",
+     {{{0x1d53840, HostBridgeKind::kAllocate, "small-allocate"},
+       {0x1d56c34, HostBridgeKind::kUsableSize, "usable-size"},
+       {0x1d6ef80, HostBridgeKind::kReallocate, "reallocate"},
+       {0x1d53568, HostBridgeKind::kAllocate, "allocate"},
+       {0x61d3850, HostBridgeKind::kAlignedAllocate,
+        "aligned-allocate-direct"},
+       {0x1d57328, HostBridgeKind::kFree, "free"}}},
+     6,
+     {0, 0, 0x7296c88, 0x400, 0x1d53c54, 0x1dc76a0,
+      0x71d6c90, 0x71d2c40, 0x400000},
+     {0x1d53568, 0x1d57328},
+     0x6733128,
+     3565,
+     {{{4, 5}, {7, 3565}}},
+     2,
+     {{{4, 3565}}},
+     1,
+     4,
+     {0x2132c5c, 0x71d6d30},
+     HostAllocatorStrategy::kNativeMimalloc},
     // Roblox 2.736.1408. Derived from the verified 2908 profile and validated
     // by two isolated no-recovery Vulkan canaries and real game sessions.
     {"ade08266c67aee88ec9c1d00902150e1684dad3a",

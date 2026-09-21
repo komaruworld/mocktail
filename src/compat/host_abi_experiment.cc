@@ -39,12 +39,23 @@ bool PatchAbsoluteJump(uintptr_t address, void *target) noexcept {
     return false;
   }
 
+#if defined(__aarch64__)
+  // ldr x16, #8 ; br x16 ; .quad target
+  // x16 is the intra-procedure-call scratch register, free to clobber.
+  unsigned char patch[] = {
+      0x50, 0x00, 0x00, 0x58, 0x00, 0x02, 0x1f, 0xd6,
+      0,    0,    0,    0,    0,    0,    0,    0,
+  };
+  const uintptr_t target_address = reinterpret_cast<uintptr_t>(target);
+  std::memcpy(patch + 8, &target_address, sizeof(target_address));
+#else
   unsigned char patch[] = {
       0x48, 0xb8,                               // movabs rax, imm64
       0,    0,    0, 0, 0, 0, 0, 0, 0xff, 0xe0, // jmp rax
   };
   const uintptr_t target_address = reinterpret_cast<uintptr_t>(target);
   std::memcpy(patch + 2, &target_address, sizeof(target_address));
+#endif
 
   const uintptr_t page_mask = static_cast<uintptr_t>(page_size) - 1;
   const uintptr_t page = address & ~page_mask;

@@ -1,10 +1,14 @@
 #include "compat/bionic_pthread_create_runtime.h"
 
+#include "compat/bionic_abi_exports.h"
+
 #include <errno.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <limits>
 #include <new>
 
@@ -69,24 +73,28 @@ size_t HostStackSizeForGuest(size_t guest_stack_size) noexcept {
   return guest_stack_size;
 }
 
-int CopySupportedThreadAttributes(const pthread_attr_t& source,
+// Guest pthread_attr_t buffers use the Bionic LP64 layout; they are never a
+// host pthread_attr_t, so decode the fixed fields directly.
+int GuestDetachState(const MocktailBionicPthreadAttr& source) noexcept {
+  return (source.flags & kMocktailBionicAttrFlagDetached) != 0
+             ? PTHREAD_CREATE_DETACHED
+             : PTHREAD_CREATE_JOINABLE;
+}
+
+size_t GuestStackSize(const MocktailBionicPthreadAttr& source) noexcept {
+  return source.stack_size != 0 ? source.stack_size
+                                : kBionicLp64DefaultThreadStackSize;
+}
+
+int CopySupportedThreadAttributes(const MocktailBionicPthreadAttr& source,
                                   pthread_attr_t* destination) noexcept {
-  int detach_state = PTHREAD_CREATE_JOINABLE;
-  int result = pthread_attr_getdetachstate(&source, &detach_state);
-  if (result != 0) {
-    return result;
-  }
-  result = pthread_attr_setdetachstate(destination, detach_state);
+  int result =
+      pthread_attr_setdetachstate(destination, GuestDetachState(source));
   if (result != 0) {
     return result;
   }
 
-  size_t guard_size = 0;
-  result = pthread_attr_getguardsize(&source, &guard_size);
-  if (result != 0) {
-    return result;
-  }
-  result = pthread_attr_setguardsize(destination, guard_size);
+  result = pthread_attr_setguardsize(destination, source.guard_size);
   if (result != 0) {
     return result;
   }
@@ -95,53 +103,38 @@ int CopySupportedThreadAttributes(const pthread_attr_t& source,
   // pthread_attr_setstack. Copying pthread_attr_getstack's address is unsafe:
   // glibc represents an automatically allocated stack with a synthetic
   // address derived from its size.
-  size_t stack_size = 0;
-  result = pthread_attr_getstacksize(&source, &stack_size);
-  if (result != 0) {
-    return result;
-  }
-  result = pthread_attr_setstacksize(destination,
-                                     HostStackSizeForGuest(stack_size));
+  result = pthread_attr_setstacksize(
+      destination, HostStackSizeForGuest(GuestStackSize(source)));
   if (result != 0) {
     return result;
   }
 
-  int inherit_scheduler = PTHREAD_INHERIT_SCHED;
-  result = pthread_attr_getinheritsched(&source, &inherit_scheduler);
-  if (result != 0) {
-    return result;
+  // Bionic applies the attribute's scheduling policy at creation whenever it
+  // differs from the normal policy.
+  if (RejectRealtimeScheduling(source.sched_policy)) {
+    return EPERM;
   }
-  if (inherit_scheduler == PTHREAD_EXPLICIT_SCHED) {
-    int scheduler_policy = 0;
-    sched_param scheduler_parameters{};
-    result = pthread_attr_getschedpolicy(&source, &scheduler_policy);
-    if (result == 0) {
-      result = pthread_attr_getschedparam(&source, &scheduler_parameters);
-    }
-    if (result == 0 && RejectRealtimeScheduling(scheduler_policy)) {
-      return EPERM;
-    }
-    if (result == 0) {
-      result = pthread_attr_setschedpolicy(destination, scheduler_policy);
-    }
-    if (result == 0) {
-      result = pthread_attr_setschedparam(destination, &scheduler_parameters);
-    }
+  if (source.sched_policy != SCHED_NORMAL) {
+    result = pthread_attr_setschedpolicy(destination, source.sched_policy);
     if (result != 0) {
       return result;
     }
+    sched_param scheduler_parameters{};
+    scheduler_parameters.sched_priority = source.sched_priority;
+    result = pthread_attr_setschedparam(destination, &scheduler_parameters);
+    if (result != 0) {
+      return result;
+    }
+    return pthread_attr_setinheritsched(destination, PTHREAD_EXPLICIT_SCHED);
   }
-  return pthread_attr_setinheritsched(destination, inherit_scheduler);
+
+  return pthread_attr_setinheritsched(destination, PTHREAD_INHERIT_SCHED);
 }
 
-int CopyRequiredThreadAttributes(const pthread_attr_t& source,
+int CopyRequiredThreadAttributes(const MocktailBionicPthreadAttr& source,
                                  pthread_attr_t* destination) noexcept {
-  int detach_state = PTHREAD_CREATE_JOINABLE;
-  int result = pthread_attr_getdetachstate(&source, &detach_state);
-  if (result != 0) {
-    return result;
-  }
-  result = pthread_attr_setdetachstate(destination, detach_state);
+  int result =
+      pthread_attr_setdetachstate(destination, GuestDetachState(source));
   if (result != 0) {
     return result;
   }
@@ -149,32 +142,20 @@ int CopyRequiredThreadAttributes(const pthread_attr_t& source,
   // The retry must retain an explicitly requested guest stack. Falling back
   // to a null/default host attr is unsafe on musl, whose default stack is much
   // smaller than Bionic's and can be exhausted by a single libroblox frame.
-  size_t stack_size = 0;
-  result = pthread_attr_getstacksize(&source, &stack_size);
-  if (result != 0) {
-    return result;
-  }
-  return pthread_attr_setstacksize(destination,
-                                   HostStackSizeForGuest(stack_size));
+  return pthread_attr_setstacksize(
+      destination, HostStackSizeForGuest(GuestStackSize(source)));
 }
 
-int ConfigureHostSafeStackFallback(const pthread_attr_t* source,
+int ConfigureHostSafeStackFallback(const MocktailBionicPthreadAttr* source,
                                    pthread_attr_t* destination) noexcept {
   size_t guest_stack_size = 0;
   if (source != nullptr) {
-    int detach_state = PTHREAD_CREATE_JOINABLE;
-    int result = pthread_attr_getdetachstate(source, &detach_state);
+    int result =
+        pthread_attr_setdetachstate(destination, GuestDetachState(*source));
     if (result != 0) {
       return result;
     }
-    result = pthread_attr_setdetachstate(destination, detach_state);
-    if (result != 0) {
-      return result;
-    }
-    result = pthread_attr_getstacksize(source, &guest_stack_size);
-    if (result != 0) {
-      return result;
-    }
+    guest_stack_size = GuestStackSize(*source);
   }
 
   size_t host_default_stack_size = 0;
@@ -207,7 +188,8 @@ void ConfigureBionicPthreadThreadInitializer(
   g_thread_initializer.store(initializer, std::memory_order_release);
 }
 
-int CreateBionicPthread(pthread_t* thread, const pthread_attr_t* attr,
+int CreateBionicPthread(pthread_t* thread,
+                        const MocktailBionicPthreadAttr* attr,
                         void* (*start_routine)(void*), void* argument) {
   if (thread == nullptr || start_routine == nullptr) {
     return EINVAL;
@@ -289,10 +271,123 @@ int CreateBionicPthread(pthread_t* thread, const pthread_attr_t* attr,
 
 }  // namespace mocktail::compat
 
-extern "C" int mocktail_bionic_pthread_create(pthread_t* thread,
-                                               const pthread_attr_t* attr,
-                                               void* (*start_routine)(void*),
-                                               void* argument) {
+extern "C" {
+
+int mocktail_pthread_attr_init(MocktailBionicPthreadAttr* attr) {
+  if (attr == nullptr) {
+    return EINVAL;
+  }
+  attr->flags = 0;
+  attr->stack_base = nullptr;
+  attr->stack_size =
+      mocktail::compat::kBionicLp64DefaultThreadStackSize;
+  const long page_size = sysconf(_SC_PAGESIZE);
+  attr->guard_size = page_size > 0 ? static_cast<size_t>(page_size) : 0;
+  attr->sched_policy = SCHED_OTHER;
+  attr->sched_priority = 0;
+  std::memset(attr->reserved, 0, sizeof(attr->reserved));
+  return 0;
+}
+
+int mocktail_pthread_attr_destroy(MocktailBionicPthreadAttr* attr) {
+  (void)attr;
+  return 0;
+}
+
+int mocktail_pthread_attr_setstacksize(MocktailBionicPthreadAttr* attr,
+                                       size_t stack_size) {
+  if (attr == nullptr || stack_size < PTHREAD_STACK_MIN) {
+    return EINVAL;
+  }
+  attr->stack_size = stack_size;
+  attr->flags &= ~kMocktailBionicAttrFlagUserStack;
+  return 0;
+}
+
+int mocktail_pthread_attr_setdetachstate(MocktailBionicPthreadAttr* attr,
+                                         int detach_state) {
+  if (attr == nullptr || (detach_state != PTHREAD_CREATE_DETACHED &&
+                          detach_state != PTHREAD_CREATE_JOINABLE)) {
+    return EINVAL;
+  }
+  if (detach_state == PTHREAD_CREATE_DETACHED) {
+    attr->flags |= kMocktailBionicAttrFlagDetached;
+  } else {
+    attr->flags &= ~kMocktailBionicAttrFlagDetached;
+  }
+  return 0;
+}
+
+int mocktail_pthread_attr_setschedparam(MocktailBionicPthreadAttr* attr,
+                                        const struct sched_param* parameters) {
+  if (attr == nullptr || parameters == nullptr) {
+    return EINVAL;
+  }
+  attr->sched_priority = parameters->sched_priority;
+  return 0;
+}
+
+int mocktail_pthread_getattr_np(MocktailBionicPthreadAttr* attr) {
+  if (attr == nullptr) {
+    return EINVAL;
+  }
+  pthread_attr_t host_attr;
+  int result = pthread_getattr_np(pthread_self(), &host_attr);
+  if (result != 0) {
+    return result;
+  }
+  void* stack_base = nullptr;
+  size_t stack_size = 0;
+  result = pthread_attr_getstack(&host_attr, &stack_base, &stack_size);
+  size_t guard_size = 0;
+  if (result == 0) {
+    result = pthread_attr_getguardsize(&host_attr, &guard_size);
+  }
+  int detach_state = PTHREAD_CREATE_JOINABLE;
+  if (result == 0) {
+    result = pthread_attr_getdetachstate(&host_attr, &detach_state);
+  }
+  sched_param parameters{};
+  int policy = SCHED_OTHER;
+  if (result == 0) {
+    result = pthread_getschedparam(pthread_self(), &policy, &parameters);
+  }
+  pthread_attr_destroy(&host_attr);
+  if (result != 0) {
+    return result;
+  }
+  attr->flags = detach_state == PTHREAD_CREATE_DETACHED
+                    ? kMocktailBionicAttrFlagDetached
+                    : 0;
+  attr->stack_base = stack_base;
+  attr->stack_size = stack_size;
+  attr->guard_size = guard_size;
+  attr->sched_policy = policy;
+  attr->sched_priority = parameters.sched_priority;
+  std::memset(attr->reserved, 0, sizeof(attr->reserved));
+  return 0;
+}
+
+int mocktail_pthread_attr_getstack(const MocktailBionicPthreadAttr* attr,
+                                   void** stack_base, size_t* stack_size) {
+  if (attr == nullptr) {
+    return EINVAL;
+  }
+  if (stack_base != nullptr) {
+    *stack_base = attr->stack_base;
+  }
+  if (stack_size != nullptr) {
+    *stack_size = attr->stack_size;
+  }
+  return 0;
+}
+
+
+}  // extern "C"
+
+extern "C" int mocktail_bionic_pthread_create(
+    pthread_t* thread, const MocktailBionicPthreadAttr* attr,
+    void* (*start_routine)(void*), void* argument) {
   return mocktail::compat::CreateBionicPthread(thread, attr, start_routine,
                                                argument);
 }

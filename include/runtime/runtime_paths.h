@@ -14,7 +14,7 @@ struct ActivePayloadPaths {
   std::filesystem::path root;
   std::filesystem::path roblox_library;
   std::filesystem::path base_apk;
-  std::filesystem::path x86_64_split_apk;
+  std::filesystem::path arch_split_apk;
   std::filesystem::path assets_content;
   std::filesystem::path compatibility_manifest;
   std::filesystem::path host_abi_profile;

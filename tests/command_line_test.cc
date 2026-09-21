@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include "compat/guest_abi.h"
+
 #include <algorithm>
 #include <array>
 #include <string>
@@ -274,8 +276,10 @@ TEST(CommandLineTest, UsageContainsEverySupportedOption) {
   EXPECT_EQ(usage.find("--login"), std::string::npos);
   EXPECT_EQ(usage.find("--import-cookie"), std::string::npos);
   EXPECT_NE(usage.find("native sign-in flow"), std::string::npos);
-  EXPECT_NE(usage.find("verified managed x86_64 Roblox payload"),
-            std::string::npos);
+  EXPECT_NE(
+      usage.find("verified managed " +
+                 std::string(mocktail::compat::kGuestAbi) + " Roblox payload"),
+      std::string::npos);
   EXPECT_EQ(usage.find("Normal startup uses rbx_bin/libroblox.so"),
             std::string::npos);
   EXPECT_EQ(usage.find("--launch-request-json"), std::string::npos);

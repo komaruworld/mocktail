@@ -32,6 +32,7 @@
 #include <openssl/evp.h>
 
 #include "compat/elf_build_id.h"
+#include "compat/guest_abi.h"
 
 namespace mocktail::compat {
 namespace {
@@ -611,19 +612,26 @@ std::unique_ptr<OwnedHostAbiProfile> ParseProfile(const Json& root,
     *error = "external host ABI profile has inconsistent constructor policy";
     return nullptr;
   }
-  if (owned->profile.init_array_count <= 5 ||
+  // The verified constructor layout is the same on both guest ABIs: a single
+  // process-load constructor at the thread-initializer checkpoint, two wiring
+  // entries excluded under host bridges, and one contiguous native-mimalloc
+  // replay from the checkpoint to the end of .init_array. Only the checkpoint
+  // index itself differs between payloads.
+  const std::size_t checkpoint =
+      owned->profile.native_mimalloc_thread_initializer_after_constructor;
+  if (owned->profile.init_array_count <= checkpoint + 3 ||
       owned->profile.constructor_run_range_count != 2 ||
-      owned->profile.constructor_run_ranges[0].begin != 2 ||
-      owned->profile.constructor_run_ranges[0].end_exclusive != 3 ||
-      owned->profile.constructor_run_ranges[1].begin != 5 ||
+      owned->profile.constructor_run_ranges[0].begin != checkpoint ||
+      owned->profile.constructor_run_ranges[0].end_exclusive != checkpoint + 1 ||
+      owned->profile.constructor_run_ranges[1].begin != checkpoint + 3 ||
       owned->profile.constructor_run_ranges[1].end_exclusive !=
           owned->profile.init_array_count ||
       owned->profile.native_mimalloc_constructor_run_range_count != 1 ||
-      owned->profile.native_mimalloc_constructor_run_ranges[0].begin != 2 ||
+      owned->profile.native_mimalloc_constructor_run_ranges[0].begin !=
+          checkpoint ||
       owned->profile.native_mimalloc_constructor_run_ranges[0].end_exclusive !=
           owned->profile.init_array_count ||
-      owned->profile.native_mimalloc_thread_initializer_after_constructor !=
-          2) {
+      (kGuestElfMachine == EM_X86_64 && checkpoint != 2)) {
     *error =
         "external host ABI profile changed the verified constructor policy";
     return nullptr;
@@ -669,9 +677,10 @@ bool ValidateProfileAgainstElf(const std::string& payload_path,
   }
   GElf_Ehdr header{};
   if (gelf_getehdr(elf.get(), &header) == nullptr ||
-      gelf_getclass(elf.get()) != ELFCLASS64 || header.e_machine != EM_X86_64 ||
-      header.e_type != ET_DYN) {
-    *error = "payload must be an x86-64 ET_DYN ELF object";
+      gelf_getclass(elf.get()) != ELFCLASS64 ||
+      header.e_machine != kGuestElfMachine || header.e_type != ET_DYN) {
+    *error = "payload must be a " + std::string(kGuestAbi) +
+             " ET_DYN ELF object";
     return false;
   }
 

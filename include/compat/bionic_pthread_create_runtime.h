@@ -25,11 +25,12 @@ void ConfigureBionicPthreadThreadInitializer(
 
 }  // namespace mocktail::compat
 
+struct MocktailBionicPthreadAttr;
+
 // Rebuilds attributes instead of passing Android pthread_attr_t to glibc.
-extern "C" int mocktail_bionic_pthread_create(pthread_t* thread,
-                                               const pthread_attr_t* attr,
-                                               void* (*start_routine)(void*),
-                                               void* argument);
+extern "C" int mocktail_bionic_pthread_create(
+    pthread_t* thread, const MocktailBionicPthreadAttr* attr,
+    void* (*start_routine)(void*), void* argument);
 
 // Guest real-time scheduling is denied to avoid the host RLIMIT_RTTIME watchdog.
 extern "C" int mocktail_bionic_pthread_setschedparam(

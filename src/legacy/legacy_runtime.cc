@@ -36,7 +36,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/prctl.h>
+#if defined(__x86_64__)
 #include <asm/prctl.h>
+#endif
 #include <sys/syscall.h>
 #include <vector>
 
@@ -49,6 +51,7 @@
 #include "compat/bionic_socket_runtime.h"
 #include "compat/build_profile.h"
 #include "compat/elf_build_id.h"
+#include "compat/guest_abi.h"
 #include "compat/host_abi_experiment.h"
 #include "compat/host_abi_profile.h"
 #include "compat/host_allocator_bridge.h"
@@ -1006,7 +1009,7 @@ struct BionicAddrInfo {
 };
 
 static_assert(sizeof(BionicAddrInfo) == 48,
-              "unexpected x86_64 bionic addrinfo size");
+              "unexpected bionic addrinfo size");
 
 bool DnsTraceEnabled() {
   return IsEnabled("MOCKTAIL_DNS_TRACE");
@@ -1371,15 +1374,31 @@ bool IsUnsafeSoftTimeoutModule(void* rip) {
 void JniOnLoadTimeoutAlarm(int, siginfo_t* info, void* context) {
   static_cast<void>(info);
   auto* uc = static_cast<ucontext_t*>(context);
+#if defined(__x86_64__)
   auto rip = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]) : 0;
   auto rsp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RSP]) : 0;
   auto rbp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RBP]) : 0;
   auto rax = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RAX]) : 0;
+  const char* regs_format =
+      "  [timeout] RIP=0x%016llx RSP=0x%016llx RBP=0x%016llx "
+      "RAX=0x%016llx\n";
+#elif defined(__aarch64__)
+  auto rip = uc ? static_cast<uintptr_t>(uc->uc_mcontext.pc) : 0;
+  auto rsp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.sp) : 0;
+  auto rbp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.regs[29]) : 0;
+  auto rax = uc ? static_cast<uintptr_t>(uc->uc_mcontext.regs[0]) : 0;
+  const char* regs_format =
+      "  [timeout] PC=0x%016llx SP=0x%016llx FP=0x%016llx "
+      "X0=0x%016llx\n";
+#else
+  uintptr_t rip = 0, rsp = 0, rbp = 0, rax = 0;
+  const char* regs_format =
+      "  [timeout] PC=0x%016llx SP=0x%016llx FP=0x%016llx "
+      "X0=0x%016llx\n";
+#endif
   char regs_msg[192];
   int len = std::snprintf(
-      regs_msg, sizeof(regs_msg),
-      "  [timeout] RIP=0x%016llx RSP=0x%016llx RBP=0x%016llx "
-      "RAX=0x%016llx\n",
+      regs_msg, sizeof(regs_msg), regs_format,
       static_cast<unsigned long long>(rip), static_cast<unsigned long long>(rsp),
       static_cast<unsigned long long>(rbp), static_cast<unsigned long long>(rax));
   write(2, regs_msg, static_cast<size_t>(len));
@@ -2422,10 +2441,12 @@ jobject BuildDeviceParams(JNIEnv* env) {
       GetEnvString("MOCKTAIL_DEVICE_NAME", "Mocktail Linux");
   const std::string manufacturer =
       GetEnvString("MOCKTAIL_DEVICE_MANUFACTURER", "Mocktail");
-  const std::string device_sku =
-      GetEnvString("MOCKTAIL_DEVICE_SKU", "mocktail-x86_64");
+  const std::string device_sku = GetEnvString(
+      "MOCKTAIL_DEVICE_SKU",
+      ("mocktail-" + std::string(mocktail::compat::kGuestCpuName)).c_str());
   const std::string soc_model =
-      GetEnvString("MOCKTAIL_DEVICE_SOC_MODEL", "x86_64");
+      GetEnvString("MOCKTAIL_DEVICE_SOC_MODEL",
+                   std::string(mocktail::compat::kGuestCpuName).c_str());
   SetStringField(env, params, "osVersion", "33");
   SetStringField(env, params, "deviceName", device_name.c_str());
   const std::string app_version =
@@ -4621,12 +4642,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
 
   // Roblox internal threads trigger SI_KERNEL traps from CET shadow-stack
   // return mismatches. Unsupported kernels ignore this request.
+#if defined(__x86_64__)
   {
     long r = syscall(SYS_arch_prctl, ARCH_SHSTK_DISABLE, ARCH_SHSTK_SHSTK);
     if (r == 0) {
       std::cout << "  [cet] shadow-stack (SHSTK) disabled\n";
     }
   }
+#endif
 
   if (build_profile.allow_legacy_binary_patches) {
     std::cerr
@@ -5545,6 +5568,27 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                          reinterpret_cast<void*>(mocktail_pthread_spin_trylock));
   linker::RegisterSymbol("pthread_spin_unlock",
                          reinterpret_cast<void*>(mocktail_pthread_spin_unlock));
+  linker::RegisterSymbol(
+      "pthread_attr_init",
+      reinterpret_cast<void*>(mocktail_pthread_attr_init));
+  linker::RegisterSymbol(
+      "pthread_attr_destroy",
+      reinterpret_cast<void*>(mocktail_pthread_attr_destroy));
+  linker::RegisterSymbol(
+      "pthread_attr_setstacksize",
+      reinterpret_cast<void*>(mocktail_pthread_attr_setstacksize));
+  linker::RegisterSymbol(
+      "pthread_attr_setdetachstate",
+      reinterpret_cast<void*>(mocktail_pthread_attr_setdetachstate));
+  linker::RegisterSymbol(
+      "pthread_attr_setschedparam",
+      reinterpret_cast<void*>(mocktail_pthread_attr_setschedparam));
+  linker::RegisterSymbol(
+      "pthread_getattr_np",
+      reinterpret_cast<void*>(mocktail_pthread_getattr_np));
+  linker::RegisterSymbol(
+      "pthread_attr_getstack",
+      reinterpret_cast<void*>(mocktail_pthread_attr_getstack));
   linker::RegisterSymbol("pthread_barrier_init",
                          reinterpret_cast<void*>(mocktail_pthread_barrier_init));
   linker::RegisterSymbol(
@@ -5664,7 +5708,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
 
   if (roblox_handle == nullptr) {
     std::cerr << "\n[FATAL] Could not load '" << library_path << "'.\n"
-              << "  Extract lib/x86_64/libroblox.so from a Roblox APK and\n"
+              << "  Extract lib/" << compat::kGuestAbi
+              << "/libroblox.so from a Roblox APK and\n"
               << "  place it at the path above (or set ROBLOX_LIB_PATH).\n";
     return EXIT_FAILURE;
   }

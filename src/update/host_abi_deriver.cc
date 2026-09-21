@@ -28,6 +28,7 @@
 
 #include "compat/elf_build_id.h"
 #include "compat/fmod_output_device_contract.h"
+#include "compat/guest_abi.h"
 #include "update/payload_integrity.h"
 
 namespace mocktail::update {
@@ -220,9 +221,10 @@ class ElfImage final {
     if (elf_ == nullptr || elf_kind(elf_) != ELF_K_ELF ||
         gelf_getehdr(elf_, &header) == nullptr ||
         gelf_getclass(elf_) != ELFCLASS64 || header.e_type != ET_DYN ||
-        header.e_machine != EM_X86_64 || header.e_version != EV_CURRENT ||
+        header.e_machine != compat::kGuestElfMachine ||
+        header.e_version != EV_CURRENT ||
         header.e_ident[EI_DATA] != ELFDATA2LSB) {
-      *error = "candidate must be a little-endian x86-64 ET_DYN ELF";
+      *error = "candidate must be a little-endian guest-abi ET_DYN ELF";
       return false;
     }
     std::size_t program_count = 0;
@@ -1879,7 +1881,7 @@ std::optional<Json> LoadCandidateMetadata(const std::filesystem::path& root,
       metadata->contains("sha256") ? &(*metadata)["sha256"] : nullptr;
   if (metadata->value("schema_version", 0) != 1 ||
       metadata->value("package", "") != "com.roblox.client" ||
-      metadata->value("abi", "") != "x86_64" || version_name.empty() ||
+      metadata->value("abi", "") != compat::kGuestAbi || version_name.empty() ||
       version_code == 0 ||
       metadata->value("elf_build_id", "") != candidate.build_id() ||
       hashes == nullptr || !hashes->is_object() ||

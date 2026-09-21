@@ -27,12 +27,21 @@ constexpr const char* kIcdDirectories[] = {
     "/usr/local/share/vulkan/icd.d",
 };
 
+#if defined(__aarch64__)
+constexpr char kNativeArchitecture[] = "aarch64";
+
+constexpr const char* kForeignArchitectures[] = {
+    "i686",  "i586", "i486",  "i386",    "x86_64",  "x86.",
+    "amd64", "armhf", "armv7", "ppc64", "riscv64", "s390x",
+};
+#else
 constexpr char kNativeArchitecture[] = "x86_64";
 
 constexpr const char* kForeignArchitectures[] = {
     "i686", "i586", "i486", "i386",   "x86.",   "aarch64",
     "arm64", "armhf", "armv7", "ppc64", "riscv64", "s390x",
 };
+#endif
 
 struct HostGpus {
   bool intel = false;

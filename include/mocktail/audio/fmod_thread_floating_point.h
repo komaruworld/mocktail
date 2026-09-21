@@ -6,6 +6,9 @@
 #if defined(__x86_64__)
 #include <xmmintrin.h>
 #endif
+#if defined(__aarch64__)
+#include <cstdint>
+#endif
 
 namespace mocktail::audio {
 
@@ -22,16 +25,23 @@ class FmodThreadFloatingPointMode final {
       delete;
 
   bool Enable(const char* thread_name) noexcept {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
     if (active_ || thread_name == nullptr) return false;
     const std::string_view name(thread_name);
     if (name != "FMOD mixer thread" && name != "FMOD feeder thread" &&
         name != "FMOD Convolution thread" && name != "FMOD Worker Thread") {
       return false;
     }
+#if defined(__x86_64__)
     const unsigned int control = _mm_getcsr();
     original_mode_ = control & kModeMask;
     _mm_setcsr(control | kModeMask);
+#else
+    std::uint64_t control;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(control));
+    original_mode_ = control & kModeMask;
+    __asm__ volatile("msr fpcr, %0" ::"r"(control | kModeMask));
+#endif
     active_ = true;
     return true;
 #else
@@ -41,11 +51,18 @@ class FmodThreadFloatingPointMode final {
   }
 
   void Restore() noexcept {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
     if (active_) {
       // Restore only our two bits, preserving rounding, exception masks and
       // status flags set by the guest while the thread was attached.
+#if defined(__x86_64__)
       _mm_setcsr((_mm_getcsr() & ~kModeMask) | original_mode_);
+#else
+      std::uint64_t control;
+      __asm__ volatile("mrs %0, fpcr" : "=r"(control));
+      __asm__ volatile("msr fpcr, %0" ::"r"((control & ~kModeMask) |
+                                          original_mode_));
+#endif
       active_ = false;
     }
 #endif
@@ -55,6 +72,13 @@ class FmodThreadFloatingPointMode final {
 #if defined(__x86_64__)
   static constexpr unsigned int kModeMask = (1U << 15) | (1U << 6);
   unsigned int original_mode_ = 0;
+  bool active_ = false;
+#elif defined(__aarch64__)
+  // FPCR FZ flushes single/double subnormals; FZ16 covers the half-precision
+  // path used by some voice DSP filters.
+  static constexpr std::uint64_t kModeMask =
+      (std::uint64_t{1} << 24) | (std::uint64_t{1} << 19);
+  std::uint64_t original_mode_ = 0;
   bool active_ = false;
 #endif
 };

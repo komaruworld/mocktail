@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "compat/guest_abi.h"
 #include "runtime/roblox_launch_uri.h"
 
 namespace mocktail {
@@ -241,11 +242,12 @@ std::string CommandLineUsage(const std::string& program_name) {
   usage
       << "Usage: " << (program_name.empty() ? "mocktail" : program_name)
       << " [options] [roblox-uri]\n\n"
-      << "Normal startup downloads and activates a verified managed x86_64 "
-         "Roblox payload automatically.\n\n"
+      << "Normal startup downloads and activates a verified managed "
+      << compat::kGuestAbi
+      << " Roblox payload automatically.\n\n"
       << "Options:\n"
       << "  --roblox-lib <path>      Development override for a specific "
-         "x86_64 libroblox.so\n"
+      << compat::kGuestAbi << " libroblox.so\n"
       << "  --headless               Run without creating an SDL window\n"
       << "  --windowed               Force windowed startup (default)\n"
       << "  --graphics <backend>     direct-vulkan | opengl | system | "

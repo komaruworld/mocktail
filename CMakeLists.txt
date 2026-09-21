@@ -648,6 +648,11 @@ target_link_options(mocktail PRIVATE
 )
 
 # Native FreeBSD helper for Linuxulator's unsupported DF socket option.
+# The helper is x86-64 assembly; other host architectures have nothing to
+# assemble.
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER OFF)
+endif()
 option(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER
   "Build the native FreeBSD Linuxulator socket helper" ON)
 if(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER)

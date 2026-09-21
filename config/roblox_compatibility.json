@@ -66,6 +66,17 @@
     {
       "version_name": "2.736.1408",
       "version_code": 2998,
+      "elf_build_id": "ed2b035768b1513561d0e6ea7f9bbec35b0e60e5",
+      "status": "experimental",
+      "default_allowed": true,
+      "allow_legacy_binary_patches": false,
+      "allow_host_abi_bridges": true,
+      "allow_host_constructor_replay": true,
+      "reason": "AArch64 arm64-v8a payload of the same 2.736.1408 release as the verified x86-64 profile; allocator, constructor replay, and pre-JNI bootstrap RVAs were derived by cross-architecture semantic matching. Pending runtime validation."
+    },
+    {
+      "version_name": "2.736.1408",
+      "version_code": 2998,
       "elf_build_id": "ade08266c67aee88ec9c1d00902150e1684dad3a",
       "status": "supported",
       "default_allowed": true,

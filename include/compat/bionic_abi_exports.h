@@ -33,6 +33,23 @@ void SetLegacyBionicDiagnosticsEnabled(bool enabled);
 // guest layout explicit instead of exposing the incompatible host libc type.
 using MocktailBionicMutexAttr = int64_t;
 
+// Bionic LP64 pthread_attr_t: 56 bytes with explicit field offsets. The host
+// glibc layout is opaque and wider on aarch64, so guest buffers must be read
+// and written through this struct only.
+struct MocktailBionicPthreadAttr {
+  std::uint32_t flags;
+  void* stack_base;
+  std::size_t stack_size;
+  std::size_t guard_size;
+  std::int32_t sched_policy;
+  std::int32_t sched_priority;
+  char reserved[16];
+};
+static_assert(sizeof(MocktailBionicPthreadAttr) == 56);
+
+inline constexpr std::uint32_t kMocktailBionicAttrFlagDetached = 0x1;
+inline constexpr std::uint32_t kMocktailBionicAttrFlagUserStack = 0x2;
+
 extern "C" {
 
 void mocktail_set_current_jni_env(void* env);
@@ -83,6 +100,18 @@ int mocktail_pthread_barrier_init(pthread_barrier_t* barrier,
                                   unsigned count);
 int mocktail_pthread_barrier_destroy(pthread_barrier_t* barrier);
 int mocktail_pthread_barrier_wait(pthread_barrier_t* barrier);
+
+int mocktail_pthread_attr_init(MocktailBionicPthreadAttr* attr);
+int mocktail_pthread_attr_destroy(MocktailBionicPthreadAttr* attr);
+int mocktail_pthread_attr_setstacksize(MocktailBionicPthreadAttr* attr,
+                                       size_t stack_size);
+int mocktail_pthread_attr_setdetachstate(MocktailBionicPthreadAttr* attr,
+                                         int detach_state);
+int mocktail_pthread_attr_setschedparam(MocktailBionicPthreadAttr* attr,
+                                        const struct sched_param* parameters);
+int mocktail_pthread_getattr_np(MocktailBionicPthreadAttr* attr);
+int mocktail_pthread_attr_getstack(const MocktailBionicPthreadAttr* attr,
+                                   void** stack_base, size_t* stack_size);
 
 extern void* mocktail_gameactivity_on_start_native;
 extern void* mocktail_gameactivity_on_resume_native;
