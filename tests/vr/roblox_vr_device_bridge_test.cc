@@ -447,6 +447,75 @@ TEST(VrProfileParsing, ParsesAndRejectsBridgeSection) {
   }
 }
 
+// Reproduces issue #153: a Roblox build whose compatibility profile arms the
+// fullscreen and output-device bridges but carries no vr_debug_device_bridge
+// metadata must fail closed when --vr is requested, surfacing the exact
+// FATAL message the reporter saw.
+TEST(VrProfileParsing, Issue153VrBridgeFailsWithoutMetadataForArmedProfile) {
+  const std::string directory = std::string(MOCKTAIL_TEST_BINARY_DIRECTORY);
+  const auto write_manifest = [&directory](const char *name,
+                                           const std::string &contents) {
+    const std::string path = directory + "/" + name;
+    std::ofstream output(path);
+    output << contents;
+    output.close();
+    return path;
+  };
+
+  // The reporter's payload Build ID from the issue log. The profile is
+  // fully armed for fullscreen + FMOD output-device interposition, so the
+  // runtime reaches the VR device bridge install step, but it omits
+  // vr_debug_device_bridge entirely.
+  const std::string manifest = R"({
+    "schema_version": 1,
+    "profiles": [{
+      "version_name": "2.738.266",
+      "version_code": 3092,
+      "elf_build_id": "5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
+      "status": "supported",
+      "default_allowed": true,
+      "allow_legacy_binary_patches": false,
+      "allow_host_abi_bridges": true,
+      "allow_host_constructor_replay": true,
+      "user_game_settings_fullscreen_setter_rva": "0x4612345",
+      "fmod_output_device_bridge": {
+        "vtable_rva": "0x6d00040",
+        "string_constructor_rva": "0x1d40000",
+        "count_method_rva": "0x32d1000",
+        "info_method_rva": "0x32d10a0",
+        "current_method_rva": "0x32d1050",
+        "select_method_rva": "0x32d0d04"
+      },
+      "reason": "issue 153 reproduction profile: armed without vr metadata"
+    }]
+  })";
+
+  const std::string path =
+      write_manifest("vr_profile_issue153.json", manifest);
+  const auto result = compat::FindBuildProfile(
+      path, "5f0704edd9064f566ee3d6df2bd2fabbcc709f03");
+  std::remove(path.c_str());
+
+  // The profile must resolve: fullscreen and output-device bridges would arm.
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result.profile.has_value());
+  ASSERT_TRUE(result.profile->fmod_output_device_bridge.has_value());
+  ASSERT_TRUE(result.profile->user_game_settings_fullscreen_setter_rva
+                  .has_value());
+  // But it carries no VR debug-device bridge metadata.
+  ASSERT_FALSE(result.profile->vr_debug_device_bridge.has_value());
+
+  // Installing the VR device bridge against this profile must fail closed with
+  // the exact message the reporter hit in the FATAL log line.
+  RobloxVrDeviceBridge bridge;
+  const Status status = bridge.Install(*result.profile);
+  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(status.code(), StatusCode::kFailedPrecondition);
+  EXPECT_EQ(status.message(),
+            "experimental Roblox VR requires vr_debug_device_bridge metadata in "
+            "the exact-build compatibility profile");
+}
+
 } // namespace
 } // namespace mocktail::vr
 
