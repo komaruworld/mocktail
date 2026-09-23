@@ -1,7 +1,5 @@
 #include "mocktail/platform/sdl_event_converter.h"
 
-#include <SDL3/SDL_mouse.h>
-
 #include <cstdint>
 
 namespace mocktail {
@@ -71,14 +69,11 @@ bool ConvertSdlEvent(SDL_Window* window, const SDL_Event& source,
           source.button.x, source.button.y};
       return true;
     case SDL_EVENT_MOUSE_WHEEL: {
-      float delta_x = source.wheel.x;
-      float delta_y = source.wheel.y;
-      if (source.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
-        delta_x = -delta_x;
-        delta_y = -delta_y;
-      }
+      // SDL already applies the host's natural-scrolling preference to x/y.
+      // Undoing SDL_MOUSEWHEEL_FLIPPED here would ignore the OS setting.
       destination->payload = MouseWheelEvent{
-          delta_x, delta_y, source.wheel.mouse_x, source.wheel.mouse_y};
+          source.wheel.x, source.wheel.y, source.wheel.mouse_x,
+          source.wheel.mouse_y};
       return true;
     }
     case SDL_EVENT_FINGER_DOWN:
