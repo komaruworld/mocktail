@@ -109,7 +109,8 @@ int mocktail_pthread_attr_setdetachstate(MocktailBionicPthreadAttr* attr,
                                          int detach_state);
 int mocktail_pthread_attr_setschedparam(MocktailBionicPthreadAttr* attr,
                                         const struct sched_param* parameters);
-int mocktail_pthread_getattr_np(MocktailBionicPthreadAttr* attr);
+int mocktail_pthread_getattr_np(pthread_t thread,
+                                MocktailBionicPthreadAttr* attr);
 int mocktail_pthread_attr_getstack(const MocktailBionicPthreadAttr* attr,
                                    void** stack_base, size_t* stack_size);
 

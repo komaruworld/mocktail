@@ -327,12 +327,13 @@ int mocktail_pthread_attr_setschedparam(MocktailBionicPthreadAttr* attr,
   return 0;
 }
 
-int mocktail_pthread_getattr_np(MocktailBionicPthreadAttr* attr) {
+int mocktail_pthread_getattr_np(pthread_t thread,
+                                MocktailBionicPthreadAttr* attr) {
   if (attr == nullptr) {
     return EINVAL;
   }
   pthread_attr_t host_attr;
-  int result = pthread_getattr_np(pthread_self(), &host_attr);
+  int result = pthread_getattr_np(thread, &host_attr);
   if (result != 0) {
     return result;
   }
@@ -350,7 +351,7 @@ int mocktail_pthread_getattr_np(MocktailBionicPthreadAttr* attr) {
   sched_param parameters{};
   int policy = SCHED_OTHER;
   if (result == 0) {
-    result = pthread_getschedparam(pthread_self(), &policy, &parameters);
+    result = pthread_getschedparam(thread, &policy, &parameters);
   }
   pthread_attr_destroy(&host_attr);
   if (result != 0) {
