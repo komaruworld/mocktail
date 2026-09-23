@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
 #include <fontconfig/fontconfig.h>
+#include <utf8proc.h>
 
 #include <algorithm>
 #include <atomic>
@@ -65,7 +66,8 @@ bool IsUtf8Continuation(unsigned char value) {
 
 SensitiveString VisibleTextWindow(
     const RobloxTextOverlayPresentation& presentation, std::size_t* caret_byte,
-    std::size_t* selection_begin_byte, std::size_t* selection_end_byte) {
+    std::size_t* selection_begin_byte, std::size_t* selection_end_byte,
+    std::size_t* window_begin) {
   SensitiveString result;
   const std::string& text = presentation.display_utf8;
   const std::size_t caret = std::min(presentation.caret_utf8_byte, text.size());
@@ -74,6 +76,7 @@ SensitiveString VisibleTextWindow(
   const std::size_t selection_end =
       std::min(presentation.selection_end_utf8_byte, text.size());
   if (text.size() <= kMaximumRasterTextBytes) {
+    *window_begin = 0;
     result.value = text;
     *caret_byte = caret;
     *selection_begin_byte = std::min(selection_begin, selection_end);
@@ -96,6 +99,7 @@ SensitiveString VisibleTextWindow(
     --end;
   }
   result.value.assign(text.data() + begin, end - begin);
+  *window_begin = begin;
   *caret_byte = std::min(caret - begin, result.value.size());
   const auto map_to_window = [begin, end](std::size_t byte) {
     if (byte <= begin) {
@@ -281,6 +285,8 @@ Status RobloxTextSurfaceOverlay::Initialize(
                          "text surface overlay is already initialized");
   }
   viewport_ = viewport;
+  hit_generation_ = 0;
+  hit_clusters_.clear();
   failure_ = Status::Ok();
   initialized_ = true;
   g_active_overlay = this;
@@ -296,6 +302,8 @@ Status RobloxTextSurfaceOverlay::Shutdown() {
     g_active_overlay = nullptr;
   }
   state_.Reset();
+  hit_generation_ = 0;
+  hit_clusters_.clear();
   ClearFrameLocked();
   viewport_ = {};
   initialized_ = false;
@@ -317,11 +325,64 @@ Status RobloxTextSurfaceOverlay::UpdateViewport(
                          "text surface overlay is not initialized");
   }
   viewport_ = viewport;
+  hit_generation_ = 0;
+  hit_clusters_.clear();
   return Status::Ok();
 }
 
 RobloxTextDisplaySink RobloxTextSurfaceOverlay::sink() {
-  return {this, &RobloxTextSurfaceOverlay::UpdateCallback};
+  return {this, &RobloxTextSurfaceOverlay::UpdateCallback,
+          &RobloxTextSurfaceOverlay::HitTestCallback};
+}
+
+bool RobloxTextSurfaceOverlay::HitTestCallback(void* context,
+                                               uint64_t generation, float x,
+                                               float y,
+                                               std::size_t* byte_offset) {
+  return context != nullptr &&
+         static_cast<RobloxTextSurfaceOverlay*>(context)->HitTest(
+             generation, x, y, byte_offset);
+}
+
+bool RobloxTextSurfaceOverlay::HitTest(uint64_t generation, float x, float y,
+                                       std::size_t* byte_offset) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto& presentation = state_.presentation();
+  if (byte_offset == nullptr || !presentation.visible ||
+      generation != hit_generation_ || generation != presentation.generation ||
+      hit_text_bytes_ != presentation.display_utf8.size() ||
+      !std::isfinite(x) || !std::isfinite(y)) {
+    return false;
+  }
+  if (hit_clusters_.empty()) {
+    if (hit_text_bytes_ != 0) {
+      return false;
+    }
+    *byte_offset = 0;
+    return true;
+  }
+  const int px = static_cast<int>(std::clamp(
+      x, static_cast<float>(std::numeric_limits<int>::min() / 2),
+      static_cast<float>(std::numeric_limits<int>::max() / 2)));
+  const int py = static_cast<int>(std::clamp(
+      y, static_cast<float>(std::numeric_limits<int>::min() / 2),
+      static_cast<float>(std::numeric_limits<int>::max() / 2)));
+  int best_y = std::numeric_limits<int>::max();
+  int best_x = std::numeric_limits<int>::max();
+  for (const HitCluster& cluster : hit_clusters_) {
+    const int dy =
+        std::max({cluster.y - py, 0, py - (cluster.y + cluster.height)});
+    const int dx =
+        std::max({cluster.x - px, 0, px - (cluster.x + cluster.width)});
+    if (dy > best_y || (dy == best_y && dx >= best_x)) {
+      continue;
+    }
+    best_y = dy;
+    best_x = dx;
+    const bool left_half = px < cluster.x + cluster.width / 2;
+    *byte_offset = (left_half != cluster.rtl) ? cluster.begin : cluster.end;
+  }
+  return true;
 }
 
 void RobloxTextSurfaceOverlay::UpdateCallback(
@@ -338,6 +399,24 @@ void RobloxTextSurfaceOverlay::ApplyUpdate(
     return;
   }
   bool changed = false;
+  const auto& previous = state_.presentation();
+  const bool layout_changed =
+      update.event == RobloxTextDisplayEvent::kHide ||
+      previous.generation != update.generation ||
+      previous.display_utf8.size() != update.utf8_size ||
+      (update.utf8 != nullptr &&
+       previous.display_utf8.compare(0, std::string::npos, update.utf8,
+                                     update.utf8_size) != 0) ||
+      previous.geometry.x != update.area_x ||
+      previous.geometry.y != update.area_y ||
+      previous.geometry.width != update.area_width ||
+      previous.geometry.height != update.area_height ||
+      previous.font != update.font ||
+      previous.font_size != update.font_size ||
+      previous.x_alignment != update.x_alignment ||
+      previous.y_alignment != update.y_alignment ||
+      previous.multiline != update.multiline ||
+      previous.text_wrapped != update.text_wrapped;
   Status status = state_.Apply(update, viewport_, &changed);
   if (!status.ok()) {
     RecordFailureLocked(std::move(status));
@@ -345,6 +424,10 @@ void RobloxTextSurfaceOverlay::ApplyUpdate(
   }
   if (!changed) {
     return;
+  }
+  if (layout_changed) {
+    hit_generation_ = 0;
+    hit_clusters_.clear();
   }
   ++state_revision_;
   if (state_revision_ == 0) {
@@ -484,10 +567,13 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
   std::size_t caret_byte = 0;
   std::size_t selection_begin_byte = 0;
   std::size_t selection_end_byte = 0;
+  std::size_t window_begin = 0;
   SensitiveString text = VisibleTextWindow(
-      presentation, &caret_byte, &selection_begin_byte, &selection_end_byte);
+      presentation, &caret_byte, &selection_begin_byte, &selection_end_byte,
+      &window_begin);
   SDL_Surface* rendered = nullptr;
   SDL_Surface* converted = nullptr;
+  std::vector<HitCluster> candidate_hits;
   const SDL_Color text_color = ResolveTextColor(presentation.text_color);
   TTF_Text* layout = TTF_CreateText(nullptr, fonts.front(), text.value.data(),
                                     text.value.size());
@@ -543,6 +629,77 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
       text_y = std::max(clip_top, (frame_height - text_height) / 2);
     } else if (presentation.y_alignment == 2) {
       text_y = std::max(clip_top, clip_bottom - text_height);
+    }
+    if (layout != nullptr && !text.value.empty()) {
+      // A range query returns merged rectangles (often one for the entire
+      // line), so it cannot be used for pointer selection. Query each Unicode
+      // grapheme instead; ligatures sharing a shaping cluster split its width.
+      std::vector<std::size_t> boundaries{0};
+      utf8proc_int32_t previous = 0;
+      utf8proc_int32_t break_state = 0;
+      bool have_previous = false;
+      for (std::size_t offset = 0; offset < text.value.size();) {
+        utf8proc_int32_t codepoint = 0;
+        const utf8proc_ssize_t count = utf8proc_iterate(
+            reinterpret_cast<const utf8proc_uint8_t*>(text.value.data() +
+                                                       offset),
+            static_cast<utf8proc_ssize_t>(text.value.size() - offset),
+            &codepoint);
+        if (count <= 0) {
+          break;
+        }
+        if (have_previous &&
+            utf8proc_grapheme_break_stateful(previous, codepoint,
+                                             &break_state)) {
+          boundaries.push_back(offset);
+        }
+        previous = codepoint;
+        have_previous = true;
+        offset += static_cast<std::size_t>(count);
+      }
+      boundaries.push_back(text.value.size());
+      std::vector<TTF_SubString> substrings;
+      for (std::size_t index = 0; index + 1 < boundaries.size(); ++index) {
+        TTF_SubString substring{};
+        if (!TTF_GetTextSubString(layout, static_cast<int>(boundaries[index]),
+                                  &substring)) {
+          break;
+        }
+        substrings.push_back(substring);
+        candidate_hits.push_back(
+            {window_begin + boundaries[index],
+             window_begin + boundaries[index + 1],
+             presentation.geometry.x + text_offset + substring.rect.x,
+             presentation.geometry.y + text_y + substring.rect.y,
+             substring.rect.w, substring.rect.h,
+             (substring.flags & TTF_SUBSTRING_DIRECTION_MASK) ==
+                 TTF_DIRECTION_RTL});
+      }
+      for (std::size_t first = 0; first < substrings.size();) {
+        std::size_t last = first + 1;
+        while (last < substrings.size() &&
+               substrings[last].offset == substrings[first].offset &&
+               substrings[last].length == substrings[first].length &&
+               substrings[last].rect.x == substrings[first].rect.x &&
+               substrings[last].rect.y == substrings[first].rect.y) {
+          ++last;
+        }
+        const int width = substrings[first].rect.w;
+        for (std::size_t index = first; index < last; ++index) {
+          const std::size_t ordinal = candidate_hits[index].rtl
+                                          ? last - 1 - index
+                                          : index - first;
+          const int left = static_cast<int>(
+              static_cast<int64_t>(width) * static_cast<int64_t>(ordinal) /
+              static_cast<int64_t>(last - first));
+          const int right = static_cast<int>(
+              static_cast<int64_t>(width) * static_cast<int64_t>(ordinal + 1) /
+              static_cast<int64_t>(last - first));
+          candidate_hits[index].x += left;
+          candidate_hits[index].width = right - left;
+        }
+        first = last;
+      }
     }
     const auto fill_highlight = [&](int left, int top, int right, int bottom) {
       const int bounded_left = std::clamp(left, clip_left, clip_right);
@@ -636,6 +793,9 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
   }
   SecureClear(&rgba_);
   rgba_ = std::move(candidate);
+  hit_clusters_ = std::move(candidate_hits);
+  hit_generation_ = presentation.generation;
+  hit_text_bytes_ = presentation.display_utf8.size();
   raster_revision_ = state_revision_;
   if (!ready_logged_) {
     ready_logged_ = true;

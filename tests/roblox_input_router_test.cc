@@ -86,6 +86,30 @@ class ClipboardProbe final : public platform::TextClipboard {
   int read_calls = 0;
 };
 
+struct SelectionProbe {
+  int32_t begin = 0;
+  int32_t end = 0;
+  std::string text;
+};
+
+void SelectionUpdate(void* context, const RobloxTextDisplayUpdate& update) {
+  auto* probe = static_cast<SelectionProbe*>(context);
+  probe->begin = update.selection_begin_utf16;
+  probe->end = update.selection_end_utf16;
+  if (update.utf8 != nullptr) {
+    probe->text.assign(update.utf8, update.utf8_size);
+  }
+}
+
+bool SelectionHitTest(void*, uint64_t generation, float x, float,
+                      std::size_t* byte_offset) {
+  if (generation != 1 || byte_offset == nullptr) {
+    return false;
+  }
+  *byte_offset = x < 130 ? 0 : x < 160 ? 4 : 8;
+  return true;
+}
+
 Status ConsumeStatus(Probe* probe) {
   Status status = probe->next_status;
   probe->next_status = Status::Ok();
@@ -484,6 +508,62 @@ TEST(RobloxInputRouterClipboardTest,
             (std::vector<std::string>{"sync", "pass"}));
   EXPECT_EQ(router.Snapshot().text_events, 1u);
   EXPECT_EQ(router.Snapshot().keyboard_events, 0u);
+}
+
+TEST(RobloxInputRouterClipboardTest, ClickingFocusedTextboxKeepsCopyAvailable) {
+  Probe probe;
+  ClipboardProbe clipboard;
+  SelectionProbe selection;
+  RobloxInputRouter router(
+      Sink(&probe), {&selection, SelectionUpdate, SelectionHitTest}, &clipboard);
+  ASSERT_TRUE(router.Activate({1280, 720, 2560, 1440, 2.0F}, true).ok());
+  RobloxTextFocusSession session{42, 1, u8"join🙂", false, false};
+  session.area_x = 100;
+  session.area_y = 200;
+  session.area_width = 120;
+  session.area_height = 30;
+  ASSERT_TRUE(router.BeginTextFocusSession(std::move(session)).ok());
+
+  const auto click = router.HandleEvent(Event(platform::MouseButtonEvent{
+      true, SDL_BUTTON_LEFT, 1, 110.0F, 210.0F}));
+  EXPECT_EQ(click.state, RobloxInputDispatchState::kStateUpdated);
+  EXPECT_EQ(router.Snapshot().text_focus_generation, 1u);
+  EXPECT_TRUE(router.HandleEvent(Event(platform::MouseMotionEvent{
+      140.0F, 210.0F, 30.0F, 0.0F, SDL_BUTTON_LMASK})).status.ok());
+  EXPECT_EQ(selection.begin, 0);
+  EXPECT_EQ(selection.end, 4);
+  EXPECT_EQ(selection.text, u8"join🙂");
+  EXPECT_EQ(router.HandleEvent(Event(platform::MouseButtonEvent{
+                false, SDL_BUTTON_LEFT, 1, 140.0F, 210.0F}))
+                .state,
+            RobloxInputDispatchState::kStateUpdated);
+  EXPECT_TRUE(router.HandleEvent(Event(platform::KeyEvent{
+      true, false, SDL_SCANCODE_C, SDLK_C, SDL_KMOD_CTRL})).status.ok());
+  EXPECT_EQ(clipboard.value, "join");
+  EXPECT_TRUE(probe.keys.empty());
+
+  EXPECT_EQ(router.HandleEvent(Event(platform::MouseButtonEvent{
+                true, SDL_BUTTON_LEFT, 1, 175.0F, 210.0F}))
+                .state,
+            RobloxInputDispatchState::kStateUpdated);
+  EXPECT_TRUE(router.HandleEvent(Event(platform::MouseMotionEvent{
+      140.0F, 210.0F, -35.0F, 0.0F, SDL_BUTTON_LMASK})).status.ok());
+  EXPECT_EQ(selection.begin, 4);
+  EXPECT_EQ(selection.end, 6);
+  EXPECT_EQ(router.HandleEvent(Event(platform::MouseButtonEvent{
+                false, SDL_BUTTON_LEFT, 1, 140.0F, 210.0F}))
+                .state,
+            RobloxInputDispatchState::kStateUpdated);
+  EXPECT_TRUE(router.HandleEvent(Event(platform::KeyEvent{
+      true, false, SDL_SCANCODE_C, SDLK_C, SDL_KMOD_CTRL})).status.ok());
+  EXPECT_EQ(clipboard.value, u8"🙂");
+
+  EXPECT_TRUE(router.HandleEvent(Event(platform::MouseButtonEvent{
+      true, SDL_BUTTON_LEFT, 1, 300.0F, 210.0F})).dispatched());
+  EXPECT_EQ(router.Snapshot().text_focus_generation, 0u);
+  EXPECT_EQ(probe.text_operations,
+            (std::vector<std::string>{"sync", "sync", "sync", "sync",
+                                      "handle"}));
 }
 
 TEST_F(RobloxInputRouterTest,

@@ -33,10 +33,14 @@ class RobloxTextSurfaceOverlay final {
 
   bool QueryFrame(MocktailTextOverlayFrameInfo* frame);
   bool CopyFrame(std::uint64_t revision, void* rgba, std::size_t rgba_capacity);
+  bool HitTest(uint64_t generation, float x, float y,
+               std::size_t* byte_offset);
 
  private:
   static void UpdateCallback(void* context,
                              const RobloxTextDisplayUpdate& update);
+  static bool HitTestCallback(void* context, uint64_t generation, float x,
+                              float y, std::size_t* byte_offset);
   void ApplyUpdate(const RobloxTextDisplayUpdate& update);
   Status RasterizeLocked();
   void ClearFrameLocked();
@@ -46,6 +50,18 @@ class RobloxTextSurfaceOverlay final {
   RobloxTextDisplayState state_;
   RobloxTextOverlayViewport viewport_;
   std::vector<std::uint8_t> rgba_;
+  struct HitCluster {
+    std::size_t begin = 0;
+    std::size_t end = 0;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    bool rtl = false;
+  };
+  std::vector<HitCluster> hit_clusters_;
+  uint64_t hit_generation_ = 0;
+  std::size_t hit_text_bytes_ = 0;
   std::uint64_t state_revision_ = 0;
   std::uint64_t raster_revision_ = 0;
   Status failure_;
