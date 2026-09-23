@@ -284,6 +284,73 @@ TEST_F(SingleInstanceLockTest, IsolatedCanaryUsesStateRootLock) {
   EXPECT_TRUE(second.already_running());
 }
 
+TEST_F(SingleInstanceLockTest, TemporaryInstanceUsesPrivateStateRootLock) {
+  const std::filesystem::path data = root_ / "instance/data";
+  const std::filesystem::path cache = root_ / "instance/cache";
+  const std::filesystem::path state = root_ / "instance/state";
+  ASSERT_TRUE(std::filesystem::create_directories(data));
+  ASSERT_TRUE(std::filesystem::create_directories(cache));
+  ASSERT_TRUE(std::filesystem::create_directories(state));
+  const MapEnvironment environment({
+      {"HOME", (root_ / "home").string()},
+      {"MOCKTAIL_DATA_ROOT", data.string()},
+      {"MOCKTAIL_CACHE_ROOT", cache.string()},
+      {"MOCKTAIL_STATE_ROOT", state.string()},
+      {"MOCKTAIL_TEMP_INSTANCE", "1"},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+
+  SingleInstanceLock first =
+      SingleInstanceLock::AcquireForLaunch(environment, paths);
+  ASSERT_TRUE(first.acquired()) << first.error();
+  EXPECT_EQ(first.path(), state / "instance.lock");
+  SingleInstanceLock second =
+      SingleInstanceLock::AcquireForLaunch(environment, paths);
+  EXPECT_TRUE(second.already_running());
+}
+
+TEST_F(SingleInstanceLockTest, TemporaryInstancesDoNotCollideAcrossRoots) {
+  const MapEnvironment first_environment({
+      {"HOME", (root_ / "home").string()},
+      {"MOCKTAIL_DATA_ROOT", (root_ / "a/data").string()},
+      {"MOCKTAIL_CACHE_ROOT", (root_ / "a/cache").string()},
+      {"MOCKTAIL_STATE_ROOT", (root_ / "a/state").string()},
+      {"MOCKTAIL_TEMP_INSTANCE", "1"},
+  });
+  const MapEnvironment second_environment({
+      {"HOME", (root_ / "home").string()},
+      {"MOCKTAIL_DATA_ROOT", (root_ / "b/data").string()},
+      {"MOCKTAIL_CACHE_ROOT", (root_ / "b/cache").string()},
+      {"MOCKTAIL_STATE_ROOT", (root_ / "b/state").string()},
+      {"MOCKTAIL_TEMP_INSTANCE", "1"},
+  });
+  for (const std::filesystem::path& directory :
+       {root_ / "a/data", root_ / "a/cache", root_ / "a/state", root_ / "b/data",
+        root_ / "b/cache", root_ / "b/state"}) {
+    ASSERT_TRUE(std::filesystem::create_directories(directory));
+  }
+
+  SingleInstanceLock first = SingleInstanceLock::AcquireForLaunch(
+      first_environment, RuntimePaths::FromEnvironment(first_environment));
+  ASSERT_TRUE(first.acquired()) << first.error();
+  SingleInstanceLock second = SingleInstanceLock::AcquireForLaunch(
+      second_environment, RuntimePaths::FromEnvironment(second_environment));
+  EXPECT_TRUE(second.acquired()) << second.error();
+}
+
+TEST_F(SingleInstanceLockTest, TemporaryInstanceRequiresExplicitRoots) {
+  const MapEnvironment environment({
+      {"HOME", (root_ / "home").string()},
+      {"MOCKTAIL_TEMP_INSTANCE", "1"},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  SingleInstanceLock lock =
+      SingleInstanceLock::AcquireForLaunch(environment, paths);
+  EXPECT_EQ(lock.status(), SingleInstanceLock::Status::kError);
+  EXPECT_NE(lock.error().find("temporary instance requires"),
+            std::string::npos);
+}
+
 TEST_F(SingleInstanceLockTest, RejectsCanaryWithSharedRuntimeRoots) {
   const MapEnvironment environment({
       {"HOME", (root_ / "home").string()},

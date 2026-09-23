@@ -49,6 +49,7 @@
 #include "runtime/support_bundle.h"
 #include "runtime/supported_launch_policy.h"
 #include "runtime/system_proxy.h"
+#include "runtime/temporary_instance.h"
 #include "runtime/webview_helper_launcher.h"
 #include "services/auth_service.h"
 #include "services/browser_tracker_service.h"
@@ -282,8 +283,33 @@ int main(int argc, char* argv[]) {
       "MOCKTAIL_UPDATE_COMPATIBILITY_PATH",
       environment.GetOr("MOCKTAIL_COMPATIBILITY_MANIFEST",
                         MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST));
-  const mocktail::runtime::RuntimePaths paths =
+  mocktail::runtime::RuntimePaths paths =
       mocktail::runtime::RuntimePaths::FromEnvironment(environment);
+  std::optional<mocktail::runtime::TemporaryInstance> temporary_instance;
+  const auto start_temporary_instance =
+      [&]() -> mocktail::runtime::TemporaryInstanceResult {
+    mocktail::runtime::TemporaryInstanceResult prepared =
+        mocktail::runtime::PrepareTemporaryInstance(environment, paths);
+    if (!prepared) {
+      return prepared;
+    }
+    temporary_instance.emplace(prepared.root);
+    paths = mocktail::runtime::RuntimePaths::FromEnvironment(environment);
+    return prepared;
+  };
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
+      command_line.options.new_instance) {
+    const mocktail::runtime::TemporaryInstanceResult prepared =
+        start_temporary_instance();
+    if (!prepared) {
+      std::cerr << "[FATAL] " << prepared.error << '\n';
+      (void)mocktail::runtime::ShowFailureDialog(
+          environment, "Mocktail could not start a temporary instance.");
+      return EXIT_FAILURE;
+    }
+    std::cout << "  [runtime] temporary instance: private storage at "
+              << prepared.root << " (removed on exit)\n";
+  }
   if (command_line.options.force_run_latest) {
     std::cerr << "[runtime] WARNING: latest Roblox will run once without "
                  "approval and will not become the active payload\n";
@@ -339,6 +365,26 @@ int main(int argc, char* argv[]) {
     instance_lock.emplace(
         mocktail::runtime::SingleInstanceLock::AcquireForLaunch(environment,
                                                                 paths));
+    if (!instance_lock->acquired() && !isolated_canary &&
+        instance_lock->already_running() &&
+        !external_launch_request.has_value() &&
+        mocktail::runtime::TemporaryInstanceWindowsEnabled(
+            environment, paths.config_file())) {
+      const mocktail::runtime::TemporaryInstanceResult prepared =
+          start_temporary_instance();
+      if (!prepared) {
+        std::cerr << "[FATAL] " << prepared.error << '\n';
+        (void)mocktail::runtime::ShowFailureDialog(
+            environment, "Mocktail could not start a temporary instance.");
+        return EXIT_FAILURE;
+      }
+      std::cout << "  [runtime] additional launch converted to a temporary "
+                   "instance at "
+                << prepared.root << '\n';
+      instance_lock.emplace(
+          mocktail::runtime::SingleInstanceLock::AcquireForLaunch(environment,
+                                                                paths));
+    }
     if (!instance_lock->acquired()) {
       if (!isolated_canary && instance_lock->already_running() &&
           external_launch_request.has_value()) {
@@ -1070,6 +1116,10 @@ int main(int argc, char* argv[]) {
       !isolated_canary) {
     // Listen only after re-exec, preflight, and bridge setup, so an ACK cannot
     // precede a known startup failure. Isolated canaries expose no endpoint.
+    if (temporary_instance.has_value() && temporary_instance->active()) {
+      broker_options.socket_path =
+          temporary_instance->root() / "broker.sock";
+    }
     mocktail::Status broker_status =
         mocktail::runtime::ExternalLaunchBroker::StartOwnerAfterLockAcquired(
             broker_options, &external_launch_broker.broker(),
@@ -1124,6 +1174,7 @@ int main(int argc, char* argv[]) {
       command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog.MarkSuccessful();
     support_bundle_guard.Disarm();
+    temporary_instance.reset();
     // Guest atexit handlers target workers that cannot be joined. Host
     // shutdown is already complete here, so do not re-enter guest teardown.
     std::cout.flush();

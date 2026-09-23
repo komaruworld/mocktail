@@ -256,6 +256,45 @@ TEST(CommandLineTest, RejectsAnotherOptionAsMissingValue) {
   EXPECT_EQ(result.error, "missing value for --roblox-lib");
 }
 
+TEST(CommandLineTest, ParsesNewInstanceFlags) {
+  for (const char* option : {"-ni", "--new-instance"}) {
+    const std::array<const char*, 2> arguments = {"mocktail", option};
+    const CommandLineParseResult result =
+        ParseCommandLine(arguments.size(), arguments.data());
+    ASSERT_TRUE(result) << option << ": " << result.error;
+    EXPECT_EQ(result.options.mode, CommandMode::kRun) << option;
+    EXPECT_TRUE(result.options.new_instance) << option;
+  }
+}
+
+TEST(CommandLineTest, NewInstanceSurvivesCgroupReexecArguments) {
+  const std::array<const char*, 2> arguments = {"mocktail", "-ni"};
+  const CommandLineParseResult result =
+      ParseCommandLine(arguments.size(), arguments.data());
+  ASSERT_TRUE(result) << result.error;
+
+  std::vector<std::string> reexec_arguments;
+  std::string error;
+  ASSERT_TRUE(BuildCommandLineReexecArguments(result.options, arguments.size(),
+                                              arguments.data(),
+                                              &reexec_arguments, &error))
+      << error;
+  ASSERT_EQ(reexec_arguments.size(), 1u);
+  EXPECT_EQ(reexec_arguments[0], "-ni");
+}
+
+TEST(CommandLineTest, RejectsForceRunLatestCombinedWithNewInstance) {
+  for (const char* option : {"-ni", "--new-instance"}) {
+    const std::array<const char*, 3> arguments = {"mocktail",
+                                                  "--force-run-latest", option};
+    const CommandLineParseResult result =
+        ParseCommandLine(arguments.size(), arguments.data());
+    EXPECT_FALSE(result) << option;
+    EXPECT_EQ(result.error, "--force-run-latest must be used on its own")
+        << option;
+  }
+}
+
 TEST(CommandLineTest, HelpIsATypedAuxiliaryMode) {
   const std::array<const char*, 2> help = {"mocktail", "--help"};
   const CommandLineParseResult help_result =
@@ -269,8 +308,8 @@ TEST(CommandLineTest, UsageContainsEverySupportedOption) {
   EXPECT_NE(usage.find("mocktail-test"), std::string::npos);
   for (const char* option :
        {"--roblox-lib", "--headless", "--windowed", "--graphics",
-        "--allow-unverified-build", "--force-run-latest", "--launch-uri",
-        "--help"}) {
+        "--allow-unverified-build", "--new-instance", "--force-run-latest",
+        "--launch-uri", "--help"}) {
     EXPECT_NE(usage.find(option), std::string::npos) << option;
   }
   EXPECT_EQ(usage.find("--login"), std::string::npos);

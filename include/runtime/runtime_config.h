@@ -119,6 +119,9 @@ class RuntimeConfig {
   }
   bool ca_bundle_valid() const { return ca_bundle_valid_; }
   bool use_system_proxy() const { return use_system_proxy_; }
+  bool temporary_instance_windows() const {
+    return temporary_instance_windows_;
+  }
   bool fleasion_enabled() const { return fleasion_enabled_; }
   bool fleasion_valid() const { return fleasion_valid_; }
   const std::string& fleasion_proxy_mode() const { return fleasion_proxy_mode_; }
@@ -159,6 +162,7 @@ class RuntimeConfig {
   std::string audio_input_device_ = "default";
   bool audio_input_device_valid_ = true;
   bool use_system_proxy_ = false;
+  bool temporary_instance_windows_ = false;
   bool fleasion_enabled_ = false;
   bool fleasion_valid_ = true;
   std::string fleasion_proxy_mode_ = "env";

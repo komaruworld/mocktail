@@ -188,6 +188,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "network.proxy_host",
       "network.proxy_port",
       "network.ca_bundle",
+      "multi_instance.temporary_windows",
       "integrations.fleasion.enabled",
       "integrations.fleasion.proxy_mode",
       "integrations.fleasion.proxy_port",
@@ -483,6 +484,16 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_CA_BUNDLE"] = *ca_bundle;
   }
+  if (const auto temporary_windows =
+          value("multi_instance.temporary_windows");
+      temporary_windows.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*temporary_windows, &parsed)) {
+      *error = "multi_instance.temporary_windows must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_TEMP_INSTANCE_WINDOWS"] = parsed ? "1" : "0";
+  }
   for (const auto& [key, variable] : {
            std::pair<std::string_view, std::string_view>(
                "integrations.discord_rpc.enabled",
@@ -673,7 +684,8 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
       } else if (key == "runtime" || key == "appearance" ||
                  key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
-                 key == "compatibility" || key == "network") {
+                 key == "compatibility" || key == "network" ||
+                 key == "multi_instance") {
         valid = ReadMapping(&document, value_node, key, values, error);
       } else if (key == "integrations") {
         valid = ReadNestedMapping(&document, value_node, key, 2, values, error);
@@ -901,6 +913,9 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                           config.audio_input_device(), error) &&
       SetEnvironmentValue("MOCKTAIL_USE_SYSTEM_PROXY",
                           config.use_system_proxy() ? "1" : "0", error) &&
+      SetEnvironmentValue("MOCKTAIL_TEMP_INSTANCE_WINDOWS",
+                          config.temporary_instance_windows() ? "1" : "0",
+                          error) &&
       SetEnvironmentValue("MOCKTAIL_DISCORD_RPC_ENABLED",
                           config.discord_rpc().enabled ? "1" : "0", error) &&
       SetEnvironmentValue(

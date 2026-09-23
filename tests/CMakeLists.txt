@@ -187,6 +187,12 @@ target_link_libraries(single_instance_lock_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(temporary_instance_test temporary_instance_test.cc)
+target_link_libraries(temporary_instance_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(external_launch_broker_test external_launch_broker_test.cc)
 target_link_libraries(external_launch_broker_test PRIVATE
   Mocktail::Runtime

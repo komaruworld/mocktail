@@ -32,8 +32,9 @@ class SingleInstanceLock final {
   static SingleInstanceLock AcquireForCurrentUser();
   // Updater canaries use fully isolated data/cache/state roots and an
   // isolated lock so they can validate a candidate while the user's current
-  // payload remains open. Normal launches use one lock per user and Mocktail
-  // installation path.
+  // payload remains open. Temporary instances take the same state-root lock
+  // path inside their own private root. Normal launches use one lock per
+  // user and Mocktail installation path.
   static SingleInstanceLock AcquireForLaunch(const Environment& environment,
                                              const RuntimePaths& paths);
   static SingleInstanceLock Acquire(const std::filesystem::path& lock_file);

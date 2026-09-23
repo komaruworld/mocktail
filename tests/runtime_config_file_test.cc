@@ -1040,6 +1040,73 @@ TEST(RuntimeConfigFileTest, RejectsMalformedYaml) {
   EXPECT_NE(loaded.error.find("invalid YAML"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, TemporaryWindowsDefaultsToFalseWhenAbsent) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write("version: 1\n");
+  const RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.temporary_instance_windows());
+}
+
+TEST(RuntimeConfigFileTest, ParsesTemporaryWindowsBoolean) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path enabled = temporary.Write(
+      "version: 1\nmulti_instance:\n  temporary_windows: true\n");
+  RuntimeConfigLoadResult loaded =
+      LoadRuntimeConfig(MapEnvironment(), enabled);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.temporary_instance_windows());
+
+  const std::filesystem::path disabled = temporary.Write(
+      "version: 1\nmulti_instance:\n  temporary_windows: false\n");
+  loaded = LoadRuntimeConfig(MapEnvironment(), disabled);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.temporary_instance_windows());
+}
+
+TEST(RuntimeConfigFileTest, TemporaryWindowsEnvironmentOverridesYaml) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path file = temporary.Write(
+      "version: 1\nmulti_instance:\n  temporary_windows: true\n");
+  const RuntimeConfigLoadResult loaded = LoadRuntimeConfig(
+      MapEnvironment({{"MOCKTAIL_TEMP_INSTANCE_WINDOWS", "0"}}), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.temporary_instance_windows());
+}
+
+TEST(RuntimeConfigFileTest, RejectsInvalidTemporaryWindowsValue) {
+  TemporaryDirectory temporary;
+  for (const char* value : {"yes", "1", "on", "2", ""}) {
+    const std::filesystem::path file =
+        temporary.Write(std::string("version: 1\nmulti_instance:\n"
+                                    "  temporary_windows: ") +
+                        value + "\n");
+    const RuntimeConfigLoadResult loaded =
+        LoadRuntimeConfig(MapEnvironment(), file);
+    EXPECT_FALSE(loaded) << value;
+    EXPECT_NE(loaded.error.find("multi_instance.temporary_windows"),
+              std::string::npos)
+        << value;
+  }
+}
+
+TEST(RuntimeConfigFileTest, ExportsTemporaryWindowsPolicy) {
+  unsetenv("MOCKTAIL_TEMP_INSTANCE_WINDOWS");
+  std::string error;
+  const RuntimeConfig enabled = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_TEMP_INSTANCE_WINDOWS", "1"}}));
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(enabled, &error)) << error;
+  ASSERT_NE(getenv("MOCKTAIL_TEMP_INSTANCE_WINDOWS"), nullptr);
+  EXPECT_STREQ(getenv("MOCKTAIL_TEMP_INSTANCE_WINDOWS"), "1");
+
+  const RuntimeConfig disabled =
+      RuntimeConfig::FromEnvironment(MapEnvironment());
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(disabled, &error)) << error;
+  EXPECT_STREQ(getenv("MOCKTAIL_TEMP_INSTANCE_WINDOWS"), "0");
+  unsetenv("MOCKTAIL_TEMP_INSTANCE_WINDOWS");
+}
+
 TEST(RuntimeConfigFileTest, FleasionRoutesThroughConfiguredLoopbackPort) {
   TemporaryDirectory temporary;
   const auto file = temporary.Write(

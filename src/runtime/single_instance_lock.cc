@@ -172,23 +172,35 @@ SingleInstanceLock SingleInstanceLock::AcquireForLaunch(
     const Environment& environment, const RuntimePaths& paths) {
   const std::optional<std::string> canary =
       environment.Get("MOCKTAIL_ISOLATED_CANARY");
-  if (!canary.has_value() || canary->empty() || *canary == "0") {
+  const bool canary_requested =
+      canary.has_value() && !canary->empty() && *canary != "0";
+  const bool temporary =
+      environment.GetOr("MOCKTAIL_TEMP_INSTANCE", "0") == "1";
+  if (!canary_requested && !temporary) {
     return AcquireForCurrentUser();
   }
   const auto reject = [](std::string error) {
     return SingleInstanceLock(-1, Status::kError, {}, std::move(error));
   };
-  if (*canary != "1" ||
-      !environment.HasNonEmpty("MOCKTAIL_DATA_ROOT") ||
-      !environment.HasNonEmpty("MOCKTAIL_CACHE_ROOT") ||
-      !environment.HasNonEmpty("MOCKTAIL_STATE_ROOT") ||
-      !environment.HasNonEmpty("ROBLOX_LIB_PATH") ||
-      !environment.HasNonEmpty("MOCKTAIL_ASSET_PATH") ||
-      environment.GetOr("MOCKTAIL_SKIP_UPDATE_CHECK", "0") != "1" ||
-      !IsPositiveDecimal(
-          environment.GetOr("MOCKTAIL_AUTO_EXIT_AFTER_PRESENT_MS", ""))) {
+  if (canary_requested &&
+      (*canary != "1" ||
+       !environment.HasNonEmpty("MOCKTAIL_DATA_ROOT") ||
+       !environment.HasNonEmpty("MOCKTAIL_CACHE_ROOT") ||
+       !environment.HasNonEmpty("MOCKTAIL_STATE_ROOT") ||
+       !environment.HasNonEmpty("ROBLOX_LIB_PATH") ||
+       !environment.HasNonEmpty("MOCKTAIL_ASSET_PATH") ||
+       environment.GetOr("MOCKTAIL_SKIP_UPDATE_CHECK", "0") != "1" ||
+       !IsPositiveDecimal(
+           environment.GetOr("MOCKTAIL_AUTO_EXIT_AFTER_PRESENT_MS", "")))) {
     return reject("isolated canary requires explicit payload, XDG roots, "
                   "update bypass, and a bounded present timer");
+  }
+  if (temporary &&
+      (!environment.HasNonEmpty("MOCKTAIL_DATA_ROOT") ||
+       !environment.HasNonEmpty("MOCKTAIL_CACHE_ROOT") ||
+       !environment.HasNonEmpty("MOCKTAIL_STATE_ROOT"))) {
+    return reject(
+        "temporary instance requires explicit data, cache, and state roots");
   }
 
   const std::filesystem::path data_root = paths.data_root().lexically_normal();
@@ -202,7 +214,7 @@ SingleInstanceLock SingleInstanceLock::AcquireForLaunch(
       data_root.parent_path() != cache_root.parent_path() ||
       data_root.parent_path() != state_root.parent_path()) {
     return reject(
-        "isolated canary data, cache, and state roots must be distinct "
+        "isolated data, cache, and state roots must be distinct "
         "absolute siblings");
   }
   return Acquire(state_root / "instance.lock");

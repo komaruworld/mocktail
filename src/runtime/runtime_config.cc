@@ -286,6 +286,8 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       IsValidDeviceProfileValue(config.audio_input_device_, 512);
   config.use_system_proxy_ =
       LegacyEnabled(environment, "MOCKTAIL_USE_SYSTEM_PROXY");
+  config.temporary_instance_windows_ =
+      LegacyEnabled(environment, "MOCKTAIL_TEMP_INSTANCE_WINDOWS");
   config.network_proxy_ = ReadNetworkProxy(environment);
   config.fleasion_enabled_ = ReadBoolean(
       environment, "MOCKTAIL_FLEASION_ENABLED", false, &config.fleasion_valid_);

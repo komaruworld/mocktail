@@ -33,6 +33,7 @@ struct CommandLineOptions {
   // Requests one explicit launch of the provider latest without promoting it
   // into the managed payload state.
   bool force_run_latest = false;
+  bool new_instance = false;
 };
 
 struct CommandLineParseResult {

@@ -31,6 +31,11 @@ runtime:
   # active verified payload.
   # roblox_library: /absolute/path/to/libroblox.so
 
+multi_instance:
+  # Boolean (default: false): a launch while Mocktail is already running
+  # starts a temporary instance, like `mocktail --new-instance`.
+  temporary_windows: false
+
 appearance:
   # String (default: roblox): use Roblox's saved account theme. Supported
   # overrides: dark, light, or system (follow the desktop color scheme).

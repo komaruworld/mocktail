@@ -77,6 +77,8 @@ CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]) {
       }
     } else if (argument == "--allow-unverified-build") {
       result.options.allow_unverified_build = true;
+    } else if (argument == "--new-instance" || argument == "-ni") {
+      result.options.new_instance = true;
     } else if (argument == "--force-run-latest") {
       result.options.force_run_latest = true;
     } else if (argument == "--launch-uri") {
@@ -143,6 +145,7 @@ CommandLineParseResult ParseCommandLine(int argc, const char* const argv[]) {
        result.options.window_mode != WindowMode::kUnspecified ||
        !result.options.graphics_backend.empty() ||
        result.options.allow_unverified_build ||
+       result.options.new_instance ||
        !result.options.launch_request_json.empty())) {
     result.error = "--force-run-latest must be used on its own";
   }
@@ -254,6 +257,8 @@ std::string CommandLineUsage(const std::string& program_name) {
          "angle-vulkan (default: direct-vulkan)\n"
       << "  --allow-unverified-build Run a known but unverified Build-ID "
          "profile\n"
+      << "  -ni, --new-instance      Run a temporary instance with its own "
+         "account storage; it is removed on exit\n"
       << "  --force-run-latest       Download and run the provider latest once "
          "without approval; it is not activated\n"
       << "  --launch-uri <uri>       Join from a roblox: or roblox-player: "

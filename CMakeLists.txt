@@ -300,6 +300,7 @@ add_library(mocktail_runtime STATIC
   src/runtime/supported_launch_policy.cc
   src/runtime/support_bundle.cc
   src/runtime/system_proxy.cc
+  src/runtime/temporary_instance.cc
   src/runtime/texture_memory_policy.cc
 )
 add_library(Mocktail::Runtime ALIAS mocktail_runtime)
