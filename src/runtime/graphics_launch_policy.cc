@@ -2,6 +2,9 @@
 
 #include "runtime/frame_rate_policy.h"
 
+#include <dlfcn.h>
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -130,6 +133,95 @@ HostGpus DetectHostGpus() {
   return gpus;
 }
 
+// A manifest only names a library; the Vulkan loader still has to dlopen() it.
+// Packaged runtimes ship vendor ICDs whose driver lives in a separate
+// extension (Flatpak's GL.nvidia for example), so a readable manifest can
+// still name a library that does not exist here.
+std::string IcdLibraryPath(const std::filesystem::path& manifest) {
+  std::ifstream input(manifest, std::ios::binary);
+  if (!input) {
+    return {};
+  }
+  const std::string contents((std::istreambuf_iterator<char>(input)),
+                             std::istreambuf_iterator<char>());
+  if (contents.empty() || contents.size() > 256U * 1024U) {
+    return {};
+  }
+  const nlohmann::json document =
+      nlohmann::json::parse(contents, nullptr, false, true);
+  if (document.is_discarded() || !document.is_object() ||
+      !document.contains("ICD") || !document["ICD"].is_object() ||
+      !document["ICD"].contains("library_path") ||
+      !document["ICD"]["library_path"].is_string()) {
+    return {};
+  }
+  return document["ICD"]["library_path"].get<std::string>();
+}
+
+bool IcdDriverLoadable(const std::filesystem::path& manifest) {
+  const std::string library = IcdLibraryPath(manifest);
+  if (library.empty() || library.find('\0') != std::string::npos) {
+    return false;
+  }
+  // Bare names follow the normal linker search path; paths with a separator
+  // are resolved against the manifest's directory the same way the Vulkan
+  // loader resolves them.
+  const std::vector<std::string> attempts =
+      library.front() == '/' || library.find('/') == std::string::npos
+          ? std::vector<std::string>{library}
+          : std::vector<std::string>{library,
+                                     (manifest.parent_path() / library)
+                                         .string()};
+  for (const std::string& attempt : attempts) {
+    void* handle = dlopen(attempt.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (handle != nullptr) {
+      dlclose(handle);
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<std::string> OrderedIcdCandidates(
+    const std::vector<std::filesystem::path>& directories,
+    std::string_view vendor) {
+  std::vector<std::string> candidates;
+  if (vendor.empty()) {
+    return candidates;
+  }
+  for (const std::filesystem::path& directory : directories) {
+    std::error_code error;
+    std::vector<std::string> names;
+    for (std::filesystem::directory_iterator iterator(directory, error), end;
+         !error && iterator != end; iterator.increment(error)) {
+      if (!iterator->is_regular_file(error)) {
+        continue;
+      }
+      const std::string name = iterator->path().filename().string();
+      if (name.find(".json") == std::string::npos ||
+          name.find(vendor) == std::string::npos || ForeignArchitecture(name)) {
+        continue;
+      }
+      names.push_back(name);
+    }
+    std::sort(names.begin(), names.end());
+    std::vector<std::string> generic;
+    for (const std::string& name : names) {
+      const std::string path = (directory / name).string();
+      if (access(path.c_str(), R_OK) != 0) {
+        continue;
+      }
+      if (name.find(kNativeArchitecture) != std::string::npos) {
+        candidates.push_back(path);
+      } else {
+        generic.push_back(path);
+      }
+    }
+    candidates.insert(candidates.end(), generic.begin(), generic.end());
+  }
+  return candidates;
+}
+
 std::string FindIcdFile(const char* filename_needle) {
   if (filename_needle == nullptr || filename_needle[0] == '\0') {
     return {};
@@ -138,7 +230,17 @@ std::string FindIcdFile(const char* filename_needle) {
   for (const char* directory : kIcdDirectories) {
     directories.emplace_back(directory);
   }
-  return SelectVulkanIcdManifest(directories, filename_needle);
+  for (const std::string& candidate :
+       OrderedIcdCandidates(directories, filename_needle)) {
+    if (IcdDriverLoadable(candidate)) {
+      return candidate;
+    }
+    std::fprintf(stderr,
+                 "  [runtime] skipping Vulkan ICD %s: driver library is "
+                 "not loadable\n",
+                 candidate.c_str());
+  }
+  return {};
 }
 
 std::string SelectHardwareIcd(const HostGpus& gpus) {
@@ -195,6 +297,49 @@ const char* AnvSysMemLimitPercent() {
   return "50";
 }
 
+// A pinned driver list can also name manifests whose libraries are missing in
+// this environment (a host VK_ICD_FILENAMES leaking into a Flatpak sandbox,
+// for example). Entries the loader could never use are dropped; when nothing
+// loadable remains the hardware scan below picks a working driver instead.
+bool SanitizeDriverFileList(const char* name) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return false;
+  }
+  std::string kept;
+  bool dropped = false;
+  std::string_view remaining(value);
+  while (true) {
+    const std::size_t colon = remaining.find(':');
+    const std::string_view entry = remaining.substr(0, colon);
+    if (!entry.empty()) {
+      if (IcdDriverLoadable(std::filesystem::path(entry))) {
+        if (!kept.empty()) {
+          kept.push_back(':');
+        }
+        kept.append(entry);
+      } else {
+        dropped = true;
+        std::fprintf(stderr,
+                     "  [runtime] ignoring unloadable Vulkan ICD=%.*s\n",
+                     static_cast<int>(entry.size()), entry.data());
+      }
+    }
+    if (colon == std::string_view::npos) {
+      break;
+    }
+    remaining.remove_prefix(colon + 1);
+  }
+  if (kept.empty()) {
+    unsetenv(name);
+    return false;
+  }
+  if (dropped && setenv(name, kept.c_str(), 1) != 0) {
+    return false;
+  }
+  return true;
+}
+
 bool ApplyVulkanIcdPolicy(const HostGpus& gpus, std::string* error) {
   // Drop software/emulation ICDs even when the user already pinned a driver
   // list. Old loaders ignore this variable.
@@ -202,10 +347,9 @@ bool ApplyVulkanIcdPolicy(const HostGpus& gpus, std::string* error) {
                   "lvp_icd:dzn_icd:virtio_icd", error)) {
     return false;
   }
-  const char* existing_files = std::getenv("VK_DRIVER_FILES");
-  const char* existing_icds = std::getenv("VK_ICD_FILENAMES");
-  if ((existing_files != nullptr && existing_files[0] != '\0') ||
-      (existing_icds != nullptr && existing_icds[0] != '\0')) {
+  const bool pinned_files = SanitizeDriverFileList("VK_DRIVER_FILES");
+  const bool pinned_icds = SanitizeDriverFileList("VK_ICD_FILENAMES");
+  if (pinned_files || pinned_icds) {
     return true;
   }
   const std::string icd = SelectHardwareIcd(gpus);
@@ -222,43 +366,9 @@ bool ApplyVulkanIcdPolicy(const HostGpus& gpus, std::string* error) {
 std::string SelectVulkanIcdManifest(
     const std::vector<std::filesystem::path>& directories,
     std::string_view vendor) {
-  if (vendor.empty()) {
-    return {};
-  }
-  for (const std::filesystem::path& directory : directories) {
-    std::error_code error;
-    std::vector<std::string> names;
-    for (std::filesystem::directory_iterator iterator(directory, error), end;
-         !error && iterator != end; iterator.increment(error)) {
-      if (!iterator->is_regular_file(error)) {
-        continue;
-      }
-      const std::string name = iterator->path().filename().string();
-      if (name.find(".json") == std::string::npos ||
-          name.find(vendor) == std::string::npos || ForeignArchitecture(name)) {
-        continue;
-      }
-      names.push_back(name);
-    }
-    std::sort(names.begin(), names.end());
-    std::string generic;
-    for (const std::string& name : names) {
-      const std::string path = (directory / name).string();
-      if (access(path.c_str(), R_OK) != 0) {
-        continue;
-      }
-      if (name.find(kNativeArchitecture) != std::string::npos) {
-        return path;
-      }
-      if (generic.empty()) {
-        generic = path;
-      }
-    }
-    if (!generic.empty()) {
-      return generic;
-    }
-  }
-  return {};
+  const std::vector<std::string> candidates =
+      OrderedIcdCandidates(directories, vendor);
+  return candidates.empty() ? std::string() : candidates.front();
 }
 
 bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,

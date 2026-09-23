@@ -6,8 +6,10 @@
 #include <unistd.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 
 namespace mocktail {
 namespace runtime {
@@ -215,6 +217,45 @@ TEST(GraphicsLaunchPolicyTest, DefaultsToDirectVulkanAfterConfigResolution) {
 
 TEST(GraphicsLaunchPolicyTest, MakesOpenGlStrictAndVulkanIndependent) {
   ExpectGraphicsPolicyProbe("opengl");
+}
+
+// A pinned ICD manifest whose driver library cannot be loaded here (for
+// example a host pin inside a Flatpak sandbox) must not survive policy
+// application, or Vulkan init is guaranteed to fail.
+TEST(GraphicsLaunchPolicyTest, DropsPinnedIcdWhoseDriverCannotLoad) {
+  char pattern[] = "/tmp/mocktail_icd_pin_XXXXXX";
+  const char* directory = mkdtemp(pattern);
+  ASSERT_NE(directory, nullptr);
+  const std::string manifest =
+      std::string(directory) + "/broken_icd.json";
+  {
+    std::ofstream output(manifest);
+    output << R"({"ICD":{"library_path":"libmocktail_missing_driver.so.0"}})";
+  }
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    if (setenv("VK_ICD_FILENAMES", manifest.c_str(), 1) != 0 ||
+        unsetenv("VK_DRIVER_FILES") != 0 ||
+        unsetenv("MOCKTAIL_GRAPHICS_BACKEND") != 0) {
+      std::_Exit(30);
+    }
+    const ProcessEnvironment environment;
+    const RuntimeConfig config = RuntimeConfig::FromEnvironment(environment);
+    std::string error;
+    if (!ApplyGraphicsLaunchPolicy(config, &error)) std::_Exit(31);
+    const char* pinned = getenv("VK_ICD_FILENAMES");
+    std::_Exit(pinned == nullptr || std::string(pinned).find(manifest) ==
+                                          std::string::npos
+                   ? 0
+                   : 32);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+  std::error_code ignored;
+  std::filesystem::remove_all(directory, ignored);
 }
 
 }  // namespace
