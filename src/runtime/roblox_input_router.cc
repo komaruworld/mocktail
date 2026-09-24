@@ -557,6 +557,11 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
   const float clamped_x = std::clamp(mouse_x_, 0.0f, max_x);
   const float clamped_y = std::clamp(mouse_y_, 0.0f, max_y);
 
+  if (text_editor_.HandleMouseSelection(clamped_x, clamped_y, false, true)) {
+    return Result(RobloxInputDispatchState::kStateUpdated,
+                  RobloxInputEventKind::kText);
+  }
+
   return NativeResultLocked(
       sink_.mouse_move(sink_.context, clamped_x, clamped_y, delta_x, delta_y),
       RobloxInputEventKind::kMouseMotion);
@@ -588,9 +593,23 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
   const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
   const float clamped_x = std::clamp(mouse_x_, 0.0f, max_x);
   const float clamped_y = std::clamp(mouse_y_, 0.0f, max_y);
+  if (event.button == SDL_BUTTON_LEFT) {
+    if (event.pressed &&
+        text_editor_.ContainsFocusedPoint(clamped_x, clamped_y) &&
+        text_editor_.HandleMouseSelection(
+            clamped_x, clamped_y, true, false)) {
+      return Result(RobloxInputDispatchState::kStateUpdated,
+                    RobloxInputEventKind::kText);
+    }
+    if (!event.pressed && text_editor_.EndMouseSelection()) {
+      return Result(RobloxInputDispatchState::kStateUpdated,
+                    RobloxInputEventKind::kText);
+    }
+  }
   if (event.pressed) {
     const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
-    if (text.focused) {
+    if (text.focused &&
+        !text_editor_.ContainsFocusedPoint(clamped_x, clamped_y)) {
       (void)text_editor_.EndFocusSession(text.textbox_handle, text.generation,
                                          true);
     }
