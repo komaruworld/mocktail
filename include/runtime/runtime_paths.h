@@ -24,6 +24,13 @@ struct ActivePayloadPaths {
   explicit operator bool() const { return error.empty(); }
 };
 
+struct ExplicitRobloxLibrary {
+  bool payload_layout = false;
+  std::filesystem::path library;
+  std::filesystem::path payload_root;
+  std::filesystem::path assets_content;
+};
+
 class RuntimePaths {
  public:
   static RuntimePaths FromEnvironment(
@@ -111,6 +118,14 @@ bool ExportRuntimePathEnvironment(const RuntimePaths& paths,
 bool PrepareManagedPayloadWorkingDirectory(const RuntimePaths& paths,
                                            const ActivePayloadPaths& active,
                                            std::string* error = nullptr);
+
+bool PrepareExplicitPayloadWorkingDirectory(
+    const RuntimePaths& paths, const ExplicitRobloxLibrary& resolved,
+    std::string* error = nullptr);
+
+ExplicitRobloxLibrary ResolveExplicitRobloxLibrary(
+    const std::filesystem::path& roblox_library,
+    const std::filesystem::path& working_directory);
 
 // Keeps an explicit research libroblox.so override paired with the assets
 // extracted from the same payload. Relative library paths are resolved against

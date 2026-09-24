@@ -549,6 +549,82 @@ TEST(RuntimePathsTest, ReplacesAllStaleManagedPayloadLinksTogether) {
             std::filesystem::canonical(new_payload / "libroblox.so"));
 }
 
+TEST(RuntimePathsTest, ResolvesExplicitLibraryInPayloadLayout) {
+  TemporaryDirectory temporary;
+  ASSERT_FALSE(temporary.path().empty());
+  const std::filesystem::path payload = temporary.path() / "payloads/explicit";
+  WriteManagedPayloadFiles(payload);
+
+  const ExplicitRobloxLibrary resolved = ResolveExplicitRobloxLibrary(
+      payload / "libroblox.so", temporary.path());
+  EXPECT_TRUE(resolved.payload_layout);
+  EXPECT_EQ(resolved.library,
+            std::filesystem::canonical(payload / "libroblox.so"));
+  EXPECT_EQ(resolved.payload_root, std::filesystem::canonical(payload));
+  EXPECT_EQ(resolved.assets_content,
+            resolved.payload_root / "assets/content");
+
+  const ExplicitRobloxLibrary relative = ResolveExplicitRobloxLibrary(
+      "payloads/explicit/libroblox.so", temporary.path());
+  EXPECT_TRUE(relative.payload_layout);
+  EXPECT_EQ(relative.library, resolved.library);
+}
+
+TEST(RuntimePathsTest, RejectsExplicitLibraryWithoutPayloadLayout) {
+  TemporaryDirectory temporary;
+  ASSERT_FALSE(temporary.path().empty());
+  const std::filesystem::path lonely = temporary.path() / "libroblox.so";
+  std::ofstream(lonely) << "ELF fixture";
+
+  EXPECT_FALSE(
+      ResolveExplicitRobloxLibrary(lonely, temporary.path()).payload_layout);
+  EXPECT_FALSE(ResolveExplicitRobloxLibrary(temporary.path() / "missing.so",
+                                            temporary.path())
+                   .payload_layout);
+  EXPECT_FALSE(ResolveExplicitRobloxLibrary({}, temporary.path())
+                   .payload_layout);
+
+  const std::filesystem::path partial = temporary.path() / "partial";
+  ASSERT_TRUE(RuntimePaths::EnsureDirectory(partial / "assets/content"));
+  std::ofstream(partial / "libroblox.so") << "ELF fixture";
+  EXPECT_FALSE(
+      ResolveExplicitRobloxLibrary(partial / "libroblox.so", temporary.path())
+          .payload_layout);
+}
+
+TEST(RuntimePathsTest, PreparesExplicitPayloadRelativeAssetRoot) {
+  TemporaryDirectory temporary;
+  ASSERT_FALSE(temporary.path().empty());
+  ScopedCurrentPath restore_current_path;
+  const std::filesystem::path data = temporary.path() / "data";
+  const std::filesystem::path payload = data / "payloads/explicit";
+  WriteManagedPayloadFiles(payload);
+  const MapEnvironment environment({
+      {"HOME", temporary.path().string()},
+      {"MOCKTAIL_DATA_ROOT", data.string()},
+  });
+  const RuntimePaths paths =
+      RuntimePaths::FromEnvironment(environment, temporary.path());
+  const ExplicitRobloxLibrary resolved = ResolveExplicitRobloxLibrary(
+      payload / "libroblox.so", temporary.path());
+  ASSERT_TRUE(resolved.payload_layout);
+
+  std::string error;
+  ASSERT_TRUE(
+      PrepareExplicitPayloadWorkingDirectory(paths, resolved, &error))
+      << error;
+  EXPECT_EQ(std::filesystem::current_path(), data);
+  EXPECT_TRUE(std::filesystem::is_symlink(data / "rbx_bin/assets"));
+  EXPECT_EQ(std::filesystem::canonical(data / "rbx_bin/assets"),
+            std::filesystem::canonical(payload / "assets"));
+  EXPECT_TRUE(std::filesystem::is_symlink(data / "rbx_bin/sober_apk"));
+  EXPECT_EQ(std::filesystem::canonical(data / "rbx_bin/sober_apk"),
+            std::filesystem::canonical(payload / "sober_apk"));
+  EXPECT_TRUE(std::filesystem::is_symlink(data / "rbx_bin/libroblox.so"));
+  EXPECT_EQ(std::filesystem::canonical(data / "rbx_bin/libroblox.so"),
+            std::filesystem::canonical(payload / "libroblox.so"));
+}
+
 TEST(RuntimePathsTest, PreservesUnexpectedManagedPayloadFiles) {
   TemporaryDirectory temporary;
   ASSERT_FALSE(temporary.path().empty());

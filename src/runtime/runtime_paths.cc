@@ -606,12 +606,13 @@ bool ExportRuntimePathEnvironment(const RuntimePaths& paths,
                                paths.vulkan_shader_cache_file(), error);
 }
 
-bool PrepareManagedPayloadWorkingDirectory(const RuntimePaths& paths,
-                                           const ActivePayloadPaths& active,
-                                           std::string* error) {
-  if (!active.active) {
-    return true;
-  }
+namespace {
+
+bool PublishPayloadWorkingDirectory(const RuntimePaths& paths,
+                                    const std::filesystem::path& assets_root,
+                                    const std::filesystem::path& package_root,
+                                    const std::filesystem::path& library,
+                                    std::string* error) {
   std::error_code filesystem_error;
   const std::filesystem::path rbx_root = paths.data_root() / "rbx_bin";
   if (!RuntimePaths::EnsureDirectory(rbx_root, &filesystem_error)) {
@@ -633,11 +634,9 @@ bool PrepareManagedPayloadWorkingDirectory(const RuntimePaths& paths,
   }
 
   std::array<ManagedPayloadBinding, 3> bindings{{
-      {active.root / "assets", rbx_root / "assets", "assets", true},
-      {active.root / "sober_apk", rbx_root / "sober_apk", "APK directory",
-       true},
-      {active.root / "libroblox.so", rbx_root / "libroblox.so",
-       "native library", false},
+      {assets_root, rbx_root / "assets", "assets", true},
+      {package_root, rbx_root / "sober_apk", "APK directory", true},
+      {library, rbx_root / "libroblox.so", "native library", false},
   }};
   // Validate all destinations before publishing any of them.
   for (ManagedPayloadBinding& binding : bindings) {
@@ -660,6 +659,85 @@ bool PrepareManagedPayloadWorkingDirectory(const RuntimePaths& paths,
     return false;
   }
   return true;
+}
+
+}  // namespace
+
+bool PrepareManagedPayloadWorkingDirectory(const RuntimePaths& paths,
+                                           const ActivePayloadPaths& active,
+                                           std::string* error) {
+  if (!active.active) {
+    return true;
+  }
+  return PublishPayloadWorkingDirectory(paths, active.root / "assets",
+                                        active.root / "sober_apk",
+                                        active.root / "libroblox.so", error);
+}
+
+bool PrepareExplicitPayloadWorkingDirectory(
+    const RuntimePaths& paths, const ExplicitRobloxLibrary& resolved,
+    std::string* error) {
+  if (!resolved.payload_layout) {
+    return true;
+  }
+  return PublishPayloadWorkingDirectory(
+      paths, resolved.payload_root / "assets",
+      resolved.payload_root / "sober_apk", resolved.library, error);
+}
+
+ExplicitRobloxLibrary ResolveExplicitRobloxLibrary(
+    const std::filesystem::path& roblox_library,
+    const std::filesystem::path& working_directory) {
+  ExplicitRobloxLibrary resolved;
+  if (roblox_library.empty()) {
+    return resolved;
+  }
+  std::filesystem::path library = roblox_library;
+  if (!library.is_absolute()) {
+    if (working_directory.empty()) {
+      return resolved;
+    }
+    library = working_directory / library;
+  }
+  library = library.lexically_normal();
+  if (!library.is_absolute() || !library.has_parent_path()) {
+    return resolved;
+  }
+  resolved.library = library;
+
+  std::error_code filesystem_error;
+  const std::filesystem::file_status library_status =
+      std::filesystem::symlink_status(library, filesystem_error);
+  if (filesystem_error || !std::filesystem::is_regular_file(library_status) ||
+      std::filesystem::is_symlink(library_status)) {
+    return resolved;
+  }
+  const std::filesystem::path canonical_library =
+      std::filesystem::canonical(library, filesystem_error);
+  if (filesystem_error || !canonical_library.has_parent_path()) {
+    return resolved;
+  }
+  const std::filesystem::path root = canonical_library.parent_path();
+  const std::filesystem::path assets_root = root / "assets";
+  const std::filesystem::path package_root = root / "sober_apk";
+  const std::filesystem::file_status assets_status =
+      std::filesystem::symlink_status(assets_root, filesystem_error);
+  if (filesystem_error || !std::filesystem::is_directory(assets_status) ||
+      std::filesystem::is_symlink(assets_status)) {
+    return resolved;
+  }
+  const std::filesystem::file_status package_status =
+      std::filesystem::symlink_status(package_root, filesystem_error);
+  if (filesystem_error || !std::filesystem::is_directory(package_status) ||
+      std::filesystem::is_symlink(package_status)) {
+    return resolved;
+  }
+
+  resolved.payload_layout = true;
+  resolved.library = canonical_library;
+  resolved.payload_root = root;
+  resolved.assets_content = assets_root / "content";
+  return resolved;
 }
 
 std::filesystem::path ResolveAdjacentRobloxAssetPath(
