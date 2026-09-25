@@ -202,6 +202,7 @@ BuildRuntime() {
     "BUILD_DIR=${BUILD_DIR}"
     "BUILD_TYPE=${BUILD_TYPE}"
     "JOBS=${JOBS}"
+    "RELEASE_CHECK=ON"
   )
   if [[ -n "${TOOLCHAIN_FILE}" ]]; then
     arguments+=("CMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE}")

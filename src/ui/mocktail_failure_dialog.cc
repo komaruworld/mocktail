@@ -83,6 +83,15 @@ window.dialog-window.alert {
 .alert .response-area > button:active {
   background: #48494e;
 }
+
+.alert .mocktail-notice-command {
+  font-family: monospace;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #2a2b2f;
+  color: #ffffff;
+}
 )css";
 
 constexpr char kProgressStyle[] = R"css(
@@ -200,6 +209,60 @@ int ShowDialog(std::string_view requested_message,
   adw_dialog_set_content_width(dialog, 270);
   AdwAlertDialog* alert = ADW_ALERT_DIALOG(dialog);
   adw_alert_dialog_add_response(alert, "close", response_label);
+  adw_alert_dialog_set_close_response(alert, "close");
+  adw_alert_dialog_set_default_response(alert, "close");
+  g_signal_connect(dialog, "closed", G_CALLBACK(OnDialogClosed), loop);
+  adw_dialog_present(dialog, nullptr);
+  g_main_loop_run(loop);
+  g_object_unref(dialog);
+  g_main_loop_unref(loop);
+  return EXIT_SUCCESS;
+}
+
+std::string ValidOptionalText(std::string_view text) {
+  if (text.empty() ||
+      !g_utf8_validate(text.data(), static_cast<gssize>(text.size()),
+                       nullptr)) {
+    return {};
+  }
+  return std::string(text);
+}
+
+GtkWidget* NoticeLabel(const std::string& text) {
+  GtkWidget* label = gtk_label_new(text.c_str());
+  gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+  gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+  gtk_label_set_xalign(GTK_LABEL(label), 0.0F);
+  gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+  gtk_widget_add_css_class(label, "mocktail-notice-command");
+  return label;
+}
+
+int ShowUpdateNotice(std::string_view heading, std::string_view body,
+                     std::string_view command) {
+  if (!InitializeUi(UiStyle::kDialog)) {
+    return EXIT_FAILURE;
+  }
+  const std::string valid_heading = ValidOptionalText(heading);
+  const std::string valid_body = ValidOptionalText(body);
+  const std::string valid_command = ValidOptionalText(command);
+  if (valid_heading.empty() && valid_body.empty()) {
+    return EXIT_FAILURE;
+  }
+
+  GMainLoop* loop = g_main_loop_new(nullptr, FALSE);
+  AdwDialog* dialog = adw_alert_dialog_new(
+      valid_heading.empty() ? "Mocktail" : valid_heading.c_str(),
+      valid_body.c_str());
+  g_object_ref_sink(dialog);
+  adw_dialog_set_content_width(dialog, 440);
+  AdwAlertDialog* alert = ADW_ALERT_DIALOG(dialog);
+
+  if (!valid_command.empty()) {
+    adw_alert_dialog_set_extra_child(alert, NoticeLabel(valid_command));
+  }
+
+  adw_alert_dialog_add_response(alert, "close", "Continue");
   adw_alert_dialog_set_close_response(alert, "close");
   adw_alert_dialog_set_default_response(alert, "close");
   g_signal_connect(dialog, "closed", G_CALLBACK(OnDialogClosed), loop);
@@ -368,6 +431,9 @@ int main(int argc, char* argv[]) {
   }
   if (argc == 3 && std::string_view(argv[1]) == "--warning") {
     return ShowDialog(argv[2], "Signed out", "Continue");
+  }
+  if (argc == 5 && std::string_view(argv[1]) == "--update-notice") {
+    return ShowUpdateNotice(argv[2], argv[3], argv[4]);
   }
   return EXIT_FAILURE;
 }
