@@ -170,13 +170,13 @@ class RobloxInputRouterTest : public ::testing::Test {
   RobloxInputRouter router_{Sink(&probe_)};
 };
 
-TEST(RobloxInputMappingTest, MapsAndroidMouseButtonsExactlyLikeApk) {
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_LEFT), 0);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_RIGHT), 1);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_MIDDLE), 3);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_X1), 7);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_X2), 15);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(42), -1);
+TEST(RobloxInputMappingTest, MapsMouseButtonsForNativeInput) {
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_LEFT), 0);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_RIGHT), 1);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_MIDDLE), 2);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_X1), 7);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_X2), 15);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(42), -1);
 }
 
 TEST(RobloxInputMappingTest, MapsSdlUsbKeysToLinuxAndAndroidCodes) {
@@ -236,6 +236,25 @@ TEST_F(RobloxInputRouterTest, RoutesMouseMotionButtonAndVerticalWheel) {
   EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].x, 0.0f);
   EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].y, 0.0f);
   EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].delta_y, -2.0f);
+}
+
+TEST_F(RobloxInputRouterTest, MiddleClickUsesMouseButton3OnPressAndRelease) {
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      true, SDL_BUTTON_MIDDLE, 1, 100.0f, 80.0f}))
+                  .dispatched());
+  EXPECT_EQ(router_.Snapshot().active_mouse_buttons, 1U);
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      false, SDL_BUTTON_MIDDLE, 1, 100.0f, 80.0f}))
+                  .dispatched());
+
+  ASSERT_EQ(probe_.mouse_buttons.size(), 2U);
+  EXPECT_TRUE(probe_.mouse_buttons[0].pressed);
+  EXPECT_EQ(probe_.mouse_buttons[0].button, 2);
+  EXPECT_FALSE(probe_.mouse_buttons[1].pressed);
+  EXPECT_EQ(probe_.mouse_buttons[1].button, 2);
+  EXPECT_EQ(router_.Snapshot().active_mouse_buttons, 0U);
 }
 
 TEST_F(RobloxInputRouterTest,

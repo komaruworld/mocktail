@@ -40,9 +40,10 @@ struct AndroidKeyMapping {
 // through with an ABI-incompatible numeric value.
 AndroidKeyMapping MapSdlKeyToAndroid(uint32_t sdl_scancode, uint32_t sdl_key = 0);
 
-// Mirrors the APK's MotionEvent.getActionButton() - 1 conversion. SDL button
-// numbers are not numerically compatible with Android button bit values.
-int32_t MapSdlMouseButtonToAndroid(uint8_t sdl_button);
+// Translates SDL button numbers to the nativePassMouseButton argument.
+// The first three are Roblox's zero-based MouseButton1/2/3 indices, not Android
+// MotionEvent button bits.
+int32_t MapSdlMouseButtonToRoblox(uint8_t sdl_button);
 
 int32_t MapSdlGamepadButtonToAndroid(uint8_t sdl_button);
 int32_t RobloxGamepadType(platform::GamepadFamily family);

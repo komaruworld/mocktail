@@ -274,14 +274,15 @@ AndroidKeyMapping MapSdlKeyToAndroid(uint32_t sdl_scancode,
   return {};
 }
 
-int32_t MapSdlMouseButtonToAndroid(uint8_t sdl_button) {
+int32_t MapSdlMouseButtonToRoblox(uint8_t sdl_button) {
   switch (sdl_button) {
     case SDL_BUTTON_LEFT:
       return 0;
     case SDL_BUTTON_RIGHT:
       return 1;
     case SDL_BUTTON_MIDDLE:
-      return 3;
+      // MouseButton3 is index 2, not BUTTON_TERTIARY (4) minus one.
+      return 2;
     case SDL_BUTTON_X1:
       return 7;
     case SDL_BUTTON_X2:
@@ -569,11 +570,11 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
                   RobloxInputEventKind::kMouseButton,
                   Unsupported("native mouse buttons are unavailable"));
   }
-  const int32_t android_button = MapSdlMouseButtonToAndroid(event.button);
-  if (android_button < 0) {
+  const int32_t roblox_button = MapSdlMouseButtonToRoblox(event.button);
+  if (roblox_button < 0) {
     return Result(RobloxInputDispatchState::kIgnoredUnsupported,
                   RobloxInputEventKind::kMouseButton,
-                  Unsupported("SDL mouse button has no Android mapping"));
+                  Unsupported("SDL mouse button has no Roblox mapping"));
   }
   if (event.x > 0.0f || event.y > 0.0f ||
       (mouse_x_ == 0.0f && mouse_y_ == 0.0f)) {
@@ -596,12 +597,12 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
     }
   }
   Status status = sink_.mouse_button(sink_.context, clamped_x, clamped_y,
-                                     event.pressed, android_button);
+                                     event.pressed, roblox_button);
   if (status.ok()) {
     const auto active = std::find(active_mouse_buttons_.begin(),
-                                  active_mouse_buttons_.end(), android_button);
+                                  active_mouse_buttons_.end(), roblox_button);
     if (event.pressed && active == active_mouse_buttons_.end()) {
-      active_mouse_buttons_.push_back(android_button);
+      active_mouse_buttons_.push_back(roblox_button);
     } else if (!event.pressed && active != active_mouse_buttons_.end()) {
       active_mouse_buttons_.erase(active);
     }
