@@ -447,6 +447,7 @@ std::optional<Json> GetRobloxJson(std::string url) {
 struct ResolvedPlaceMetadata {
   std::string name;
   std::string icon_url;
+  std::string creator_name;
 };
 
 bool IsSafeExternalImageUrl(std::string_view url) {
@@ -493,6 +494,12 @@ ResolvedPlaceMetadata ResolvePlaceMetadata(int64_t place_id) {
     if (first.contains("name") && first["name"].is_string()) {
       metadata.name =
           TruncateUtf8(first["name"].get<std::string>(), 128);
+    }
+    if (first.contains("creator") && first["creator"].is_object() &&
+        first["creator"].contains("name") &&
+        first["creator"]["name"].is_string()) {
+      metadata.creator_name = TruncateUtf8(
+          first["creator"]["name"].get<std::string>(), 125);
     }
   }
 
@@ -542,7 +549,8 @@ std::string BuildDiscordJoinUrl(const RobloxExperienceLaunchRequest& request) {
 DiscordRpcActivity BuildDiscordRpcActivity(
     const DiscordRpcConfig& config, RobloxExperiencePresencePhase phase,
     const RobloxExperienceLaunchRequest* request, std::string place_name,
-    int64_t session_started_at, std::string place_icon_url) {
+    int64_t session_started_at, std::string place_icon_url,
+    std::string creator_name) {
   DiscordRpcActivity activity;
   activity.state = TruncateUtf8(config.text.state, 128);
   switch (phase) {
@@ -560,6 +568,9 @@ DiscordRpcActivity BuildDiscordRpcActivity(
       }
       if (config.show_place_name) {
         activity.details = RenderPlaceTemplate(config.text.playing, place_name);
+        if (!creator_name.empty()) {
+          activity.state = TruncateUtf8("By " + creator_name, 128);
+        }
       } else {
         activity.details = activity.state;
         activity.state.clear();
@@ -698,6 +709,7 @@ class DiscordRpcSession::Impl final {
   struct CachedPlaceMetadata {
     std::string name;
     std::string icon_url;
+    std::string creator_name;
     std::chrono::steady_clock::time_point next_attempt{};
     unsigned failures = 0;
   };
@@ -734,6 +746,7 @@ class DiscordRpcSession::Impl final {
       Desired desired = Snapshot();
       std::string place_name;
       std::string place_icon_url;
+      std::string creator_name;
       bool resolve_metadata_after_publish = false;
       if ((desired.phase == RobloxExperiencePresencePhase::kJoining ||
            desired.phase == RobloxExperiencePresencePhase::kPlaying) &&
@@ -742,6 +755,7 @@ class DiscordRpcSession::Impl final {
             place_metadata_[desired.request.place_id];
         place_name = cached.name;
         place_icon_url = cached.icon_url;
+        creator_name = cached.creator_name;
         if ((cached.name.empty() || cached.icon_url.empty()) &&
             std::chrono::steady_clock::now() >= cached.next_attempt) {
           resolve_metadata_after_publish = true;
@@ -787,7 +801,7 @@ class DiscordRpcSession::Impl final {
                 ? nullptr
                 : &desired.request,
             std::move(place_name), desired.started_at,
-            std::move(place_icon_url));
+            std::move(place_icon_url), std::move(creator_name));
         if (!SetDiscordActivity(descriptor, &activity, nonce++)) {
           (void)close(descriptor);
           descriptor = -1;
@@ -814,6 +828,11 @@ class DiscordRpcSession::Impl final {
         if (!resolved.icon_url.empty() &&
             resolved.icon_url != cached.icon_url) {
           cached.icon_url = resolved.icon_url;
+          changed = true;
+        }
+        if (!resolved.creator_name.empty() &&
+            resolved.creator_name != cached.creator_name) {
+          cached.creator_name = resolved.creator_name;
           changed = true;
         }
         if (cached.name.empty() || cached.icon_url.empty()) {
