@@ -11,6 +11,7 @@
 
 #include "jnivm/jnivm.h"
 #include "runtime/external_launch_broker.h"
+#include "runtime/roblox_launch_uri.h"
 #include "runtime/webview_helper_launcher.h"
 #include "window/window.h"
 
@@ -951,9 +952,23 @@ Status RobloxExperienceComposition::RouteCurrentWebSurfaceEvent(
     route = web_surface_route_;
     web_view_bridge = web_view_bridge_.get();
   }
-  return event.type == WebViewHelperEventType::kRobloxCookie
-             ? AcceptWebViewRobloxCookie(event.payload)
-             : RouteWebSurfaceEvent(route, event, web_view_bridge);
+  if (event.type == WebViewHelperEventType::kRobloxCookie) {
+    return AcceptWebViewRobloxCookie(event.payload);
+  }
+  if (event.type == WebViewHelperEventType::kExecuteRoblox) {
+    // Roblox defers a signalled launchGame until the Lua app next navigates.
+    // A parsed launchGame is launched here and never forwarded, so a deferred
+    // copy cannot start a second join later.
+    RobloxExperienceLaunchRequest request;
+    if (ParseRobloxWebViewLaunchGame(event.payload, &request).ok() &&
+        Dispatch(request).ok()) {
+      std::fprintf(stderr,
+                   "[experience] WebView launchGame queued place_id=%lld\n",
+                   static_cast<long long>(request.place_id));
+      return CloseWebSurface();
+    }
+  }
+  return RouteWebSurfaceEvent(route, event, web_view_bridge);
 }
 
 Status RobloxExperienceComposition::DrainPlatformEvents() {

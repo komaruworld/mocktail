@@ -322,6 +322,77 @@ TEST(RobloxLaunchUriTest, ClearsOutputAndRedactsTicketOnFailure) {
   EXPECT_FALSE(ParseRobloxLaunchUri(kModernPublicLaunchUri, nullptr).ok());
 }
 
+TEST(RobloxWebViewLaunchGameTest, ParsesPrivateServerPlayButton) {
+  constexpr char kCommand[] =
+      R"({"moduleID":"Game","functionName":"launchGame",)"
+      R"("callbackID":"b8cf5fbd-f6a8-cfba-2cae-84bce46f46b2",)"
+      R"("params":{"request":{"requestType":"RequestPrivateGame",)"
+      R"("browserTrackerId":"1790271319250009",)"
+      R"("accessCode":"664b524f-19cc-4e28-a947-e8f5286f4179",)"
+      R"("placeId":"920587237","joinAttemptId":"attempt-1",)"
+      R"("joinAttemptOrigin":"privateServerListJoin",)"
+      R"("isPlayTogetherGame":false}}})";
+  RobloxExperienceLaunchRequest request;
+
+  const Status status = ParseRobloxWebViewLaunchGame(kCommand, &request);
+
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(request.place_id, 920587237);
+  EXPECT_EQ(request.access_code, "664b524f-19cc-4e28-a947-e8f5286f4179");
+  EXPECT_EQ(request.join_attempt_id, "attempt-1");
+  EXPECT_EQ(request.join_attempt_origin, "privateServerListJoin");
+  EXPECT_EQ(request.canonical_json.find("browserTrackerId"), std::string::npos);
+  ExpectCanonicalRequestMatches(request);
+}
+
+TEST(RobloxWebViewLaunchGameTest, ParsesServerJobWithNumericPlaceId) {
+  constexpr char kCommand[] =
+      R"({"moduleID":"Game","functionName":"launchGame",)"
+      R"("params":{"request":{"requestType":"RequestGameJob",)"
+      R"("placeId":1962086868,"gameId":"97ea-49e4"}}})";
+  RobloxExperienceLaunchRequest request;
+
+  const Status status = ParseRobloxWebViewLaunchGame(kCommand, &request);
+
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(request.place_id, 1962086868);
+  EXPECT_EQ(request.game_instance_id, "97ea-49e4");
+  ExpectCanonicalRequestMatches(request);
+}
+
+TEST(RobloxWebViewLaunchGameTest, ReportsOtherCommandsAsUnsupported) {
+  RobloxExperienceLaunchRequest request;
+  request.place_id = 123;
+  request.canonical_json = "stale";
+
+  const Status status = ParseRobloxWebViewLaunchGame(
+      R"({"moduleID":"Game","functionName":"getSystemInfo","params":{}})",
+      &request);
+
+  EXPECT_EQ(status.code(), StatusCode::kUnsupported);
+  EXPECT_EQ(request.place_id, 0);
+  EXPECT_TRUE(request.canonical_json.empty());
+  EXPECT_EQ(ParseRobloxWebViewLaunchGame("not json", &request).code(),
+            StatusCode::kUnsupported);
+}
+
+TEST(RobloxWebViewLaunchGameTest, RejectsMalformedLaunchGame) {
+  const char* const kCommands[] = {
+      R"({"functionName":"launchGame"})",
+      R"({"functionName":"launchGame","params":{"request":"x"}})",
+      R"({"functionName":"launchGame","params":{"request":{)"
+      R"("requestType":"RequestPrivateGame","placeId":"920587237"}}})",
+      R"({"functionName":"launchGame","params":{"request":{)"
+      R"("requestType":"RequestGame","placeId":"-1"}}})",
+  };
+  for (const char* command : kCommands) {
+    RobloxExperienceLaunchRequest request;
+    const Status status = ParseRobloxWebViewLaunchGame(command, &request);
+    EXPECT_EQ(status.code(), StatusCode::kInvalidArgument) << command;
+    EXPECT_EQ(request.place_id, 0) << command;
+  }
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail
