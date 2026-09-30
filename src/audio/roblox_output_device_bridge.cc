@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -19,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "audio/native_input_capture.h"
 #include "audio/roblox_output_device_bridge_internal.h"
 #include "linker/linker.h"
 #include "mocktail/audio/sdl_audio_sink.h"
@@ -35,6 +37,24 @@ constexpr std::size_t kGuestDeviceInfoSize = kGuestStringSize * 2 + 1;
 constexpr std::size_t kStringConstructorContractSize = 24;
 constexpr std::size_t kMaximumMenuDevices = 128;
 constexpr std::size_t kMaximumDeviceNameBytes = 512;
+constexpr std::size_t kFirstPatchedVtableIndex = 4;
+
+// Microphone capture on Build 2998 (Roblox 2.736.1408 x86_64). Roblox 2.738
+// inserted device-list methods at slots 7 and 11; main verified its capture
+// methods at {4, 13..17}, between the input current (12) and select (18)
+// slots, so 2998 keeps them at {4, 11..15}, between input current (10) and
+// select (16). The input slots, with main's input RVAs for this image, anchor
+// that layout before anything is patched.
+constexpr std::string_view kCaptureBuildId =
+    "ade08266c67aee88ec9c1d00902150e1684dad3a";
+constexpr std::uintptr_t kCaptureVtableRva = 0x6c58040;
+// Format, latency, start, stop, poll, recording.
+constexpr std::array<std::size_t, 6> kCaptureSlots{4, 11, 12, 13, 14, 15};
+constexpr std::array<std::size_t, 4> kInputAnchorSlots{8, 9, 10, 16};
+constexpr std::array<std::uintptr_t, 4> kInputAnchorRvas{
+    0x32d12dc, 0x32d12ea, 0x32d13a6, 0x32d0a56};
+// On 2.738 the capture methods lie within 0x1400 bytes of the input methods.
+constexpr std::uintptr_t kCaptureCodeWindow = 0x4000;
 
 std::atomic<RobloxOutputDeviceBridge*> g_active_bridge{nullptr};
 
@@ -104,7 +124,7 @@ bool SetVtableWritable(std::uintptr_t* vtable, bool writable) {
   }
   const std::uintptr_t page_size = static_cast<std::uintptr_t>(page_size_value);
   const std::uintptr_t first =
-      reinterpret_cast<std::uintptr_t>(vtable + kOutputCountVtableIndex);
+      reinterpret_cast<std::uintptr_t>(vtable + kFirstPatchedVtableIndex);
   const std::uintptr_t last =
       reinterpret_cast<std::uintptr_t>(vtable + kSelectOutputVtableIndex + 1);
   if (last <= first) {
@@ -178,6 +198,8 @@ std::string MakeOutputDeviceGuid(std::uint32_t playback_device_id,
 
 }  // namespace internal
 
+RobloxOutputDeviceBridge::RobloxOutputDeviceBridge() = default;
+
 RobloxOutputDeviceBridge::~RobloxOutputDeviceBridge() { Shutdown(); }
 
 Status RobloxOutputDeviceBridge::Install(const compat::BuildProfile& profile) {
@@ -200,6 +222,11 @@ Status RobloxOutputDeviceBridge::Install(const compat::BuildProfile& profile) {
         "another Roblox output-device bridge owns the process");
   }
   profile_ = *profile.fmod_output_device_bridge;
+  const char* native_capture = std::getenv("MOCKTAIL_NATIVE_INPUT_CAPTURE");
+  capture_profile_supported_ =
+      profile.elf_build_id == kCaptureBuildId &&
+      profile_.vtable_rva == kCaptureVtableRva &&
+      !(native_capture != nullptr && std::strcmp(native_capture, "0") == 0);
   if (!linker::SetAndroidLibraryLoadObserver(&ObserveAndroidLibrary, this)) {
     g_active_bridge.store(nullptr, std::memory_order_release);
     profile_ = {};
@@ -225,6 +252,8 @@ void RobloxOutputDeviceBridge::Shutdown() {
                    "  [audio-menu] failed to restore FmodAudioDevice "
                    "vtable protection\n");
     }
+    g_native_capture.store(nullptr, std::memory_order_release);
+    capture_.reset();
     active_ = false;
     devices_.clear();
     string_constructor_ = nullptr;
@@ -348,9 +377,9 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
     return FailedPrecondition("FMOD output-device vtable range overflows");
   }
   const std::uintptr_t first_slot_rva =
-      profile_.vtable_rva + kOutputCountVtableIndex * sizeof(std::uintptr_t);
+      profile_.vtable_rva + kFirstPatchedVtableIndex * sizeof(std::uintptr_t);
   const std::size_t slot_range_size =
-      (kSelectOutputVtableIndex - kOutputCountVtableIndex + 1) *
+      (kSelectOutputVtableIndex - kFirstPatchedVtableIndex + 1) *
       sizeof(std::uintptr_t);
   if (!IsRelroImageRange(library_base_, first_slot_rva, slot_range_size) ||
       !IsExecutableImageRange(library_base_, profile_.string_constructor_rva,
@@ -375,6 +404,15 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
         "FmodAudioDevice string ABI contract validation failed");
   }
 
+  if (capture_profile_supported_) {
+    // The output routes do not depend on capture; keep them if it is refused.
+    const Status capture_status = PrepareCaptureLocked();
+    if (!capture_status.ok()) {
+      std::fprintf(stderr, "  [audio-input] native capture unavailable: %s\n",
+                   capture_status.message().c_str());
+    }
+  }
+
   original_methods_ = {
       vtable_[kOutputCountVtableIndex],
       vtable_[kOutputInfoVtableIndex],
@@ -382,6 +420,7 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
       vtable_[kSelectOutputVtableIndex],
   };
   if (!SetVtableWritable(vtable_, true)) {
+    capture_.reset();
     return Status::Error(StatusCode::kPlatformError,
                          "cannot make FmodAudioDevice vtable writable");
   }
@@ -394,6 +433,18 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
                    FunctionAddress(&GetCurrentOutputDevice), __ATOMIC_RELEASE);
   __atomic_store_n(&vtable_[kSelectOutputVtableIndex],
                    FunctionAddress(&SetCurrentOutputDevice), __ATOMIC_RELEASE);
+  if (capture_) {
+    g_native_capture.store(capture_.get(), std::memory_order_release);
+    const std::array<std::uintptr_t, 6> methods{
+        FunctionAddress(&NativeInputCapture::Format),
+        FunctionAddress(&NativeInputCapture::Latency),
+        FunctionAddress(&NativeInputCapture::Start),
+        FunctionAddress(&NativeInputCapture::Stop),
+        FunctionAddress(&NativeInputCapture::Poll),
+        FunctionAddress(&NativeInputCapture::Recording)};
+    for (std::size_t i = 0; i < kCaptureSlots.size(); ++i)
+      __atomic_store_n(&vtable_[kCaptureSlots[i]], methods[i], __ATOMIC_RELEASE);
+  }
   if (!SetVtableWritable(vtable_, false)) {
     __atomic_store_n(&vtable_[kOutputCountVtableIndex], original_methods_[0],
                      __ATOMIC_RELEASE);
@@ -403,10 +454,73 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
                      __ATOMIC_RELEASE);
     __atomic_store_n(&vtable_[kSelectOutputVtableIndex], original_methods_[3],
                      __ATOMIC_RELEASE);
+    if (capture_) {
+      for (std::size_t i = 0; i < kCaptureSlots.size(); ++i)
+        __atomic_store_n(&vtable_[kCaptureSlots[i]],
+                         original_capture_methods_[i], __ATOMIC_RELEASE);
+      g_native_capture.store(nullptr, std::memory_order_release);
+      capture_.reset();
+    }
     (void)SetVtableWritable(vtable_, false);
     return Status::Error(StatusCode::kPlatformError,
                          "cannot restore FmodAudioDevice RELRO protection");
   }
+  if (capture_) {
+    std::fprintf(stderr,
+                 "  [audio-input] native capture armed for Build ID %s "
+                 "(slots 4/11-15 = %#" PRIxPTR "/%#" PRIxPTR "/%#" PRIxPTR
+                 "/%#" PRIxPTR "/%#" PRIxPTR "/%#" PRIxPTR ")\n",
+                 kCaptureBuildId.data(),
+                 original_capture_methods_[0] - library_base_,
+                 original_capture_methods_[1] - library_base_,
+                 original_capture_methods_[2] - library_base_,
+                 original_capture_methods_[3] - library_base_,
+                 original_capture_methods_[4] - library_base_,
+                 original_capture_methods_[5] - library_base_);
+  }
+  return Status::Ok();
+}
+
+Status RobloxOutputDeviceBridge::PrepareCaptureLocked() {
+  for (std::size_t i = 0; i < kInputAnchorSlots.size(); ++i) {
+    if (vtable_[kInputAnchorSlots[i]] != library_base_ + kInputAnchorRvas[i]) {
+      return FailedPrecondition(
+          "FmodAudioDevice input slots do not match Build 2998");
+    }
+  }
+  const auto [lowest_input, highest_input] =
+      std::minmax_element(kInputAnchorRvas.begin(), kInputAnchorRvas.end());
+  for (std::size_t i = 0; i < kCaptureSlots.size(); ++i) {
+    const std::uintptr_t method = vtable_[kCaptureSlots[i]];
+    const std::uintptr_t rva = method - library_base_;
+    if (method < library_base_ ||
+        !IsExecutableImageRange(library_base_, rva, 1) ||
+        rva + kCaptureCodeWindow < *lowest_input ||
+        rva > *highest_input + kCaptureCodeWindow) {
+      return FailedPrecondition(
+          "FmodAudioDevice capture slot is outside the device code");
+    }
+    const bool repeated =
+        std::find(original_capture_methods_.begin(),
+                  original_capture_methods_.begin() + i,
+                  method) != original_capture_methods_.begin() + i ||
+        std::find(kInputAnchorRvas.begin(), kInputAnchorRvas.end(), rva) !=
+            kInputAnchorRvas.end();
+    if (repeated) {
+      return FailedPrecondition(
+          "FmodAudioDevice capture slots are not distinct methods");
+    }
+    original_capture_methods_[i] = method;
+  }
+  const char* input_device = std::getenv("MOCKTAIL_AUDIO_INPUT_DEVICE");
+  const bool enabled =
+      input_device == nullptr || std::strcmp(input_device, "disabled") != 0;
+  capture_ = std::make_unique<NativeInputCapture>(
+      NativeInputCapture::SinkAbi{
+          library_base_, &IsRelroImageRange, &IsExecutableImageRange,
+          reinterpret_cast<NativeInputCapture::OriginalLatency>(
+              original_capture_methods_[1])},
+      enabled);
   return Status::Ok();
 }
 
@@ -422,6 +536,11 @@ bool RobloxOutputDeviceBridge::RestoreVtableLocked() {
                    __ATOMIC_RELEASE);
   __atomic_store_n(&vtable_[kSelectOutputVtableIndex], original_methods_[3],
                    __ATOMIC_RELEASE);
+  if (capture_) {
+    for (std::size_t i = 0; i < kCaptureSlots.size(); ++i)
+      __atomic_store_n(&vtable_[kCaptureSlots[i]], original_capture_methods_[i],
+                       __ATOMIC_RELEASE);
+  }
   return SetVtableWritable(vtable_, false);
 }
 
