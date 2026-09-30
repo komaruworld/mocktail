@@ -287,6 +287,11 @@ constexpr uint32_t kJniSegmentCapacity = 100000;
 constexpr uint32_t kJniHandleShift = 16;
 std::shared_ptr<void> g_segment_owners[kJniSegmentCapacity];
 std::unordered_set<jclass> g_known_classes;
+// Class handles are interned by binary name. Real JNI resolves the same class
+// to the same runtime class object, and class handles are never released, so
+// every FindClass/GetObjectClass used to consume a fresh permanent segment
+// slot and exhaust the table during long sessions.
+std::unordered_map<std::string, jclass> g_class_handle_cache;
 std::unordered_map<std::string, jobject> g_singleton_objects;
 std::unordered_map<std::string, std::shared_ptr<Class>> g_fallback_classes;
 std::unordered_set<jstring> g_known_strings;
@@ -737,6 +742,14 @@ std::shared_ptr<Class> ClassFromJClass(jclass clazz) {
 // g_segment_owners keeps the encoded class handle alive.
 static jclass StoreClass(std::shared_ptr<Class> cls) {
   std::lock_guard<std::recursive_mutex> lock(g_jni_state_mutex);
+  if (!cls) {
+    return nullptr;
+  }
+  const std::string& name = cls->GetName();
+  if (const auto cached = g_class_handle_cache.find(name);
+      cached != g_class_handle_cache.end()) {
+    return cached->second;
+  }
   Class* raw_ptr = cls.get();
   int index = AllocateSegmentSlot(raw_ptr, cls, SegmentType::kClass);
   if (index <= 0) {
@@ -745,6 +758,7 @@ static jclass StoreClass(std::shared_ptr<Class> cls) {
   jclass handle =
       reinterpret_cast<jclass>(JniHandleFromIndex(static_cast<uint32_t>(index)));
   g_known_classes.insert(handle);
+  g_class_handle_cache.emplace(name, handle);
   return handle;
 }
 

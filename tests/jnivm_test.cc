@@ -723,6 +723,27 @@ TEST_F(JniVmTest, FindClassReturnsRegisteredInstance) {
   EXPECT_EQ(registered.get(), found.get());
 }
 
+TEST_F(JniVmTest, RepeatedClassLookupsReuseTheSameHandle) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass first = env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface");
+  ASSERT_NE(first, nullptr);
+  jclass string_class = env->FindClass("java/lang/String");
+  ASSERT_NE(string_class, nullptr);
+  // Exceeds the JNI segment capacity (100000); without interned class handles
+  // every lookup consumes a permanent slot and the table runs out here.
+  constexpr int kIterations = 120000;
+  for (int i = 0; i < kIterations; ++i) {
+    ASSERT_EQ(env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface"),
+              first);
+    jstring value = env->NewStringUTF("probe");
+    ASSERT_NE(value, nullptr);
+    jclass value_class = env->GetObjectClass(value);
+    ASSERT_EQ(value_class, string_class);
+    ASSERT_EQ(env->GetObjectClass(value), value_class);
+    env->DeleteLocalRef(value);
+  }
+}
+
 TEST_F(JniVmTest, RegisteredMethodIsFound) {
   auto cls = vm_->RegisterClass("rbx/JNIRobloxSettings");
   cls->RegisterMethod("nativeInitClientSettings", "()V",
