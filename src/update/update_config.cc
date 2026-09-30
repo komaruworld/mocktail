@@ -165,6 +165,11 @@ UpdateConfigResult LoadUpdateConfig(const std::filesystem::path& path) {
         result.error = "updates.launch_after_update must be true or false";
         break;
       }
+    } else if (key == "mocktail_release_check") {
+      if (!ParseBoolean(value, &result.config.mocktail_release_check)) {
+        result.error = "updates.mocktail_release_check must be true or false";
+        break;
+      }
     } else if (key == "source") {
       result.config.source = Scalar(value);
       // `apk-pure` predates the fallback chain and still selects it, so an

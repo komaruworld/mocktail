@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 extern char** environ;
@@ -247,6 +248,7 @@ class UpdaterStderrRelay final {
   int write_descriptor() const { return descriptors_[1]; }
   void CloseWrite() { CloseDescriptor(&descriptors_[1]); }
   const std::string& failure() const { return failure_; }
+  const MocktailUpdateNotice& notice() const { return notice_; }
 
   // Must run before waitpid: a child that fills the pipe blocks until it is
   // drained, and waiting first would deadlock the launcher.
@@ -281,6 +283,7 @@ class UpdaterStderrRelay final {
  private:
   // An Adwaita alert dialog stays readable well below the packet limit.
   static constexpr std::size_t kMaximumFailureBytes = 400;
+  static constexpr std::size_t kMaximumNoticeFieldBytes = 1024;
 
   static void CloseDescriptor(int* descriptor) {
     if (*descriptor >= 0) {
@@ -306,16 +309,39 @@ class UpdaterStderrRelay final {
 
   // A message cut mid-codepoint fails UTF-8 validation in the dialog helper
   // and would be replaced by the generic text.
-  static std::string_view TrimToCharacterBoundary(std::string_view text) {
-    if (text.size() <= kMaximumFailureBytes) {
+  static std::string_view TrimToCharacterBoundary(
+      std::string_view text, std::size_t maximum = kMaximumFailureBytes) {
+    if (text.size() <= maximum) {
       return text;
     }
-    std::size_t size = kMaximumFailureBytes;
+    std::size_t size = maximum;
     while (size > 0 &&
            (static_cast<unsigned char>(text[size]) & 0xC0U) == 0x80U) {
       --size;
     }
     return text.substr(0, size);
+  }
+
+  static void AppendNoticeLine(std::string* field, std::string_view line) {
+    std::string combined = *field;
+    if (!combined.empty()) combined.push_back('\n');
+    combined.append(line);
+    field->assign(TrimToCharacterBoundary(combined, kMaximumNoticeFieldBytes));
+  }
+
+  bool RecordNoticeLine(std::string_view detail) {
+    const std::pair<std::string_view, std::string*> fields[] = {
+        {"notice-heading: ", &notice_.heading},
+        {"notice-command: ", &notice_.command},
+        {"notice: ", &notice_.body},
+    };
+    for (const auto& [prefix, field] : fields) {
+      if (detail.substr(0, prefix.size()) == prefix) {
+        AppendNoticeLine(field, detail.substr(prefix.size()));
+        return true;
+      }
+    }
+    return false;
   }
 
   void RecordLine(std::string_view line) {
@@ -326,7 +352,8 @@ class UpdaterStderrRelay final {
       return;
     }
     const std::string_view detail = line.substr(kPrefix.size());
-    if (detail.substr(0, kWarningPrefix.size()) == kWarningPrefix) {
+    if (detail.substr(0, kWarningPrefix.size()) == kWarningPrefix ||
+        RecordNoticeLine(detail)) {
       return;
     }
     failure_.assign(TrimToCharacterBoundary(detail));
@@ -334,6 +361,7 @@ class UpdaterStderrRelay final {
 
   int descriptors_[2] = {-1, -1};
   std::string failure_;
+  MocktailUpdateNotice notice_;
 };
 
 std::vector<std::string> ChildEnvironment(const RuntimePaths& paths,
@@ -440,6 +468,7 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
   // The child owns the write end now; the relay must observe end-of-file.
   stderr_relay.CloseWrite();
   stderr_relay.Drain();
+  result.notice = stderr_relay.notice();
 
   int child_status = 0;
   while (waitpid(child, &child_status, 0) < 0) {

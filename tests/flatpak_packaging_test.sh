@@ -17,6 +17,23 @@ Fail() {
   exit 1
 }
 
+python3 - "${ROOT}/CMakeLists.txt" \
+    "${ROOT}/packaging/space.bigrat.mocktail.metainfo.xml" <<'PY'
+import re
+import sys
+import xml.etree.ElementTree as ElementTree
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    project = re.search(r"project\(Mocktail\s+VERSION\s+([0-9.]+)", source.read())
+assert project, "CMakeLists.txt has no project VERSION"
+releases = ElementTree.parse(sys.argv[2]).getroot().find("releases")
+assert releases is not None and len(releases), "metainfo has no releases"
+newest = releases[0].get("version")
+assert newest == project.group(1), (
+    f"metainfo newest release {newest} does not match project version "
+    f"{project.group(1)}; add a <release> entry")
+PY
+
 python3 - "${MANIFEST}" <<'PY'
 import json
 import re

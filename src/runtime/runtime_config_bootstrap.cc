@@ -166,6 +166,9 @@ updates:
   # Reserved for desktop update integrations. `mocktail_updater` itself never
   # launches another process after changing the active payload.
   launch_after_update: false
+  # Boolean (default: true): AppImage and portable builds only. Check GitHub
+  # for a newer Mocktail release; packaged builds are updated by their package.
+  mocktail_release_check: true
 )yaml";
 
 std::string ErrorMessage(std::string_view action, int error_number) {

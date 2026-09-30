@@ -70,6 +70,16 @@ CompatibilityCatalogResult LoadCompatibilityCatalog(
   if (!ReadManifest(path, &contents, &result.error)) {
     return result;
   }
+  return ParseCompatibilityCatalog(contents);
+}
+
+CompatibilityCatalogResult ParseCompatibilityCatalog(
+    std::string_view contents) {
+  CompatibilityCatalogResult result;
+  if (contents.size() > kMaximumManifestBytes) {
+    result.error = "compatibility manifest exceeds its size limit";
+    return result;
+  }
   const nlohmann::json document =
       nlohmann::json::parse(contents, nullptr, false, true);
   if (document.is_discarded() || !document.is_object() ||

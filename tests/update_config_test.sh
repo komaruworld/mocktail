@@ -18,6 +18,7 @@ example="$(python3 "${READER}" "${EXAMPLE}")"
 [[ "$(jq -r .source <<<"${example}")" == apk-pure ]]
 [[ "$(jq -r .launch_after_update <<<"${example}")" == false ]]
 [[ "$(jq -r 'has("testing_latest_only")' <<<"${example}")" == false ]]
+[[ "$(jq -r .mocktail_release_check <<<"${example}")" == true ]]
 
 cat > "${TEMP_DIR}/config.yaml" <<'EOF'
 version: 1
@@ -46,6 +47,16 @@ updates:
 EOF
 if python3 "${READER}" "${TEMP_DIR}/config.yaml" >/dev/null 2>&1; then
   echo "invalid updater source was accepted" >&2
+  exit 1
+fi
+
+cat > "${TEMP_DIR}/config.yaml" <<'EOF'
+version: 1
+updates:
+  mocktail_release_check: sometimes
+EOF
+if python3 "${READER}" "${TEMP_DIR}/config.yaml" >/dev/null 2>&1; then
+  echo "non-boolean mocktail_release_check was accepted" >&2
   exit 1
 fi
 

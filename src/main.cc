@@ -614,6 +614,8 @@ int main(int argc, char* argv[]) {
         "Mocktail could not update or verify the Roblox installation.");
     const mocktail::runtime::PayloadUpdatePreflightResult update_preflight =
         mocktail::runtime::RunPayloadUpdatePreflight(environment, paths);
+    const mocktail::runtime::MocktailUpdateNotice& update_notice =
+        update_preflight.notice;
     if (!update_preflight) {
       std::cerr << "[FATAL] " << update_preflight.error;
       if (!update_preflight.details.empty()) {
@@ -621,13 +623,25 @@ int main(int argc, char* argv[]) {
         // which is indistinguishable between a provider outage, a rejected
         // signature, and a full disk.
         std::cerr << ": " << update_preflight.details;
-        failure_dialog.SetMessage(
+        std::string message =
             "Mocktail could not update or verify the Roblox installation.\n\n" +
-            update_preflight.details + "\n\nSession log: " +
-            (paths.logs_root() / "sessions").string());
+            update_preflight.details;
+        if (!update_notice.empty()) {
+          message += "\n\n" + update_notice.body;
+          if (!update_notice.command.empty()) {
+            message += "\n" + update_notice.command;
+          }
+        }
+        failure_dialog.SetMessage(message + "\n\nSession log: " +
+                                  (paths.logs_root() / "sessions").string());
       }
       std::cerr << '\n';
       return EXIT_FAILURE;
+    }
+    if (!update_notice.empty()) {
+      (void)mocktail::runtime::ShowUpdateNoticeDialog(
+          environment, update_notice.heading, update_notice.body,
+          update_notice.command);
     }
     failure_dialog.SetMessage(
         "Mocktail could not finish starting Roblox because of an internal "
