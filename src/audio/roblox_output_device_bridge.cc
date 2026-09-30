@@ -252,8 +252,7 @@ void RobloxOutputDeviceBridge::Shutdown() {
                    "  [audio-menu] failed to restore FmodAudioDevice "
                    "vtable protection\n");
     }
-    g_native_capture.store(nullptr, std::memory_order_release);
-    capture_.reset();
+    NativeInputCapture::Retire(std::move(capture_));
     active_ = false;
     devices_.clear();
     string_constructor_ = nullptr;
@@ -458,8 +457,7 @@ Status RobloxOutputDeviceBridge::PatchVtableLocked() {
       for (std::size_t i = 0; i < kCaptureSlots.size(); ++i)
         __atomic_store_n(&vtable_[kCaptureSlots[i]],
                          original_capture_methods_[i], __ATOMIC_RELEASE);
-      g_native_capture.store(nullptr, std::memory_order_release);
-      capture_.reset();
+      NativeInputCapture::Retire(std::move(capture_));
     }
     (void)SetVtableWritable(vtable_, false);
     return Status::Error(StatusCode::kPlatformError,

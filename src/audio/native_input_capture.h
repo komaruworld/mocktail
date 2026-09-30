@@ -60,7 +60,10 @@ class NativeInputCapture {
 
   static NativeOptionalFormat Format(void*) {
     auto* capture = g_native_capture.load(std::memory_order_acquire);
-    return {{}, capture && capture->enabled_ ? 1ULL : 0ULL};
+    return {{}, capture && capture->enabled_ &&
+                        !capture->closed_.load(std::memory_order_acquire)
+                    ? 1ULL
+                    : 0ULL};
   }
   static void Latency(void* self, std::uint32_t* playback,
                       std::uint32_t* recording) {
@@ -98,8 +101,16 @@ class NativeInputCapture {
   }
   void Shutdown() {
     std::lock_guard lock(mutex_);
+    closed_.store(true, std::memory_order_release);
     for (auto& [self, session] : sessions_) Close(*session);
     sessions_.clear();
+  }
+  // Roblox threads may already be inside an entry point with the old pointer,
+  // and its workers are never joined. A published capture is therefore only
+  // closed, never freed, so late calls find an empty, closed object.
+  static void Retire(std::unique_ptr<NativeInputCapture> capture) {
+    g_native_capture.store(nullptr, std::memory_order_release);
+    if (capture) capture.release()->Shutdown();
   }
 
  private:
@@ -156,7 +167,8 @@ class NativeInputCapture {
   }
   bool StartSink(void* self, NativeSharedSink* sink) {
     std::lock_guard lock(mutex_);
-    if (!enabled_ || !self || !sink || !sink->object || !sink->owner)
+    if (closed_.load(std::memory_order_relaxed) || !enabled_ || !self ||
+        !sink || !sink->object || !sink->owner)
       return false;
     if (!IsGuestVtable(sink->object, 3, {2}) ||
         !IsGuestVtable(sink->owner, 5, {2, 4})) {
@@ -260,6 +272,7 @@ class NativeInputCapture {
   }
   SinkAbi abi_;
   bool enabled_;
+  std::atomic<bool> closed_{false};
   std::mutex mutex_;
   std::map<void*, std::unique_ptr<Session>> sessions_;
 };
