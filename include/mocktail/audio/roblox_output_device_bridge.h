@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -13,13 +14,15 @@
 
 namespace mocktail::audio {
 
-// Replaces only the output-device query/select slots of the exact
-// Build-ID-scoped FmodAudioDevice vtable. Roblox keeps owning its FMOD engine,
-// while the existing settings UI sees and selects the SDL host routes that
-// consume Android AudioTrack PCM.
+class NativeInputCapture;
+
+// Replaces the output-device query/select slots of the exact Build-ID-scoped
+// FmodAudioDevice vtable, and on Build 2998 its microphone capture slots.
+// Roblox keeps owning its FMOD engine, while the existing settings UI sees
+// and selects the SDL host routes that consume Android AudioTrack PCM.
 class RobloxOutputDeviceBridge final {
  public:
-  RobloxOutputDeviceBridge() = default;
+  RobloxOutputDeviceBridge();
   ~RobloxOutputDeviceBridge();
 
   RobloxOutputDeviceBridge(const RobloxOutputDeviceBridge&) = delete;
@@ -47,6 +50,7 @@ class RobloxOutputDeviceBridge final {
 
   Status Activate(std::uintptr_t image_base);
   Status PatchVtableLocked();
+  Status PrepareCaptureLocked();
   bool RestoreVtableLocked();
   int DeviceCount();
   void* DeviceInfo(void* result, int index);
@@ -54,6 +58,9 @@ class RobloxOutputDeviceBridge final {
   void SelectDevice(int index);
   void ConstructGuestString(void* destination, std::string_view value) const;
 
+  std::unique_ptr<NativeInputCapture> capture_;
+  bool capture_profile_supported_ = false;
+  std::array<std::uintptr_t, 6> original_capture_methods_{};
   mutable std::mutex mutex_;
   compat::FmodOutputDeviceBridgeProfile profile_;
   std::vector<MenuDevice> devices_;
