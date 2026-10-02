@@ -252,7 +252,9 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
 
     // ForceCacheSize settings are byte counts. Let Roblox size its mesh and
     // SLIM content caches; values like 256/128 would cap them to a few bytes.
-    const std::array<ClientSetting, 68> rendering_settings = {{
+    // Leave MSAA selection to Roblox or explicit client-settings overrides.
+    // Forcing one sample disables anti-aliasing even at maximum quality.
+    const std::array<ClientSetting, 67> rendering_settings = {{
         {"FIntSmoothClusterTaskQueueMaxParallelTasks", workers},
         {"FIntOcclusionWorkerThreadCount", occlusion_workers},
         {"FFlagMovePrerenderV2", "True"},
@@ -309,7 +311,6 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
         {"FFlagRenderAllocateShadowMapResourcesOnDemand", "True"},
         {"FIntRenderShadowMapDepthCacheMemLimit", "16"},
         {"FIntTM2ShadowMapMaxMips", "1"},
-        {"FIntDebugForceMSAASamples", "1"},
         {"FFlagLuauStartupGcSuppression", "False"},
         {"FIntLuauGcStepMul", "300"},
         {"FIntLuauGcGoalCore", "120"},
