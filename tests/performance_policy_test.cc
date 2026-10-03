@@ -168,6 +168,33 @@ TEST(PerformancePolicyTest, PreservesExplicitAssetCacheByteBudgets) {
   }
 }
 
+TEST(PerformancePolicyTest, WorkerModesRetainRobloxManagedAntiAliasing) {
+  for (const bool throughput : {false, true}) {
+    PerformancePolicy policy;
+    policy.multithreaded_rendering = !throughput;
+    policy.physical_core_count = 14;
+    policy.physics_worker_mode = throughput ? PhysicsWorkerMode::kThroughput
+                                            : PhysicsWorkerMode::kAuto;
+    std::string merged;
+    std::string error;
+    ASSERT_TRUE(MergePerformanceClientSettingsOverrides(
+        policy, "{}", &merged, &error)) << error;
+    const auto parsed = nlohmann::json::parse(merged);
+    EXPECT_FALSE(parsed.contains("FIntDebugForceMSAASamples"));
+
+    // Users can still opt into a specific sample count, including disabling AA.
+    for (const char* samples : {"1", "2", "4", "8"}) {
+      const nlohmann::json requested = {
+          {"FIntDebugForceMSAASamples", samples},
+      };
+      ASSERT_TRUE(MergePerformanceClientSettingsOverrides(
+          policy, requested.dump(), &merged, &error)) << error;
+      const auto explicit_settings = nlohmann::json::parse(merged);
+      EXPECT_EQ(explicit_settings.at("FIntDebugForceMSAASamples"), samples);
+    }
+  }
+}
+
 TEST(PerformancePolicyTest, LatencyModePreservesRobloxManagedWorkerPools) {
   PerformancePolicy policy =
       ParsePerformancePolicy("true", "0", "auto", "latency");
