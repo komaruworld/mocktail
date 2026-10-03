@@ -5,7 +5,10 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include "window/window.h"
@@ -103,6 +106,68 @@ TEST(VideoDriverPolicyTest, RejectsUnavailableOrEmptyDriverList) {
   EXPECT_FALSE(HasAvailableVideoDriverCandidate("sdl3", available));
   EXPECT_FALSE(HasAvailableVideoDriverCandidate("sdl3,missing", available));
   EXPECT_FALSE(HasAvailableVideoDriverCandidate("", available));
+}
+
+class NvidiaDriverDetectionTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    char pattern[] = "/tmp/mocktail_video_driver_XXXXXX";
+    const char* created = mkdtemp(pattern);
+    ASSERT_NE(created, nullptr);
+    root_ = created;
+    proc_version_ = root_ / "proc/driver/nvidia/version";
+    pci_drivers_ = root_ / "sys/bus/pci/drivers";
+  }
+
+  void TearDown() override {
+    std::error_code error;
+    std::filesystem::remove_all(root_, error);
+  }
+
+  bool Detect() const {
+    return HasNvidiaKernelDriver(proc_version_, pci_drivers_ / "nvidia");
+  }
+
+  std::filesystem::path root_;
+  std::filesystem::path proc_version_;
+  std::filesystem::path pci_drivers_;
+};
+
+TEST_F(NvidiaDriverDetectionTest, DetectsProcDriverWithoutSysfs) {
+  std::filesystem::create_directories(proc_version_.parent_path());
+  std::ofstream(proc_version_) << "NVRM version: NVIDIA UNIX Kernel Module\n";
+
+  EXPECT_TRUE(Detect());
+}
+
+TEST_F(NvidiaDriverDetectionTest, HybridGpuUsesXwaylandWhenProcIsHidden) {
+  std::filesystem::create_directories(pci_drivers_ / "i915");
+  std::filesystem::create_directories(pci_drivers_ / "nvidia");
+  VideoDriverPolicyInput input = NvidiaWaylandDirectVulkan();
+  input.has_nvidia_kernel_driver = Detect();
+
+  EXPECT_TRUE(input.has_nvidia_kernel_driver);
+  EXPECT_EQ(ResolveVideoDriverChoice(input),
+            VideoDriverChoice::kNvidiaDirectVulkanX11);
+  input.force_wayland = true;
+  EXPECT_EQ(ResolveVideoDriverChoice(input), VideoDriverChoice::kWayland);
+  input.has_explicit_sdl_driver = true;
+  EXPECT_EQ(ResolveVideoDriverChoice(input), VideoDriverChoice::kSdlDefault);
+}
+
+TEST_F(NvidiaDriverDetectionTest, DoesNotTreatNouveauAsTheNvidiaDriver) {
+  std::filesystem::create_directories(pci_drivers_ / "nouveau");
+  std::filesystem::create_directories(pci_drivers_ / "i915");
+  std::filesystem::create_directories(pci_drivers_ / "amdgpu");
+
+  EXPECT_FALSE(Detect());
+}
+
+TEST_F(NvidiaDriverDetectionTest, IgnoresMissingAndUnrelatedDeviceInformation) {
+  EXPECT_FALSE(Detect());
+  std::filesystem::create_directories(pci_drivers_ / "nvidia_drm");
+  std::ofstream(pci_drivers_ / "nvidia") << "not a registered driver\n";
+  EXPECT_FALSE(Detect());
 }
 
 TEST(VideoDriverPolicyIntegrationTest,

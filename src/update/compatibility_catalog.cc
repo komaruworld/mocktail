@@ -11,6 +11,9 @@
 #include <cerrno>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
+
+#include "compat/guest_abi.h"
 
 namespace mocktail::update {
 namespace {
@@ -70,17 +73,39 @@ CompatibilityCatalogResult LoadCompatibilityCatalog(
   const nlohmann::json document =
       nlohmann::json::parse(contents, nullptr, false, true);
   if (document.is_discarded() || !document.is_object() ||
-      document.value("schema_version", 0) != 1 ||
+      !document.contains("schema_version") ||
+      !document["schema_version"].is_number_integer() ||
+      document["schema_version"] != 1 ||
       !document.contains("profiles") || !document["profiles"].is_array()) {
     result.error = "compatibility manifest has an unsupported schema";
     return result;
   }
   for (const nlohmann::json& profile : document["profiles"]) {
-    if (!profile.is_object() || profile.value("status", "") != "supported" ||
-        !profile.value("default_allowed", false) ||
-        profile.value("allow_legacy_binary_patches", true)) {
+    if (!profile.is_object()) continue;
+    const auto status = profile.find("status");
+    const auto allowed = profile.find("default_allowed");
+    const auto patches = profile.find("allow_legacy_binary_patches");
+    if ((status != profile.end() && !status->is_string()) ||
+        (allowed != profile.end() && !allowed->is_boolean()) ||
+        (patches != profile.end() && !patches->is_boolean())) {
+      result.error = "compatibility profile has invalid policy field types";
+      return result;
+    }
+    if (status == profile.end() || *status != "supported" ||
+        allowed == profile.end() || !allowed->get<bool>() ||
+        patches == profile.end() || patches->get<bool>()) {
       continue;
     }
+    const auto declared_abi = profile.find("abi");
+    if (declared_abi != profile.end() && !declared_abi->is_string()) {
+      result.error = "supported compatibility profile is incomplete";
+      return result;
+    }
+    const std::string_view profile_abi =
+        declared_abi == profile.end()
+            ? std::string_view("x86_64")
+            : std::string_view(declared_abi->get_ref<const std::string&>());
+    if (profile_abi != compat::kGuestAbi) continue;
     if (!profile.contains("version_name") ||
         !profile["version_name"].is_string() ||
         !profile.contains("version_code") ||

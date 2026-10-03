@@ -14,7 +14,8 @@ namespace platform {
 // Returns false for invalid arguments and SDL events outside the platform
 // contract.
 bool ConvertSdlEvent(SDL_Window* window, const SDL_Event& source,
-                     PlatformEvent* destination);
+                     PlatformEvent* destination,
+                     bool relative_mouse_mode = false);
 
 }  // namespace platform
 }  // namespace mocktail

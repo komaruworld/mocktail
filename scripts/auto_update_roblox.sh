@@ -461,6 +461,7 @@ LatestSupportedBootstrapProfile() {
               .version_code <= ($remote_version_code | tonumber)) and
              .status == "supported" and .default_allowed == true and
              .allow_legacy_binary_patches == false and
+             (.abi // "x86_64") == "x86_64" and
              (.version_name | type) == "string" and
              (.version_name | length) > 0)] |
     group_by(.version_code) |
@@ -495,6 +496,7 @@ SelectSupportedBootstrapFallback() {
     bootstrap_source="$(jq -er --argjson version_code "${fallback_version_code}" '
       [.sources[]? |
        select(.version_code == $version_code and
+              (.abi // "x86_64") == "x86_64" and
               .provider == "uptodown")] |
       if length == 1 then .[0].provider else empty end
     ' "${BOOTSTRAP_SOURCES_PATH}" 2>/dev/null || true)"

@@ -194,13 +194,13 @@ class RobloxInputRouterTest : public ::testing::Test {
   RobloxInputRouter router_{Sink(&probe_)};
 };
 
-TEST(RobloxInputMappingTest, MapsAndroidMouseButtonsExactlyLikeApk) {
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_LEFT), 0);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_RIGHT), 1);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_MIDDLE), 3);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_X1), 7);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(SDL_BUTTON_X2), 15);
-  EXPECT_EQ(MapSdlMouseButtonToAndroid(42), -1);
+TEST(RobloxInputMappingTest, MapsMouseButtonsForNativeInput) {
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_LEFT), 0);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_RIGHT), 1);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_MIDDLE), 2);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_X1), 7);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(SDL_BUTTON_X2), 15);
+  EXPECT_EQ(MapSdlMouseButtonToRoblox(42), -1);
 }
 
 TEST(RobloxInputMappingTest, MapsSdlUsbKeysToLinuxAndAndroidCodes) {
@@ -260,6 +260,104 @@ TEST_F(RobloxInputRouterTest, RoutesMouseMotionButtonAndVerticalWheel) {
   EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].x, 0.0f);
   EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].y, 0.0f);
   EXPECT_FLOAT_EQ(probe_.mouse_wheels[0].delta_y, -2.0f);
+}
+
+TEST_F(RobloxInputRouterTest, MiddleClickUsesMouseButton3OnPressAndRelease) {
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      true, SDL_BUTTON_MIDDLE, 1, 100.0f, 80.0f}))
+                  .dispatched());
+  EXPECT_EQ(router_.Snapshot().active_mouse_buttons, 1U);
+  ASSERT_TRUE(router_
+                  .HandleEvent(Event(platform::MouseButtonEvent{
+                      false, SDL_BUTTON_MIDDLE, 1, 100.0f, 80.0f}))
+                  .dispatched());
+
+  ASSERT_EQ(probe_.mouse_buttons.size(), 2U);
+  EXPECT_TRUE(probe_.mouse_buttons[0].pressed);
+  EXPECT_EQ(probe_.mouse_buttons[0].button, 2);
+  EXPECT_FALSE(probe_.mouse_buttons[1].pressed);
+  EXPECT_EQ(probe_.mouse_buttons[1].button, 2);
+  EXPECT_EQ(router_.Snapshot().active_mouse_buttons, 0U);
+}
+
+TEST_F(RobloxInputRouterTest, MouseOriginIsAnAbsolutePosition) {
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      100.0F, 80.0F, 0.0F, 0.0F, 0})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      0.0F, 0.0F, -4.0F, -7.0F, 0})).dispatched());
+
+  const auto& move = probe_.mouse_moves.back();
+  EXPECT_FLOAT_EQ(move.x, 0.0F);
+  EXPECT_FLOAT_EQ(move.y, 0.0F);
+  EXPECT_FLOAT_EQ(move.delta_x, -4.0F);
+  EXPECT_FLOAT_EQ(move.delta_y, -7.0F);
+}
+
+TEST_F(RobloxInputRouterTest, ClickAtOriginDoesNotReusePreviousPosition) {
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      100.0F, 80.0F, 0.0F, 0.0F, 0})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseButtonEvent{
+      true, SDL_BUTTON_RIGHT, 1, 0.0F, 0.0F})).dispatched());
+
+  const auto& button = probe_.mouse_buttons.back();
+  EXPECT_FLOAT_EQ(button.x, 0.0F);
+  EXPECT_FLOAT_EQ(button.y, 0.0F);
+}
+
+TEST_F(RobloxInputRouterTest, CapturedPointerKeepsMovingBeyondWindowEdges) {
+  float x = 640.0F;
+  float y = 360.0F;
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      x, y, 0.0F, 0.0F, 0})).dispatched());
+  const std::pair<float, float> deltas[] = {
+      {4000.0F, 0.0F}, {-8000.0F, 0.0F}, {4000.0F, 0.0F},
+      {0.0F, 4000.0F}, {0.0F, -8000.0F}, {0.0F, 4000.0F}};
+  for (const auto& delta : deltas) {
+    ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+        640.0F, 360.0F, delta.first, delta.second, SDL_BUTTON_RMASK, true}))
+                    .dispatched());
+    x += delta.first;
+    y += delta.second;
+    const auto& move = probe_.mouse_moves.back();
+    EXPECT_FLOAT_EQ(move.x, x);
+    EXPECT_FLOAT_EQ(move.y, y);
+    EXPECT_FLOAT_EQ(move.delta_x, delta.first);
+    EXPECT_FLOAT_EQ(move.delta_y, delta.second);
+  }
+}
+
+TEST_F(RobloxInputRouterTest, CapturedButtonsAndWheelPreserveVirtualPosition) {
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      100.0F, 80.0F, 0.0F, 0.0F, 0})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      1279.0F, 0.0F, 1500.0F, -200.0F, 0, true})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseButtonEvent{
+      true, SDL_BUTTON_LEFT, 1, 640.0F, 360.0F, true})).dispatched());
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons.back().x, 1279.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons.back().y, 0.0F);
+
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseWheelEvent{
+      0.0F, -1.0F, 640.0F, 360.0F, true})).dispatched());
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels.back().x, 1600.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels.back().y, 0.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels.back().delta_y, -1.0F);
+
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      1279.0F, 0.0F, 1.0F, 2.0F, 0, true})).dispatched());
+  EXPECT_FLOAT_EQ(probe_.mouse_moves.back().x, 1601.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves.back().y, -118.0F);
+}
+
+TEST_F(RobloxInputRouterTest, AbsoluteMotionResetsPositionAfterCapture) {
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      640.0F, 360.0F, 4000.0F, -4000.0F, 0, true})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      20.0F, 30.0F, 0.0F, 0.0F, 0})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      640.0F, 360.0F, 1.0F, 2.0F, 0, true})).dispatched());
+  EXPECT_FLOAT_EQ(probe_.mouse_moves.back().x, 21.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves.back().y, 32.0F);
 }
 
 TEST_F(RobloxInputRouterTest,
@@ -472,6 +570,47 @@ TEST_F(RobloxInputRouterTest, ReportsHostTextFocusCompletion) {
   EXPECT_EQ(router_.Snapshot().text_focus_generation, 4U);
 }
 
+TEST_F(RobloxInputRouterTest, MouseClicksKeepTextFocusUntilEngineReleasesIt) {
+  RobloxTextFocusSession session{42, 1, "draft", false, false};
+  session.area_x = 40;
+  session.area_y = 300;
+  session.area_width = 400;
+  session.area_height = 30;
+  ASSERT_TRUE(router_.BeginTextFocusSession(session).ok());
+
+  for (const auto button : {SDL_BUTTON_LEFT, SDL_BUTTON_MIDDLE,
+                            SDL_BUTTON_RIGHT}) {
+    SCOPED_TRACE(button);
+    for (const bool pressed : {true, false}) {
+      ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseButtonEvent{
+          pressed, static_cast<uint8_t>(button), 1, 100.0F, 310.0F}))
+                      .dispatched());
+      EXPECT_EQ(router_.Snapshot().text_focus_generation, 1U);
+    }
+  }
+  EXPECT_TRUE(probe_.text_operations.empty());
+  EXPECT_EQ(probe_.mouse_buttons.size(), 6U);
+  EXPECT_TRUE(router_.HandleEvent(Event(platform::TextInputEvent{" next"}))
+                  .dispatched());
+  EXPECT_EQ(probe_.text_operations,
+            (std::vector<std::string>{"sync", "pass"}));
+
+  ASSERT_TRUE(router_.EndTextFocusSession(42, 1, false).ok());
+  EXPECT_EQ(router_.Snapshot().text_focus_generation, 0U);
+  EXPECT_FALSE(router_.HandleEvent(Event(platform::TextInputEvent{"late"}))
+                   .dispatched());
+}
+
+TEST_F(RobloxInputRouterTest, MouseClickRespectsManualTextFocusRelease) {
+  ASSERT_TRUE(router_.BeginTextFocusSession({42, 1, "draft", true, false}).ok());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseButtonEvent{
+      true, SDL_BUTTON_LEFT, 1, 900.0F, 600.0F})).dispatched());
+  EXPECT_TRUE(probe_.text_operations.empty());
+  EXPECT_EQ(router_.Snapshot().text_focus_generation, 1U);
+  EXPECT_TRUE(router_.HandleEvent(Event(platform::TextInputEvent{" next"}))
+                  .dispatched());
+}
+
 TEST(RobloxInputRouterClipboardTest,
      CtrlVPastesWithoutForwardingTheLetterKeyToRoblox) {
   Probe probe;
@@ -560,10 +699,11 @@ TEST(RobloxInputRouterClipboardTest, ClickingFocusedTextboxKeepsCopyAvailable) {
 
   EXPECT_TRUE(router.HandleEvent(Event(platform::MouseButtonEvent{
       true, SDL_BUTTON_LEFT, 1, 300.0F, 210.0F})).dispatched());
-  EXPECT_EQ(router.Snapshot().text_focus_generation, 0u);
+  EXPECT_EQ(router.Snapshot().text_focus_generation, 1u);
   EXPECT_EQ(probe.text_operations,
-            (std::vector<std::string>{"sync", "sync", "sync", "sync",
-                                      "handle"}));
+            (std::vector<std::string>{"sync", "sync", "sync", "sync"}));
+  ASSERT_TRUE(router.EndTextFocusSession(42, 1, false).ok());
+  EXPECT_EQ(router.Snapshot().text_focus_generation, 0u);
 }
 
 TEST_F(RobloxInputRouterTest,

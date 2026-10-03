@@ -102,10 +102,16 @@ for expected in \
     'MOCKTAIL_ANYLINUX_SYSTEM_INSTALL=1' \
     '--appimage-extract-and-run mocktail_updater status' \
     'Mocktail-x86_64.AppImage' \
+    'Mocktail-aarch64.AppImage' \
+    'mocktail-nightly-aarch64.AppImage' \
+    'ubuntu-24.04-arm' \
     'gh release upload continuous'; do
   grep -Fq -- "${expected}" "${WORKFLOW}" ||
     Fail "native package workflow is missing: ${expected}"
 done
+grep -Fq 'needs: [appimage, appimage-aarch64, deb, rpm, arch]' \
+  "${WORKFLOW}" ||
+  Fail 'continuous release does not wait for the aarch64 AppImage'
 
 grep -Fq 'paths-ignore:' "${WORKFLOW}" ||
   Fail 'native package workflow has no path filters'

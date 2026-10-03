@@ -266,8 +266,11 @@ nlohmann::json QueryMicrophone(Probe* probe) {
 }
 
 void SetRequestHandler(JNIEnv*, jobject, jstring, jstring, jobject) {}
+
 void ClearNativeRequestHandler(JNIEnv*, jobject, jstring, jstring) {}
+
 void PublishRaw(JNIEnv*, jobject, jstring, jstring) {}
+
 void BroadcastDataModelFocus(JNIEnv*, jclass, jstring, jstring, jstring) {}
 
 jstring GetLaunchId(JNIEnv* env, jclass) {
@@ -358,14 +361,17 @@ jobject Subscribe(JNIEnv* env, jobject, jstring id, jobject callback,
 }
 
 void Disconnect(JNIEnv*, jobject, jlong handle) {
-  if (handle == 91) ++g_probe->disconnects;
+  if (handle == 91)
+    ++g_probe->disconnects;
 }
 
 void Foreground(JNIEnv* env, jclass, jboolean enabled, jstring reason) {
-  if (reason == nullptr) return;
+  if (reason == nullptr)
+    return;
   const char* chars = env->GetStringUTFChars(reason, nullptr);
   const std::string value = chars != nullptr ? chars : "";
-  if (chars != nullptr) env->ReleaseStringUTFChars(reason, chars);
+  if (chars != nullptr)
+    env->ReleaseStringUTFChars(reason, chars);
   if (value == "ASMA.stop" || value == "ASMA.start") {
     g_probe->app_surface_lifecycle.push_back(
         std::string(enabled == JNI_TRUE ? "background:" : "foreground:") +
@@ -396,7 +402,10 @@ jint Start(JNIEnv* env, jclass, jobject params) {
   return 1;
 }
 
-void Update(JNIEnv*, jclass, jobject, jobject, jobject) { ++g_probe->updates; }
+void Update(JNIEnv*, jclass, jobject, jobject, jobject) {
+  ++g_probe->updates;
+}
+
 void UpdateApp(JNIEnv* env, jclass, jobject surface, jobject platform_params) {
   ++g_probe->app_updates;
   jclass surface_class = env->GetObjectClass(surface);
@@ -408,15 +417,25 @@ void UpdateApp(JNIEnv* env, jclass, jobject surface, jobject platform_params) {
   env->DeleteLocalRef(surface_class);
   env->DeleteLocalRef(params_class);
 }
+
 void PauseGame(JNIEnv*, jclass) {}
+
 void CallMessagesFromMainThread(JNIEnv*, jclass) {}
+
 void ResumeGame(JNIEnv*, jclass, jobject, jobject, jobject) {}
-void Leave(JNIEnv*, jclass) { ++g_probe->leaves; }
+
+void Leave(JNIEnv*, jclass) {
+  ++g_probe->leaves;
+}
+
 void PauseApp(JNIEnv*, jclass) {
   ++g_probe->app_pauses;
   g_probe->app_surface_lifecycle.emplace_back("pause-app");
 }
-void DestroyApp(JNIEnv*, jclass) { ++g_probe->destroys; }
+
+void DestroyApp(JNIEnv*, jclass) {
+  ++g_probe->destroys;
+}
 
 void StartApp(JNIEnv* env, jclass, jobject params) {
   ++g_probe->app_starts;
@@ -895,8 +914,9 @@ TEST(RobloxExperienceCompositionTest,
 
   ASSERT_TRUE(composition.InitializePlatformProtocols().ok());
   EXPECT_FALSE(composition.subscribed());
-  EXPECT_EQ(probe.permission_subscriptions, 5);
-  EXPECT_EQ(probe.permission_handlers.size(), 5u);
+  EXPECT_EQ(probe.permission_subscriptions, 6);
+  EXPECT_EQ(probe.permission_handlers.size(), 6u);
+  EXPECT_EQ(probe.permission_handlers.count("getCallState"), 1u);
   EXPECT_EQ(QueryMicrophone(&probe).at("status"), "DENIED");
   EXPECT_EQ(probe.web_view_initializations, 1);
   EXPECT_EQ(probe.browser_bindings, 4);
@@ -905,8 +925,8 @@ TEST(RobloxExperienceCompositionTest,
   EXPECT_EQ(probe.browser_releases, 0);
   EXPECT_EQ(probe.browser_callbacks_cleared, 0);
   EXPECT_TRUE(composition.Shutdown().ok());
-  EXPECT_EQ(probe.permission_disconnects, 5);
-  EXPECT_EQ(probe.permission_handlers_cleared, 5);
+  EXPECT_EQ(probe.permission_disconnects, 6);
+  EXPECT_EQ(probe.permission_handlers_cleared, 6);
   EXPECT_EQ(probe.disconnects, 3);
   EXPECT_EQ(probe.browser_disconnects, 4);
   EXPECT_EQ(probe.browser_releases, 4);
@@ -1026,7 +1046,8 @@ class RobloxExperienceCompositionWebSurfaceTest : public ::testing::Test {
     Helper() {
       char pattern[] = "/tmp/mocktail_surface_close_XXXXXX";
       const char* created = mkdtemp(pattern);
-      if (created == nullptr) return;
+      if (created == nullptr)
+        return;
       directory = created;
       path = directory / "helper";
       std::ofstream output(path);
@@ -1042,13 +1063,18 @@ while True:
         break
 )PY";
       output.close();
-      if (!output.good() || chmod(path.c_str(), 0700) != 0) path.clear();
+      if (!output.good() || chmod(path.c_str(), 0700) != 0)
+        path.clear();
     }
+
     ~Helper() {
-      if (process != nullptr) (void)process->RequestClose();
+      if (process != nullptr)
+        (void)process->RequestClose();
       std::error_code error;
-      if (!directory.empty()) std::filesystem::remove_all(directory, error);
+      if (!directory.empty())
+        std::filesystem::remove_all(directory, error);
     }
+
     std::filesystem::path directory;
     std::filesystem::path path;
     std::shared_ptr<WebViewHelperProcess> process;

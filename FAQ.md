@@ -32,6 +32,18 @@ attach `latest.log`:
 
 For native installs, a custom `$XDG_STATE_HOME` replaces `~/.local/state`.
 
+## Can I run multiple Roblox instances?
+
+No. Mocktail won't add multi-instance launching. It would mean working around
+Roblox's restrictions on running several clients. The [Roblox Terms of Use](https://en.help.roblox.com/hc/en-us/articles/115004647846-Roblox-Terms-of-Use)
+prohibit bypassing technical protections, and violating the terms can get your
+account suspended.
+
+Bloxstrap brought the option back in [v2.9.0](https://github.com/bloxstraplabs/bloxstrap/releases/tag/v2.9.0)
+with a "use at your own risk" warning, then removed it in
+[v2.10.0](https://github.com/bloxstraplabs/bloxstrap/releases/tag/v2.10.0)
+after Roblox added measures against running multiple clients.
+
 ## Can I play in VR?
 
 VR is experimental. Install the [build dependencies](README.md#building),

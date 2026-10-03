@@ -1,14 +1,12 @@
 #include "mocktail/platform/sdl_event_converter.h"
 
-#include <SDL3/SDL_mouse.h>
-
 #include <cstdint>
 
 namespace mocktail {
 namespace platform {
 
 bool ConvertSdlEvent(SDL_Window* window, const SDL_Event& source,
-                     PlatformEvent* destination) {
+                     PlatformEvent* destination, bool relative_mouse_mode) {
   if (window == nullptr || destination == nullptr) {
     return false;
   }
@@ -62,23 +60,21 @@ bool ConvertSdlEvent(SDL_Window* window, const SDL_Event& source,
     case SDL_EVENT_MOUSE_MOTION:
       destination->payload = MouseMotionEvent{
           source.motion.x, source.motion.y, source.motion.xrel,
-          source.motion.yrel, static_cast<std::uint32_t>(source.motion.state)};
+          source.motion.yrel, static_cast<std::uint32_t>(source.motion.state),
+          relative_mouse_mode};
       return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
       destination->payload = MouseButtonEvent{
           source.button.down, source.button.button, source.button.clicks,
-          source.button.x, source.button.y};
+          source.button.x, source.button.y, relative_mouse_mode};
       return true;
     case SDL_EVENT_MOUSE_WHEEL: {
-      float delta_x = source.wheel.x;
-      float delta_y = source.wheel.y;
-      if (source.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
-        delta_x = -delta_x;
-        delta_y = -delta_y;
-      }
+      // SDL already applies the host's natural-scrolling preference to x/y.
+      // Undoing SDL_MOUSEWHEEL_FLIPPED here would ignore the OS setting.
       destination->payload = MouseWheelEvent{
-          delta_x, delta_y, source.wheel.mouse_x, source.wheel.mouse_y};
+          source.wheel.x, source.wheel.y, source.wheel.mouse_x,
+          source.wheel.mouse_y, relative_mouse_mode};
       return true;
     }
     case SDL_EVENT_FINGER_DOWN:

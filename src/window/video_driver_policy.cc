@@ -1,6 +1,8 @@
 #include "window/video_driver_policy.h"
 
 #include <algorithm>
+#include <system_error>
+#include <unistd.h>
 
 namespace mocktail {
 namespace window {
@@ -37,6 +39,16 @@ const char* VideoDriverChoiceName(VideoDriverChoice choice) {
       return nullptr;
   }
   return nullptr;
+}
+
+bool HasNvidiaKernelDriver(const std::filesystem::path& proc_version,
+                          const std::filesystem::path& pci_driver) {
+  if (access(proc_version.c_str(), R_OK) == 0) {
+    return true;
+  }
+
+  std::error_code error;
+  return std::filesystem::is_directory(pci_driver, error);
 }
 
 bool HasAvailableVideoDriverCandidate(

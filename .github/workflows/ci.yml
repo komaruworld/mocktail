@@ -8,22 +8,32 @@ on:
       - 'CMakeLists.txt'
       - 'Makefile'
       - 'README.md'
+      - '.gitmodules'
+      - 'cmake/**'
       - 'config/**'
+      - 'include/**'
       - 'packaging/**'
       - 'scripts/**'
+      - 'src/**'
       - 'stubs/**'
       - 'tests/**'
+      - 'third_party/**'
   pull_request:
     paths:
       - '.github/workflows/**'
       - 'CMakeLists.txt'
       - 'Makefile'
       - 'README.md'
+      - '.gitmodules'
+      - 'cmake/**'
       - 'config/**'
+      - 'include/**'
       - 'packaging/**'
       - 'scripts/**'
+      - 'src/**'
       - 'stubs/**'
       - 'tests/**'
+      - 'third_party/**'
   workflow_dispatch:
 
 permissions:
@@ -65,3 +75,54 @@ jobs:
           bash tests/flatpak_packaging_test.sh .
           bash tests/native_packaging_test.sh .
           bash tests/anylinux_dependencies_test.sh .
+
+  native-build:
+    name: Native build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: aarch64
+            runner: ubuntu-26.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential binutils cmake git ninja-build pkg-config lld \
+            libsdl3-dev libsdl3-ttf-dev libcurl4-openssl-dev libssl-dev \
+            nlohmann-json3-dev libyaml-dev libelf-dev libminizip-dev \
+            libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+            libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev \
+            libplacebo-dev libpng-dev zlib1g-dev \
+            xvfb xauth libgl1-mesa-dri jq patchelf
+
+      - name: Build and check native executables
+        shell: bash
+        run: |
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build build-ci --parallel 4
+          ./build-ci/mocktail --help
+          ./build-ci/mocktail_updater status
+
+      - name: Run C++ and integration tests
+        shell: bash
+        env:
+          SDL_AUDIODRIVER: dummy
+          SDL_VIDEODRIVER: x11
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          xvfb-run -a ctest --test-dir build-ci --output-on-failure \
+            --parallel 4 --timeout 120

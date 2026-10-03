@@ -1,6 +1,9 @@
 #include "runtime/webview_helper_launcher.h"
 
+#include <arpa/inet.h>
 #include <curl/curl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -21,6 +24,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -38,6 +42,8 @@ struct WebViewHelperProcess::State {
   std::mutex control_mutex;
   int control_descriptor = -1;
   std::deque<WebViewHelperEvent> pending_events;
+  std::string receive_buffer;
+  bool tcp = false;
   bool ready = false;
 
   ~State() {
@@ -67,7 +73,36 @@ class SensitiveStringGuard final {
 WebViewHelperProcess::WebViewHelperProcess(std::shared_ptr<State> state)
     : state_(std::move(state)) {}
 
-bool WebViewHelperProcess::running() const { return process_id() > 0; }
+bool WebViewHelperProcess::running() const {
+  if (state_ == nullptr) {
+    return false;
+  }
+  if (!state_->tcp) {
+    return process_id() > 0;
+  }
+  std::lock_guard<std::mutex> lock(state_->control_mutex);
+  if (state_->control_descriptor < 0 ||
+      state_->child.load(std::memory_order_acquire) <= 0) {
+    return false;
+  }
+  pollfd probe = {state_->control_descriptor, POLLIN, 0};
+  if (poll(&probe, 1, 0) > 0) {
+    if ((probe.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
+      state_->child.store(-1, std::memory_order_release);
+      return false;
+    }
+    if ((probe.revents & POLLIN) != 0) {
+      char peek;
+      const ssize_t count = recv(state_->control_descriptor, &peek, 1,
+                                 MSG_PEEK | MSG_DONTWAIT);
+      if (count == 0) {
+        state_->child.store(-1, std::memory_order_release);
+        return false;
+      }
+    }
+  }
+  return true;
+}
 
 pid_t WebViewHelperProcess::process_id() const {
   return state_ != nullptr ? state_->child.load(std::memory_order_acquire) : -1;
@@ -134,6 +169,114 @@ public:
 private:
   char *value_ = nullptr;
 };
+
+bool HostIsFreeBsd() {
+  char buffer[512] = {};
+  std::ifstream file("/proc/version", std::ios::binary);
+  file.read(buffer, sizeof(buffer) - 1);
+  const std::string_view text(buffer, static_cast<std::size_t>(file.gcount()));
+  return text.find("FreeBSD") != std::string_view::npos ||
+         text.find("freebsd.org") != std::string_view::npos;
+}
+
+std::string FramePacket(std::string_view packet) {
+  std::string out(4, '\0');
+  const std::size_t size = packet.size();
+  out[0] = static_cast<char>((size >> 24) & 0xff);
+  out[1] = static_cast<char>((size >> 16) & 0xff);
+  out[2] = static_cast<char>((size >> 8) & 0xff);
+  out[3] = static_cast<char>(size & 0xff);
+  out.append(packet);
+  return out;
+}
+
+bool ExtractFrame(std::string *buffer, std::string *frame) {
+  if (buffer->size() < 4) {
+    return false;
+  }
+  const std::size_t size =
+      (static_cast<std::size_t>(static_cast<unsigned char>((*buffer)[0])) << 24) |
+      (static_cast<std::size_t>(static_cast<unsigned char>((*buffer)[1])) << 16) |
+      (static_cast<std::size_t>(static_cast<unsigned char>((*buffer)[2])) << 8) |
+      static_cast<std::size_t>(static_cast<unsigned char>((*buffer)[3]));
+  if (size > kMaximumWebViewEventPacketBytes) {
+    buffer->clear();
+    return false;
+  }
+  if (buffer->size() < 4 + size) {
+    return false;
+  }
+  frame->assign(*buffer, 4, size);
+  buffer->erase(0, 4 + size);
+  return true;
+}
+
+int ConnectToFreeBsdHost() {
+  const int descriptor = socket(AF_INET, SOCK_STREAM, 0);
+  if (descriptor < 0) {
+    return -1;
+  }
+  fcntl(descriptor, F_SETFD, FD_CLOEXEC);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(2137);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  int enabled = 1;
+  setsockopt(descriptor, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled));
+  if (connect(descriptor, reinterpret_cast<sockaddr *>(&address),
+              sizeof(address)) != 0) {
+    close(descriptor);
+    return -1;
+  }
+  const int flags = fcntl(descriptor, F_GETFL);
+  if (flags < 0 || fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) != 0) {
+    close(descriptor);
+    return -1;
+  }
+  return descriptor;
+}
+
+ssize_t ReceivePacket(WebViewHelperProcess::State *state,
+                      std::string *packet) {
+  if (!state->tcp) {
+    packet->assign(kMaximumWebViewEventPacketBytes, '\0');
+    const ssize_t count = recv(state->control_descriptor, packet->data(),
+                               packet->size(), MSG_DONTWAIT | MSG_TRUNC);
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      return -1;
+    }
+    if (count < 0) {
+      return -2;
+    }
+    if (count > 0 && static_cast<std::size_t>(count) <= packet->size()) {
+      packet->resize(static_cast<std::size_t>(count));
+    }
+    return count;
+  }
+  while (true) {
+    if (ExtractFrame(&state->receive_buffer, packet)) {
+      return static_cast<ssize_t>(packet->size());
+    }
+    char chunk[4096];
+    const ssize_t count = read(state->control_descriptor, chunk, sizeof(chunk));
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      return -1;
+    }
+    if (count < 0) {
+      return -2;
+    }
+    if (count == 0) {
+      return 0;
+    }
+    state->receive_buffer.append(chunk, static_cast<std::size_t>(count));
+    if (state->receive_buffer.size() > kMaximumWebViewEventPacketBytes * 2) {
+      return -2;
+    }
+  }
+}
 
 bool IsRobloxHost(std::string_view host) {
   constexpr std::string_view kRoot = "roblox.com";
@@ -258,13 +401,39 @@ bool SendControlCommand(
     std::lock_guard<std::mutex> lock(state->control_mutex);
     if (state->child.load(std::memory_order_acquire) > 0 &&
         state->control_descriptor >= 0) {
-      ssize_t count = -1;
-      do {
-        // FreeBSD requires an explicit record boundary for SOCK_SEQPACKET.
-        count = send(state->control_descriptor, packet.data(), packet.size(),
-                     MSG_DONTWAIT | MSG_NOSIGNAL | MSG_EOR);
-      } while (count < 0 && errno == EINTR);
-      sent = count == static_cast<ssize_t>(packet.size());
+      if (state->tcp) {
+        const std::string framed = FramePacket(packet);
+        std::size_t offset = 0;
+        sent = true;
+        while (offset < framed.size()) {
+          const ssize_t count =
+              send(state->control_descriptor, framed.data() + offset,
+                   framed.size() - offset, MSG_NOSIGNAL);
+          if (count < 0 && errno == EINTR) {
+            continue;
+          }
+          if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            pollfd writable = {state->control_descriptor, POLLOUT, 0};
+            if (poll(&writable, 1, 1000) <= 0) {
+              sent = false;
+              break;
+            }
+            continue;
+          }
+          if (count <= 0) {
+            sent = false;
+            break;
+          }
+          offset += static_cast<std::size_t>(count);
+        }
+      } else {
+        ssize_t count = -1;
+        do {
+          count = send(state->control_descriptor, packet.data(), packet.size(),
+                       MSG_DONTWAIT | MSG_NOSIGNAL | MSG_EOR);
+        } while (count < 0 && errno == EINTR);
+        sent = count == static_cast<ssize_t>(packet.size());
+      }
     }
   }
   std::fill(packet.begin(), packet.end(), '\0');
@@ -740,30 +909,40 @@ bool WebViewHelperProcess::WaitUntilReady(
     if (remaining.count() <= 0) {
       break;
     }
+    std::string packet;
+    bool closed = false;
+    while (!state_->ready) {
+      const ssize_t count = ReceivePacket(state_.get(), &packet);
+      if (count == 0 || count == -2) {
+        closed = true;
+        break;
+      }
+      if (count < 0) {
+        break;
+      }
+      WebViewHelperEvent event;
+      if (!DecodeWebViewHelperEventPacket(packet, &event)) {
+        continue;
+      }
+      if (event.type == WebViewHelperEventType::kReady) {
+        state_->ready = true;
+      } else {
+        state_->pending_events.push_back(std::move(event));
+      }
+    }
+    if (closed || state_->ready) {
+      break;
+    }
     pollfd descriptor = {state_->control_descriptor, POLLIN, 0};
     int poll_status = -1;
     do {
       poll_status = poll(&descriptor, 1, static_cast<int>(remaining.count()));
     } while (poll_status < 0 && errno == EINTR);
-    if (poll_status <= 0 || (descriptor.revents & POLLIN) == 0) {
+    if (poll_status < 0) {
       break;
     }
-    std::string packet(kMaximumWebViewEventPacketBytes, '\0');
-    const ssize_t count = recv(state_->control_descriptor, packet.data(),
-                               packet.size(), MSG_DONTWAIT | MSG_TRUNC);
-    if (count <= 0 || static_cast<std::size_t>(count) > packet.size()) {
+    if (poll_status > 0 && (descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
       break;
-    }
-    WebViewHelperEvent event;
-    if (!DecodeWebViewHelperEventPacket(
-            std::string_view(packet.data(), static_cast<std::size_t>(count)),
-            &event)) {
-      continue;
-    }
-    if (event.type == WebViewHelperEventType::kReady) {
-      state_->ready = true;
-    } else {
-      state_->pending_events.push_back(std::move(event));
     }
   }
   return state_->ready;
@@ -782,26 +961,17 @@ bool WebViewHelperProcess::DrainEvents(
     events->push_back(std::move(state_->pending_events.front()));
     state_->pending_events.pop_front();
   }
-  std::string packet(kMaximumWebViewEventPacketBytes, '\0');
+  std::string packet;
   while (true) {
-    ssize_t count = recv(state_->control_descriptor, packet.data(),
-                         packet.size(), MSG_DONTWAIT | MSG_TRUNC);
-    if (count < 0 && errno == EINTR) {
-      continue;
-    }
-    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    const ssize_t count = ReceivePacket(state_.get(), &packet);
+    if (count == -1 || count == 0) {
       return true;
     }
-    if (count <= 0) {
-      return count == 0;
-    }
-    if (static_cast<std::size_t>(count) > packet.size()) {
-      continue;
+    if (count < 0) {
+      return false;
     }
     WebViewHelperEvent event;
-    if (DecodeWebViewHelperEventPacket(
-            std::string_view(packet.data(), static_cast<std::size_t>(count)),
-            &event)) {
+    if (DecodeWebViewHelperEventPacket(packet, &event)) {
       if (event.type == WebViewHelperEventType::kReady) {
         state_->ready = true;
       } else {
@@ -819,6 +989,9 @@ bool WebViewHelperProcess::RequestClose() const {
   if (SendControlCommand(state_, WebViewHelperControlOperation::kClose, {})) {
     return true;
   }
+  if (state_->tcp) {
+    return false;
+  }
   const pid_t current_child = process_id();
   if (current_child <= 0) {
     return true;
@@ -833,6 +1006,26 @@ WebViewHelperLaunchResult LaunchWebViewHelper(
   std::string normalized_url;
   SensitiveStringGuard normalized_url_guard(&normalized_url);
   if (!NormalizeWebViewUrl(url, &normalized_url, &result.error)) {
+    return result;
+  }
+  if (HostIsFreeBsd()) {
+    const int descriptor = ConnectToFreeBsdHost();
+    if (descriptor < 0) {
+      result.error = "cannot connect to the FreeBSD webview host";
+      return result;
+    }
+    auto tcp_state = std::make_shared<WebViewHelperProcess::State>();
+    tcp_state->tcp = true;
+    tcp_state->control_descriptor = descriptor;
+    tcp_state->child.store(1, std::memory_order_release);
+    result.process = std::shared_ptr<WebViewHelperProcess>(
+        new WebViewHelperProcess(std::move(tcp_state)));
+    result.spawned = true;
+    result.process_id = 1;
+    if (!result.process->LoadUrl(normalized_url)) {
+      result.spawned = false;
+      result.error = "cannot send the initial URL to the FreeBSD webview host";
+    }
     return result;
   }
   std::error_code filesystem_error;

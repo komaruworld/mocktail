@@ -49,6 +49,17 @@
               gdb
             ];
 
+            desktopItems = [
+              (pkgs.makeDesktopItem {
+                name = "Mocktail";
+                exec = "mocktail";
+                icon = "mocktail";
+                desktopName = "Mocktail";
+                comment = "Experimental Roblox compatibility runtime for Linux and FreeBSD";
+                categories = [ "Game" ];
+              })
+            ];
+
             shellHook = ''
               export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath package.buildInputs}"
 

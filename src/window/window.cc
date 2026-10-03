@@ -471,8 +471,7 @@ VideoDriverChoice ResolveConfiguredVideoDriverChoice() {
   input.has_wayland_session = HasWaylandSession();
   input.has_x11_display = GetEnvNonEmpty("DISPLAY") != nullptr;
   input.uses_direct_vulkan = ShouldUseNativeVulkanBackend();
-  input.has_nvidia_kernel_driver =
-      access("/proc/driver/nvidia/version", R_OK) == 0;
+  input.has_nvidia_kernel_driver = HasNvidiaKernelDriver();
   return ResolveVideoDriverChoice(input);
 }
 
@@ -2173,7 +2172,9 @@ bool PumpEvents() {
     const bool fullscreen_shortcut = HandleFullscreenShortcut(event);
     platform::PlatformEvent platform_event;
     const bool converted =
-        platform::ConvertSdlEvent(g_state.sdl_window, event, &platform_event);
+        platform::ConvertSdlEvent(
+            g_state.sdl_window, event, &platform_event,
+            SDL_GetWindowRelativeMouseMode(g_state.sdl_window));
     if (is_window_event && g_window_surface_lifecycle.active()) {
       int pixel_width = 0;
       int pixel_height = 0;
@@ -2239,7 +2240,8 @@ bool PumpEvents() {
               std::get_if<platform::MouseMotionEvent>(&pending_motion.payload);
           const auto* nxt =
               std::get_if<platform::MouseMotionEvent>(&platform_event.payload);
-          if (cur != nullptr && nxt != nullptr) {
+          if (cur != nullptr && nxt != nullptr &&
+              cur->relative_mode == nxt->relative_mode) {
             cur->delta_x += nxt->delta_x;
             cur->delta_y += nxt->delta_y;
             cur->x = nxt->x;

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -26,9 +27,27 @@ off_t AAsset_getRemainingLength(AAsset* asset);
 off_t AAsset_seek(AAsset* asset, off_t offset, int whence);
 int AAsset_openFileDescriptor(AAsset* asset, off_t* outStart,
                               off_t* outLength);
+int AAsset_openFileDescriptor64(AAsset* asset, off_t* outStart,
+                                off_t* outLength);
 }
 
 namespace {
+
+std::vector<unsigned char> MakeEtc1SkyTexture() {
+  std::vector<unsigned char> data = {
+      0xab, 0x4b, 0x54, 0x58, 0x20, 0x31, 0x31, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a,
+  };
+  // KTX1: one 4x4 ETC1 mip and its byte count.
+  for (uint32_t value : {0x04030201U, 0U, 1U, 0U, 0x8d64U, 0x1907U,
+                         4U, 4U, 0U, 0U, 1U, 1U, 0U, 8U}) {
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+      data.push_back(static_cast<unsigned char>(value >> shift));
+    }
+  }
+  const std::array<unsigned char, 8> block = {0x55, 0x77, 0x99, 0, 0, 0, 0, 0};
+  data.insert(data.end(), block.begin(), block.end());
+  return data;
+}
 
 class AssetManagerTest : public ::testing::Test {
  protected:
@@ -36,10 +55,19 @@ class AssetManagerTest : public ::testing::Test {
     root_ = MakeTempRoot();
     ASSERT_FALSE(root_.empty());
     setenv("MOCKTAIL_ASSET_ROOT", root_.c_str(), 1);
+    const char* backend = std::getenv("MOCKTAIL_GRAPHICS_BACKEND");
+    had_backend_ = backend != nullptr;
+    previous_backend_ = backend != nullptr ? backend : "";
+    unsetenv("MOCKTAIL_GRAPHICS_BACKEND");
   }
 
   void TearDown() override {
     unsetenv("MOCKTAIL_ASSET_ROOT");
+    if (had_backend_) {
+      setenv("MOCKTAIL_GRAPHICS_BACKEND", previous_backend_.c_str(), 1);
+    } else {
+      unsetenv("MOCKTAIL_GRAPHICS_BACKEND");
+    }
     for (const std::string& root : roots_to_remove_) {
       std::filesystem::remove_all(root);
     }
@@ -71,8 +99,20 @@ class AssetManagerTest : public ::testing::Test {
     ASSERT_EQ(std::fclose(file), 0);
   }
 
+  void WriteBinaryAsset(const std::string& name,
+                         const std::vector<unsigned char>& data) {
+    const std::filesystem::path path = std::filesystem::path(root_) / name;
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(data.data()), data.size());
+    file.close();
+    ASSERT_TRUE(file);
+  }
+
   std::string root_;
   std::vector<std::string> roots_to_remove_;
+  bool had_backend_ = false;
+  std::string previous_backend_;
 };
 
 TEST_F(AssetManagerTest, FromJavaReturnsSingletonManager) {
@@ -151,6 +191,65 @@ TEST_F(AssetManagerTest, OpenFileDescriptorReturnsReadableFd) {
   char buf[8] = {};
   EXPECT_EQ(read(fd, buf, sizeof(buf) - 1), 7);
   EXPECT_STREQ(buf, "fd-data");
+  close(fd);
+  AAsset_close(asset);
+}
+
+TEST_F(AssetManagerTest, TranscodedSkyCannotBypassConversionThroughDescriptor) {
+  const auto original = MakeEtc1SkyTexture();
+  const std::string name = "assets/android/textures/sky/test.tex";
+  WriteBinaryAsset(name, original);
+  ASSERT_EQ(setenv("MOCKTAIL_GRAPHICS_BACKEND", "direct-vulkan", 1), 0);
+
+  AAsset* asset = AAssetManager_open(
+      AAssetManager_fromJava(nullptr, nullptr), name.c_str(), 0);
+  ASSERT_NE(asset, nullptr);
+  ASSERT_EQ(AAsset_getLength(asset), static_cast<off_t>(original.size()));
+  const auto* buffer = static_cast<const unsigned char*>(AAsset_getBuffer(asset));
+  ASSERT_NE(buffer, nullptr);
+  // BC1 format in the KTX header.
+  EXPECT_EQ(buffer[28], 0xf0);
+  EXPECT_EQ(buffer[29], 0x83);
+
+  for (auto open_descriptor : {AAsset_openFileDescriptor,
+                               AAsset_openFileDescriptor64}) {
+    off_t start = -1;
+    off_t length = -1;
+    const int fd = open_descriptor(asset, &start, &length);
+    EXPECT_LT(fd, 0);
+    if (fd >= 0) close(fd);
+  }
+
+  std::vector<unsigned char> readback(original.size());
+  EXPECT_EQ(AAsset_read(asset, readback.data(), readback.size()),
+            static_cast<int>(readback.size()));
+  EXPECT_EQ(readback, std::vector<unsigned char>(buffer, buffer + readback.size()));
+  AAsset_close(asset);
+
+  std::vector<unsigned char> on_disk(original.size());
+  std::ifstream file(root_ + "/" + name, std::ios::binary);
+  file.read(reinterpret_cast<char*>(on_disk.data()), on_disk.size());
+  EXPECT_EQ(on_disk, original);
+}
+
+TEST_F(AssetManagerTest, OpenGlSkyKeepsOriginalFileDescriptor) {
+  const auto original = MakeEtc1SkyTexture();
+  const std::string name = "assets/android/textures/sky/test.tex";
+  WriteBinaryAsset(name, original);
+  ASSERT_EQ(setenv("MOCKTAIL_GRAPHICS_BACKEND", "opengl", 1), 0);
+
+  AAsset* asset = AAssetManager_open(
+      AAssetManager_fromJava(nullptr, nullptr), name.c_str(), 0);
+  ASSERT_NE(asset, nullptr);
+  off_t start = -1;
+  off_t length = -1;
+  const int fd = AAsset_openFileDescriptor64(asset, &start, &length);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(length, static_cast<off_t>(original.size()));
+  std::vector<unsigned char> readback(original.size());
+  EXPECT_EQ(pread(fd, readback.data(), readback.size(), start),
+            static_cast<ssize_t>(readback.size()));
+  EXPECT_EQ(readback, original);
   close(fd);
   AAsset_close(asset);
 }

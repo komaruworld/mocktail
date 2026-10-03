@@ -2,6 +2,9 @@
 
 #include <curl/curl.h>
 
+// [patch.py] RequestFollowUser support
+#include "runtime/roblox_presence_resolver.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -541,13 +544,41 @@ Status ValidateSelector(const LaunchFields& fields) {
                ? Status::Ok()
                : Invalid("RequestPlayTogetherGame requires a conversation");
   }
+  // [patch.py] RequestFollowUser support
+  if (request == "requestfollowuser") {
+    // By the time ValidateSelector runs, MakeRequest has already
+    // resolved user_id -> place_id and cleared user_id, so check the
+    // resolved place_id here rather than the now-zeroed user_id.
+    return fields.place_id > 0
+               ? Status::Ok()
+               : Invalid("RequestFollowUser could not resolve a place");
+  }
   return Invalid("Roblox PlaceLauncher request type is unsupported");
 }
 
-Status MakeRequest(const LaunchFields& fields,
+// [patch.py] RequestFollowUser support
+Status MakeRequest(const LaunchFields& fields_in,
                    RobloxExperienceLaunchRequest* request) {
-  if (fields.place_id <= 0) {
+  LaunchFields fields = fields_in;
+  const bool is_follow_user =
+      AsciiLower(fields.request_type) == "requestfollowuser";
+  if (fields.place_id <= 0 && !is_follow_user) {
     return Invalid("Roblox launch URI requires a positive placeId");
+  }
+  if (fields.place_id <= 0 && is_follow_user) {
+    ResolvedFollowUserPlace resolved;
+    const Status resolve_status = ResolveFollowUserPlace(
+        fields.user_id, ReadStoredRoblosecurityCookie(), &resolved);
+    if (!resolve_status.ok()) {
+      return resolve_status;
+    }
+    fields.place_id = resolved.place_id;
+    if (!resolved.game_instance_id.empty()) {
+      fields.game_instance_id = resolved.game_instance_id;
+    }
+    // user_id was only needed to resolve which place to join; clear
+    // it so ValidateSelector does not see two conflicting selectors.
+    fields.user_id = 0;
   }
   Status status = ValidateSelector(fields);
   if (!status.ok()) {

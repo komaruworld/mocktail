@@ -6,10 +6,11 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/discord/1543955607869063269?label=discord)](https://discord.gg/rhgpfcmFSD)
 
-Mocktail runs the Android `x86_64` Roblox client on Linux, including a Linux
-userspace hosted by FreeBSD's Linuxulator. It provides the Android ABI and JNI
-pieces the client expects, then connects them to SDL3 and Vulkan or OpenGL on
-the Linux side.
+Mocktail runs the Android `x86_64` Roblox client on Linux and has experimental
+`aarch64` builds for the Android `arm64-v8a` client. It also runs in a Linux
+userspace hosted by FreeBSD's Linuxulator. Mocktail provides the Android ABI
+and JNI pieces the client expects, then connects them to SDL3 and Vulkan or
+OpenGL on the Linux side.
 
 Mocktail is an independent community project. It is not affiliated with Roblox
 Corporation or VinegarHQ and does not distribute the Roblox client.
@@ -124,10 +125,12 @@ To see the most Frequently Asked Question go check [FAQ.md](FAQ.md)
 
 ## Building
 
-Linux `x86_64` is supported. Experimental FreeBSD 15.1 Linuxulator support has
-been tested with an `x86_64` Fedora 44 userspace. On FreeBSD, Mocktail runs
-inside Linuxulator; it is not a native FreeBSD binary. Building requires CMake
-3.20+, Git, pkg-config, LLD, binutils, a C++17 compiler, SDL 3.4+, SDL3_ttf,
+Linux `x86_64` is supported. Linux `aarch64` builds are available, with Roblox
+runtime validation still experimental. FreeBSD 15.1 Linuxulator support is
+experimental and has been tested with an `x86_64` Fedora 44 userspace. On
+FreeBSD, Mocktail runs inside Linuxulator; it is not a native FreeBSD binary.
+Building requires CMake 3.20+, Git, pkg-config, LLD, binutils, a C++17
+compiler, SDL 3.4+, SDL3_ttf,
 Vulkan, EGL, libplacebo, fontconfig, libcurl, OpenSSL, libelf, libyaml, minizip,
 Capstone 5, utf8proc, nlohmann/json, GTK4, libadwaita 1.6+, and WebKitGTK 6.0.
 
@@ -143,7 +146,7 @@ sudo apt install build-essential cmake git ninja-build pkg-config lld \
   nlohmann-json3-dev libyaml-dev libelf-dev libminizip-dev \
   libcapstone-dev libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
   libutf8proc-dev libfontconfig1-dev libegl-dev libvulkan-dev \
-  libplacebo-dev zlib1g-dev
+  libplacebo-dev libpng-dev zlib1g-dev
 ```
 </details>
 

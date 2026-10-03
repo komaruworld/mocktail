@@ -723,6 +723,27 @@ TEST_F(JniVmTest, FindClassReturnsRegisteredInstance) {
   EXPECT_EQ(registered.get(), found.get());
 }
 
+TEST_F(JniVmTest, RepeatedClassLookupsReuseTheSameHandle) {
+  JNIEnv *env = vm_->GetJNIEnv();
+  jclass first = env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface");
+  ASSERT_NE(first, nullptr);
+  jclass string_class = env->FindClass("java/lang/String");
+  ASSERT_NE(string_class, nullptr);
+  // Exceeds the JNI segment capacity (100000); without interned class handles
+  // every lookup consumes a permanent slot and the table runs out here.
+  constexpr int kIterations = 120000;
+  for (int i = 0; i < kIterations; ++i) {
+    ASSERT_EQ(env->FindClass("com/roblox/engine/jni/NativeGLJavaInterface"),
+              first);
+    jstring value = env->NewStringUTF("probe");
+    ASSERT_NE(value, nullptr);
+    jclass value_class = env->GetObjectClass(value);
+    ASSERT_EQ(value_class, string_class);
+    ASSERT_EQ(env->GetObjectClass(value), value_class);
+    env->DeleteLocalRef(value);
+  }
+}
+
 TEST_F(JniVmTest, RegisteredMethodIsFound) {
   auto cls = vm_->RegisterClass("rbx/JNIRobloxSettings");
   cls->RegisterMethod("nativeInitClientSettings", "()V",
@@ -2130,7 +2151,7 @@ TEST_F(JniVmTest, RobloxTextInputCapturesExactStaticDirectVAndACalls) {
 
   CallStaticVoidMethodVForTest(env, cls, show, static_cast<jlong>(42), JNI_TRUE,
                                text, info);
-  EXPECT_EQ(probe->show_calls, 1);
+  EXPECT_EQ(probe->show_calls, 2);
 
   jvalue show_args[4] = {};
   show_args[0].j = 43;
@@ -2138,7 +2159,7 @@ TEST_F(JniVmTest, RobloxTextInputCapturesExactStaticDirectVAndACalls) {
   show_args[2].l = text;
   show_args[3].l = info;
   env->CallStaticVoidMethodA(cls, show, show_args);
-  EXPECT_EQ(probe->show_calls, 2);
+  EXPECT_EQ(probe->show_calls, 3);
   EXPECT_EQ(probe->request.text_box, 43);
 
   jmethodID wrong_signature =
@@ -2148,7 +2169,7 @@ TEST_F(JniVmTest, RobloxTextInputCapturesExactStaticDirectVAndACalls) {
   jclass wrong_cls = env->FindClass("example/NativeGLJavaInterface");
   env->CallStaticVoidMethod(wrong_cls, show, static_cast<jlong>(44), JNI_FALSE,
                             text, info);
-  EXPECT_EQ(probe->show_calls, 2);
+  EXPECT_EQ(probe->show_calls, 3);
 
   jstring replacement = env->NewStringUTF("engine replacement");
   env->CallStaticVoidMethod(cls, replace, replacement);

@@ -42,6 +42,7 @@ struct AAsset {
   std::string path;
   std::string apk_entry;
   std::vector<unsigned char> data;
+  bool transcoded = false;
   size_t offset = 0;
 };
 struct AAssetDir {};
@@ -341,7 +342,8 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
     return nullptr;
   }
   if (MocktailUsesDirectVulkan()) {
-    libc_shim::TranscodeEtc1SkyTextureForVulkan(path.c_str(), &asset->data);
+    asset->transcoded =
+        libc_shim::TranscodeEtc1SkyTextureForVulkan(path.c_str(), &asset->data);
   }
   if (AssetTraceEnabled()) {
     std::fprintf(stderr, "[asset] open %s -> %s (%zu bytes)\n", filename,
@@ -453,6 +455,10 @@ off_t AAsset_seek64(AAsset* asset, off_t offset, int whence) {
 int AAsset_openFileDescriptor(AAsset* asset, off_t* outStart,
                               off_t* outLength) {
   if (asset == nullptr || asset->path.empty()) {
+    return -1;
+  }
+  // Force buffered reads: files still contain the original ETC1 bytes.
+  if (asset->transcoded) {
     return -1;
   }
   int fd = -1;

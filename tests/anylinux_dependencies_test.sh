@@ -45,6 +45,8 @@ jq --arg hash "${UPDATED_FFMPEG_HASH}" '
 mkdir -p "${TEMP_DIR}/project/scripts" "${TEMP_DIR}/project/packaging"
 cp "${ROOT}/scripts/install_anylinux_dependencies.sh" "${TEMP_DIR}/project/scripts/"
 cp "${TEMP_DIR}/manifest.txt" "${TEMP_DIR}/project/packaging/anylinux-dependencies.txt"
+cp "${ROOT}/packaging/anylinux-dependencies-aarch64.txt" \
+  "${TEMP_DIR}/project/packaging/"
 
 # Record requests without any network access or changes to host packages.
 curl() {
@@ -121,13 +123,13 @@ ExpectRejectedSnapshot() {
   local description="$1" filter="$2"
   jq "${filter}" "${TEMP_DIR}/release.json" >"${TEMP_DIR}/invalid.json"
   if (AnyLinuxDependencySnapshot "${TEMP_DIR}/manifest.txt" \
-      "${TEMP_DIR}/invalid.json") >"${TEMP_DIR}/invalid.log" 2>&1; then
+      "${TEMP_DIR}/invalid.json" x86_64) >"${TEMP_DIR}/invalid.log" 2>&1; then
     Fail "accepted ${description}"
   fi
 }
 
 (AnyLinuxDependencySnapshot "${TEMP_DIR}/manifest.txt" \
-  "${TEMP_DIR}/release.json") >"${TEMP_DIR}/snapshot.tsv" ||
+  "${TEMP_DIR}/release.json" x86_64) >"${TEMP_DIR}/snapshot.tsv" ||
   Fail 'rejected valid dependency snapshot'
 printf '%s\t%s\t%s\n' \
   "${FFMPEG_HASH}" "${FFMPEG}" "${API}/assets/10" \
@@ -135,6 +137,40 @@ printf '%s\t%s\t%s\n' \
   >"${TEMP_DIR}/expected-snapshot.tsv"
 cmp "${TEMP_DIR}/expected-snapshot.tsv" "${TEMP_DIR}/snapshot.tsv" ||
   Fail 'incorrect dependency snapshot'
+
+readonly ARM_PACKAGE=gdk-pixbuf2-mini-aarch64.pkg.tar.xz
+printf '%s\n' "${ARM_PACKAGE}" >"${TEMP_DIR}/arm-manifest.txt"
+jq --null-input --arg api "${API}" --arg name "${ARM_PACKAGE}" \
+  --arg hash "${FFMPEG_HASH}" '
+    {tag_name: "continuous", assets: [
+      {id: 40, name: $name, state: "uploaded",
+       digest: ("sha256:" + $hash), url: ($api + "/assets/40")}
+    ]}
+  ' >"${TEMP_DIR}/arm-release.json"
+AnyLinuxDependencySnapshot "${TEMP_DIR}/arm-manifest.txt" \
+  "${TEMP_DIR}/arm-release.json" aarch64 >"${TEMP_DIR}/arm-snapshot.tsv" ||
+  Fail 'rejected valid aarch64 dependency snapshot'
+printf '%s\t%s\t%s\n' "${FFMPEG_HASH}" "${ARM_PACKAGE}" \
+  "${API}/assets/40" >"${TEMP_DIR}/expected-arm-snapshot.tsv"
+cmp "${TEMP_DIR}/expected-arm-snapshot.tsv" "${TEMP_DIR}/arm-snapshot.tsv" ||
+  Fail 'incorrect aarch64 dependency snapshot'
+if (AnyLinuxDependencySnapshot "${TEMP_DIR}/arm-manifest.txt" \
+    "${TEMP_DIR}/arm-release.json" x86_64) >/dev/null 2>&1; then
+  Fail 'accepted an aarch64 dependency on an x86_64 host'
+fi
+bash -Eeuo pipefail -c '
+  source "$1/project/scripts/install_anylinux_dependencies.sh"
+  AnyLinuxDependencyRequireContainer() { :; }
+  uname() { printf "aarch64\n"; }
+  AnyLinuxDownloadDependencies() {
+    printf "%s\n" "$1" >"${TEMP_DIR}/arm-selected-manifest"
+    exit 0
+  }
+  AnyLinuxDependenciesMain
+' _ "${TEMP_DIR}" || Fail 'aarch64 manifest selection failed'
+grep -Fxq "${TEMP_DIR}/project/packaging/anylinux-dependencies-aarch64.txt" \
+  "${TEMP_DIR}/arm-selected-manifest" ||
+  Fail 'aarch64 build did not select its dependency manifest'
 
 ExpectRejectedSnapshot 'missing asset' '.assets |= .[1:]'
 ExpectRejectedSnapshot 'duplicate asset' '.assets += [.assets[0]]'
@@ -149,7 +185,7 @@ for invalid_manifest in '../ffmpeg-mini-x86_64.pkg.tar.zst' \
     "${FFMPEG} extra" "${FFMPEG}"$'\n'"${FFMPEG}" ''; do
   printf '%s\n' "${invalid_manifest}" >"${TEMP_DIR}/invalid-manifest.txt"
   if (AnyLinuxDependencySnapshot "${TEMP_DIR}/invalid-manifest.txt" \
-      "${TEMP_DIR}/release.json") >"${TEMP_DIR}/invalid.log" 2>&1; then
+      "${TEMP_DIR}/release.json" x86_64) >"${TEMP_DIR}/invalid.log" 2>&1; then
     Fail 'accepted unsafe, duplicate, or empty package allowlist'
   fi
 done
@@ -166,6 +202,7 @@ for SCENARIO in success replaced corrupted download-failure metadata-failure inv
   if GH_TOKEN=fixture-token bash -Eeuo pipefail -c '
       source "$1/project/scripts/install_anylinux_dependencies.sh"
       AnyLinuxDependencyRequireContainer() { :; }
+      uname() { printf "x86_64\n"; }
       AnyLinuxDependenciesMain
     ' _ "${TEMP_DIR}" \
       >"${TEMP_DIR}/${SCENARIO}.log" 2>&1; then

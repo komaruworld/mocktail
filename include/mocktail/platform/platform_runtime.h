@@ -152,6 +152,7 @@ struct MouseMotionEvent {
   float delta_x = 0.0f;
   float delta_y = 0.0f;
   std::uint32_t buttons = 0;
+  bool relative_mode = false;
 };
 
 struct MouseButtonEvent {
@@ -160,6 +161,7 @@ struct MouseButtonEvent {
   std::uint8_t clicks = 0;
   float x = 0.0f;
   float y = 0.0f;
+  bool relative_mode = false;
 };
 
 struct MouseWheelEvent {
@@ -167,6 +169,7 @@ struct MouseWheelEvent {
   float delta_y = 0.0f;
   float mouse_x = 0.0f;
   float mouse_y = 0.0f;
+  bool relative_mode = false;
 };
 
 struct TouchEvent {

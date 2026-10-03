@@ -409,9 +409,11 @@ WriteClassicPixbufCache() {
     Die "classic GdkPixbuf loader cache is unavailable"
   sed -E \
     -e 's@^# LoaderDir = .*$@# LoaderDir = lib/plugins/gdk-pixbuf-2.0/2.10.0/loaders@' \
-    -e 's#^"[^"]*/(libpixbufloader[-_][^/"]+\.so)"$#"lib/plugins/gdk-pixbuf-2.0/2.10.0/loaders/\1"#' \
+    -e 's#^"[^"]*/([^/"]+\.so)"$#"lib/plugins/gdk-pixbuf-2.0/2.10.0/loaders/\1"#' \
     "${source_cache}" >"${destination_cache}"
-  if grep -Eq '^"/(usr|lib|lib64|opt|home|hdd|tmp)/' \
+  # Module records contain only a quoted path. Image signatures such as XPM
+  # can also start with '/' but have additional fields after the string.
+  if grep -Eq '^"/[^"]*"$' \
       "${destination_cache}"; then
     Die "GdkPixbuf cache still contains an absolute loader path"
   fi
@@ -663,4 +665,6 @@ Main() {
   PublishResources
 }
 
-Main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  Main "$@"
+fi

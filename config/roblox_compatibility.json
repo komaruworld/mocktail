@@ -4,6 +4,7 @@
     {
       "version_name": "2.721.1108",
       "version_code": 2350,
+      "abi": "x86_64",
       "elf_build_id": "50e1b0abd123350e794226062fe3a1ef360c5f0d",
       "status": "legacy-researched",
       "default_allowed": false,
@@ -15,6 +16,7 @@
     {
       "version_name": "2.725.1142",
       "version_code": 2546,
+      "abi": "x86_64",
       "elf_build_id": "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21",
       "status": "supported",
       "default_allowed": true,
@@ -35,6 +37,7 @@
     {
       "version_name": "2.727.1199",
       "version_code": 2628,
+      "abi": "x86_64",
       "elf_build_id": "1686400865ae0e408cd7bd67de7a439625c6fd13",
       "status": "supported",
       "default_allowed": true,
@@ -46,6 +49,7 @@
     {
       "version_name": "2.734.917",
       "version_code": 2908,
+      "abi": "x86_64",
       "elf_build_id": "63c5109637b7d7b2bdb8ed8f858023ff5ef49326",
       "status": "supported",
       "default_allowed": true,
@@ -66,17 +70,19 @@
     {
       "version_name": "2.736.1408",
       "version_code": 2998,
+      "abi": "arm64-v8a",
       "elf_build_id": "ed2b035768b1513561d0e6ea7f9bbec35b0e60e5",
-      "status": "experimental",
+      "status": "supported",
       "default_allowed": true,
       "allow_legacy_binary_patches": false,
       "allow_host_abi_bridges": true,
       "allow_host_constructor_replay": true,
-      "reason": "AArch64 arm64-v8a payload of the same 2.736.1408 release as the verified x86-64 profile; allocator, constructor replay, and pre-JNI bootstrap RVAs were derived by cross-architecture semantic matching. Pending runtime validation."
+      "reason": "AArch64 arm64-v8a payload of the same 2.736.1408 release as the verified x86-64 profile; allocator, constructor replay, and pre-JNI bootstrap RVAs were derived by cross-architecture semantic matching."
     },
     {
       "version_name": "2.736.1408",
       "version_code": 2998,
+      "abi": "x86_64",
       "elf_build_id": "ade08266c67aee88ec9c1d00902150e1684dad3a",
       "status": "supported",
       "default_allowed": true,

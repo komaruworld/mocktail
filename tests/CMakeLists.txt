@@ -10,6 +10,13 @@ target_link_libraries(jnivm_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(jnivm_fields_test jnivm_fields_test.cc)
+target_link_libraries(jnivm_fields_test PRIVATE
+  Mocktail::LegacyJni
+  GTest::gtest_main
+  Threads::Threads
+)
+
 add_executable(runtime_config_test runtime_config_test.cc)
 target_link_libraries(runtime_config_test PRIVATE
   Mocktail::Runtime
@@ -69,6 +76,12 @@ target_link_libraries(native_update_test PRIVATE
 )
 target_compile_definitions(native_update_test PRIVATE
   MOCKTAIL_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+
+add_executable(compatibility_catalog_test compatibility_catalog_test.cc)
+target_link_libraries(compatibility_catalog_test PRIVATE
+  Mocktail::Update
+  GTest::gtest_main
 )
 
 add_executable(apk_provider_test apk_provider_test.cc)
@@ -882,11 +895,13 @@ target_link_libraries(headless_graphics_test PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(jnivm_test)
+gtest_discover_tests(jnivm_fields_test)
 gtest_discover_tests(runtime_config_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)
 gtest_discover_tests(apk_provider_test)
 gtest_discover_tests(native_update_test)
+gtest_discover_tests(compatibility_catalog_test)
 gtest_discover_tests(support_bundle_runtime_test)
 gtest_discover_tests(vulkan_icd_selection_test)
 gtest_discover_tests(session_log_test)
@@ -1030,6 +1045,11 @@ add_test(
 )
 
 find_program(MOCKTAIL_PATCHELF_EXECUTABLE patchelf)
+add_test(
+  NAME StandaloneWebkitCacheTest.RelocatesAllLoaderNames
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/standalone_webkit_cache_test.sh
+          ${CMAKE_SOURCE_DIR}
+)
 if(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER AND MOCKTAIL_PATCHELF_EXECUTABLE)
   add_test(
     NAME PortablePackagingTest.RelocatableReadOnlyBundle
@@ -1037,6 +1057,9 @@ if(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER AND MOCKTAIL_PATCHELF_EXECUTABLE)
             MOCKTAIL_PORTABLE_TEST_BUILD_DIR=${CMAKE_BINARY_DIR}
             bash ${CMAKE_CURRENT_SOURCE_DIR}/portable_packaging_test.sh
   )
+  # Copies and verifies a full JVM/WebKit bundle, unlike the unit tests.
+  set_tests_properties(PortablePackagingTest.RelocatableReadOnlyBundle
+    PROPERTIES TIMEOUT 600)
 endif()
 
 add_test(

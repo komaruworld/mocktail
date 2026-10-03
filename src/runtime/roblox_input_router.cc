@@ -274,14 +274,15 @@ AndroidKeyMapping MapSdlKeyToAndroid(uint32_t sdl_scancode,
   return {};
 }
 
-int32_t MapSdlMouseButtonToAndroid(uint8_t sdl_button) {
+int32_t MapSdlMouseButtonToRoblox(uint8_t sdl_button) {
   switch (sdl_button) {
     case SDL_BUTTON_LEFT:
       return 0;
     case SDL_BUTTON_RIGHT:
       return 1;
     case SDL_BUTTON_MIDDLE:
-      return 3;
+      // MouseButton3 is index 2, not BUTTON_TERTIARY (4) minus one.
+      return 2;
     case SDL_BUTTON_X1:
       return 7;
     case SDL_BUTTON_X2:
@@ -544,8 +545,8 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
   const float delta_x = transform.HostLogicalToGuestX(event.delta_x);
   const float delta_y = transform.HostLogicalToGuestY(event.delta_y);
 
-  if (event.x == 0.0f && event.y == 0.0f &&
-      (delta_x != 0.0f || delta_y != 0.0f)) {
+  if (event.relative_mode) {
+    // Android's captured-pointer path maintains an unclipped virtual position.
     mouse_x_ += delta_x;
     mouse_y_ += delta_y;
   } else {
@@ -563,7 +564,10 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
   }
 
   return NativeResultLocked(
-      sink_.mouse_move(sink_.context, clamped_x, clamped_y, delta_x, delta_y),
+      sink_.mouse_move(sink_.context,
+                       event.relative_mode ? mouse_x_ : clamped_x,
+                       event.relative_mode ? mouse_y_ : clamped_y,
+                       delta_x, delta_y),
       RobloxInputEventKind::kMouseMotion);
 }
 
@@ -574,21 +578,18 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
                   RobloxInputEventKind::kMouseButton,
                   Unsupported("native mouse buttons are unavailable"));
   }
-  const int32_t android_button = MapSdlMouseButtonToAndroid(event.button);
-  if (android_button < 0) {
+  const int32_t roblox_button = MapSdlMouseButtonToRoblox(event.button);
+  if (roblox_button < 0) {
     return Result(RobloxInputDispatchState::kIgnoredUnsupported,
                   RobloxInputEventKind::kMouseButton,
-                  Unsupported("SDL mouse button has no Android mapping"));
-  }
-  if (event.x > 0.0f || event.y > 0.0f ||
-      (mouse_x_ == 0.0f && mouse_y_ == 0.0f)) {
-    const platform::SurfaceCoordinateTransform transform =
-        CoordinateTransform(snapshot_.viewport);
-    mouse_x_ = transform.HostLogicalToGuestX(event.x);
-    mouse_y_ = transform.HostLogicalToGuestY(event.y);
+                  Unsupported("SDL mouse button has no Roblox mapping"));
   }
   const platform::SurfaceCoordinateTransform transform =
       CoordinateTransform(snapshot_.viewport);
+  if (!event.relative_mode) {
+    mouse_x_ = transform.HostLogicalToGuestX(event.x);
+    mouse_y_ = transform.HostLogicalToGuestY(event.y);
+  }
   const float max_x = std::max(0.0F, transform.guest_width() - 1.0F);
   const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
   const float clamped_x = std::clamp(mouse_x_, 0.0f, max_x);
@@ -606,21 +607,14 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
                     RobloxInputEventKind::kText);
     }
   }
-  if (event.pressed) {
-    const RobloxTextEditorSnapshot text = text_editor_.Snapshot();
-    if (text.focused &&
-        !text_editor_.ContainsFocusedPoint(clamped_x, clamped_y)) {
-      (void)text_editor_.EndFocusSession(text.textbox_handle, text.generation,
-                                         true);
-    }
-  }
+  // Let Roblox decide whether a click releases TextBox focus.
   Status status = sink_.mouse_button(sink_.context, clamped_x, clamped_y,
-                                     event.pressed, android_button);
+                                     event.pressed, roblox_button);
   if (status.ok()) {
     const auto active = std::find(active_mouse_buttons_.begin(),
-                                  active_mouse_buttons_.end(), android_button);
+                                  active_mouse_buttons_.end(), roblox_button);
     if (event.pressed && active == active_mouse_buttons_.end()) {
-      active_mouse_buttons_.push_back(android_button);
+      active_mouse_buttons_.push_back(roblox_button);
     } else if (!event.pressed && active != active_mouse_buttons_.end()) {
       active_mouse_buttons_.erase(active);
     }
@@ -639,10 +633,13 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseWheelLocked(
   }
   const platform::SurfaceCoordinateTransform transform =
       CoordinateTransform(snapshot_.viewport);
-  mouse_x_ = transform.HostLogicalToGuestX(std::max(0.0f, event.mouse_x));
-  mouse_y_ = transform.HostLogicalToGuestY(std::max(0.0f, event.mouse_y));
+  if (!event.relative_mode) {
+    mouse_x_ = transform.HostLogicalToGuestX(std::max(0.0f, event.mouse_x));
+    mouse_y_ = transform.HostLogicalToGuestY(std::max(0.0f, event.mouse_y));
+  }
   return NativeResultLocked(
-      sink_.mouse_wheel(sink_.context, mouse_x_, mouse_y_, event.delta_y),
+      sink_.mouse_wheel(sink_.context, std::max(0.0f, mouse_x_),
+                        std::max(0.0f, mouse_y_), event.delta_y),
       RobloxInputEventKind::kMouseWheel);
 }
 

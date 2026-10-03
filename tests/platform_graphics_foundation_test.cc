@@ -145,6 +145,48 @@ TEST(SdlEventConverterTest, ConvertsFocusWithoutOwningTheSdlQueue) {
   EXPECT_TRUE(focus->focused);
 }
 
+TEST(SdlEventConverterTest, PreservesHostWheelDirectionAndPrecision) {
+  SDL_Event source{};
+  source.type = SDL_EVENT_MOUSE_WHEEL;
+  source.wheel.mouse_x = 120.0f;
+  source.wheel.mouse_y = 240.0f;
+  platform::PlatformEvent event;
+  auto* non_owning_window = reinterpret_cast<SDL_Window*>(0x1);
+
+  for (const auto direction : {SDL_MOUSEWHEEL_NORMAL, SDL_MOUSEWHEEL_FLIPPED}) {
+    source.wheel.direction = direction;
+    source.wheel.x = 0.25f;
+    source.wheel.y = -1.5f;
+    ASSERT_TRUE(platform::ConvertSdlEvent(non_owning_window, source, &event));
+    const auto* wheel = std::get_if<platform::MouseWheelEvent>(&event.payload);
+    ASSERT_NE(wheel, nullptr);
+    EXPECT_FLOAT_EQ(wheel->delta_x, 0.25f);
+    EXPECT_FLOAT_EQ(wheel->delta_y, -1.5f);
+    EXPECT_FLOAT_EQ(wheel->mouse_x, 120.0f);
+    EXPECT_FLOAT_EQ(wheel->mouse_y, 240.0f);
+  }
+}
+
+TEST(SdlEventConverterTest, PreservesRelativeModeForAllMouseEvents) {
+  auto* window = reinterpret_cast<SDL_Window*>(0x1);
+  platform::PlatformEvent event;
+  for (const bool relative_mode : {false, true}) {
+    SDL_Event source{};
+    source.type = SDL_EVENT_MOUSE_MOTION;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseMotionEvent>(event.payload).relative_mode,
+              relative_mode);
+    source.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseButtonEvent>(event.payload).relative_mode,
+              relative_mode);
+    source.type = SDL_EVENT_MOUSE_WHEEL;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseWheelEvent>(event.payload).relative_mode,
+              relative_mode);
+  }
+}
+
 TEST(SdlEventConverterTest, RejectsInvalidArgumentsAndUnsupportedEvents) {
   SDL_Event source{};
   source.type = SDL_EVENT_USER;
