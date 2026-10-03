@@ -559,19 +559,45 @@ int main(int argc, char* argv[]) {
       !environment.HasNonEmpty("ROBLOX_LIB_PATH") &&
       runtime_config.config.roblox_library_path() ==
           std::filesystem::path("rbx_bin/libroblox.so");
-  if (!uses_managed_payload &&
-      !environment.HasNonEmpty("MOCKTAIL_ASSET_PATH")) {
-    const std::filesystem::path adjacent_assets =
-        mocktail::runtime::ResolveAdjacentRobloxAssetPath(
+  if (!uses_managed_payload) {
+    const mocktail::runtime::ExplicitRobloxLibrary explicit_library =
+        mocktail::runtime::ResolveExplicitRobloxLibrary(
             runtime_config.config.roblox_library_path(),
             paths.working_directory());
-    if (adjacent_assets.empty() ||
-        setenv("MOCKTAIL_ASSET_PATH", adjacent_assets.c_str(), 1) != 0) {
-      std::cerr << "[FATAL] Cannot bind assets to explicit Roblox library\n";
-      return EXIT_FAILURE;
+    if (explicit_library.payload_layout) {
+      if (!mocktail::runtime::PrepareExplicitPayloadWorkingDirectory(
+              paths, explicit_library, &command_line_error)) {
+        std::cerr << "[FATAL] " << command_line_error << '\n';
+        return EXIT_FAILURE;
+      }
+      if (setenv("ROBLOX_LIB_PATH", explicit_library.library.c_str(), 1) !=
+          0) {
+        std::cerr << "[FATAL] Cannot activate explicit Roblox library\n";
+        return EXIT_FAILURE;
+      }
+      runtime_config = mocktail::runtime::LoadRuntimeConfig(
+          environment, paths.config_file());
+      if (!runtime_config) {
+        std::cerr << "[FATAL] Cannot resolve runtime configuration: "
+                  << runtime_config.error << '\n';
+        return EXIT_FAILURE;
+      }
     }
-    std::cout << "  [runtime] explicit Roblox library uses adjacent assets: "
-              << adjacent_assets << '\n';
+    if (!environment.HasNonEmpty("MOCKTAIL_ASSET_PATH")) {
+      const std::filesystem::path adjacent_assets =
+          explicit_library.payload_layout
+              ? explicit_library.assets_content
+              : mocktail::runtime::ResolveAdjacentRobloxAssetPath(
+                    runtime_config.config.roblox_library_path(),
+                    paths.working_directory());
+      if (adjacent_assets.empty() ||
+          setenv("MOCKTAIL_ASSET_PATH", adjacent_assets.c_str(), 1) != 0) {
+        std::cerr << "[FATAL] Cannot bind assets to explicit Roblox library\n";
+        return EXIT_FAILURE;
+      }
+      std::cout << "  [runtime] explicit Roblox library uses adjacent assets: "
+                << adjacent_assets << '\n';
+    }
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       uses_managed_payload) {
