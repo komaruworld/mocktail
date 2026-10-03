@@ -60,6 +60,10 @@ if(MOCKTAIL_ENABLE_VR)
   target_include_directories(openxr_backend_test PRIVATE "${PROJECT_SOURCE_DIR}/third_party/OpenXR-SDK/include")
   target_link_libraries(openxr_backend_test PRIVATE Mocktail::VR GTest::gtest_main)
   gtest_discover_tests(openxr_backend_test)
+  add_executable(vr_queue_submission_test vr/queue_submission_test.cc)
+  target_link_libraries(vr_queue_submission_test PRIVATE
+    Mocktail::VR stub_vulkan GTest::gtest_main)
+  gtest_discover_tests(vr_queue_submission_test)
   add_executable(gles_vr_transport_test vr/gles_transport_test.cc)
   target_include_directories(gles_vr_transport_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/third_party/OpenXR-SDK/include" ${MOCKTAIL_GLES3_INCLUDE_DIR})
   target_link_libraries(gles_vr_transport_test PRIVATE Mocktail::VR SDL3::SDL3 GTest::gtest_main)
@@ -639,6 +643,14 @@ target_include_directories(roblox_output_device_bridge_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src
 )
 mocktail_apply_compile_options(roblox_output_device_bridge_test)
+
+add_executable(native_input_capture_test native_input_capture_test.cc)
+target_include_directories(native_input_capture_test PRIVATE
+  "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(native_input_capture_test PRIVATE
+  mocktail_audio_sdl GTest::gtest_main)
+mocktail_apply_compile_options(native_input_capture_test)
+gtest_discover_tests(native_input_capture_test)
 
 add_executable(window_text_input_owner_test
   window_text_input_owner_test.cc

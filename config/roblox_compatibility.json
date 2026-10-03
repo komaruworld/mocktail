@@ -91,6 +91,36 @@
         "device_create_framebuffer_vtable_offset": "0x180"
       },
       "reason": "Verified 2026-09-06: exact Build-ID profile passed two isolated no-recovery Tier C Vulkan canaries and real game sessions, including fullscreen state synchronization and host FMOD output-device interposition; legacy executable patches and signal recovery remain disabled. Experimental vr_debug_device_bridge metadata (DebugDeviceVR constructor/state/eye/initializer RVAs) is machine-validated at activation and gated behind --vr; native stereo output is not yet verified end-to-end."
+    },
+    {
+      "allow_host_abi_bridges": true,
+      "allow_host_constructor_replay": true,
+      "allow_legacy_binary_patches": false,
+      "default_allowed": true,
+      "elf_build_id": "5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
+      "fmod_output_device_bridge": {
+        "count_method_rva": "0x320c676",
+        "current_method_rva": "0x320c6c6",
+        "info_method_rva": "0x320c716",
+        "select_method_rva": "0x320bf78",
+        "string_constructor_rva": "0x1d7a038",
+        "vtable_layout_version": 2,
+        "vtable_rva": "0x6cd3ce0"
+      },
+      "reason": "Exact-Build-ID host ABI promoted from the validated probation profile; native stereo, VR state/pointer/haptic contracts and FMOD output-device layout v2 were re-derived for 3092. Physical headset acceptance remains pending.",
+      "status": "supported",
+      "user_game_settings_fullscreen_setter_rva": "0x45c5f42",
+      "version_code": 3092,
+      "version_name": "2.738.1397",
+      "vr_debug_device_bridge": {
+        "vtable_rva": "0x6d08108",
+        "constructor_rva": "0x37f9fe4",
+        "state_getter_rva": "0x37fa3c6",
+        "eye_getter_rva": "0x37fa3b6",
+        "eye_initializer_rva": "0x37fa3e8",
+        "emulator_flag_storage_rva": "0x73f4690",
+        "device_create_framebuffer_vtable_offset": "0x188"
+      }
     }
   ]
 }

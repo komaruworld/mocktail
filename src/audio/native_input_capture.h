@@ -15,12 +15,7 @@
 
 #include "mocktail/audio/sdl_audio_capture.h"
 
-// Port of main's native input capture (537828a "Fix vc") to Build 2998.
-// Main pins the voice sink vtable, its PCM entry point and the shared_ptr
-// destructor to 2.738 RVAs. Here the sink is dispatched through its own
-// vtable, which is validated against the guest image first, and the
-// shared_ptr is released through the libc++ control-block ABI, so no
-// further 2998 RVAs are needed.
+// Sink calls and shared ownership use the validated guest vtables.
 namespace mocktail::audio {
 class NativeInputCapture;
 

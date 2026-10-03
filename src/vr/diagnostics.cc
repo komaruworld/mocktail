@@ -67,7 +67,7 @@ std::string FormatProbeReport(const ProbeReport& report) {
   for (const auto& extension : report.extensions)
     output << "  " << extension << '\n';
   output << "Discovery: " << report.message << '\n'
-         << "Roblox VR rendering: not implemented yet.\n"
+         << "Roblox VR rendering: run mocktail --vr with a supported client.\n"
          << "This probe does not create an XR session or render frames.\n";
   return output.str();
 }

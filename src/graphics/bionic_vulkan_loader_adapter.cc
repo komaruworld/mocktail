@@ -10,8 +10,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -22,8 +25,14 @@
 
 extern "C" {
 VKAPI_ATTR VkResult VKAPI_CALL
-vkCreateInstance(const VkInstanceCreateInfo* create_info,
-                 const VkAllocationCallbacks* allocator, VkInstance* instance);
+mocktail_vulkan_idle_synchronized(PFN_vkDeviceWaitIdle raw, VkDevice device);
+VKAPI_ATTR VkResult VKAPI_CALL mocktail_vulkan_submit_synchronized(
+    PFN_vkQueueSubmit raw, VkDevice device, VkQueue queue, uint32_t count,
+    const VkSubmitInfo *submits, VkFence fence);
+
+VKAPI_ATTR VkResult VKAPI_CALL
+vkCreateInstance(const VkInstanceCreateInfo *create_info,
+                 const VkAllocationCallbacks *allocator, VkInstance *instance);
 VKAPI_ATTR void VKAPI_CALL
 vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* allocator);
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateAndroidSurfaceKHR(
@@ -62,13 +71,29 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(
     VkDevice device, VkSwapchainKHR swapchain, std::uint64_t timeout,
     VkSemaphore semaphore, VkFence fence, std::uint32_t* image_index);
 VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImage2KHR(
-    VkDevice device, const VkAcquireNextImageInfoKHR* acquire_info,
-    std::uint32_t* image_index);
-VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(
-    VkDevice device, std::uint32_t fence_count, const VkFence* fences,
-    VkBool32 wait_all, std::uint64_t timeout);
-VKAPI_ATTR VkResult VKAPI_CALL vkResetFences(
-    VkDevice device, std::uint32_t fence_count, const VkFence* fences);
+    VkDevice device, const VkAcquireNextImageInfoKHR *acquire_info,
+    std::uint32_t *image_index);
+VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(VkDevice device,
+                                               std::uint32_t fence_count,
+                                               const VkFence *fences,
+                                               VkBool32 wait_all,
+                                               std::uint64_t timeout);
+VKAPI_ATTR VkResult VKAPI_CALL vkResetFences(VkDevice device,
+                                             std::uint32_t fence_count,
+                                             const VkFence *fences);
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateCommandPool(
+    VkDevice device, const VkCommandPoolCreateInfo *info,
+    const VkAllocationCallbacks *allocator, VkCommandPool *pool);
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(
+    VkCommandBuffer command, VkPipelineStageFlags src, VkPipelineStageFlags dst,
+    VkDependencyFlags flags, uint32_t memory_count,
+    const VkMemoryBarrier *memory, uint32_t buffer_count,
+    const VkBufferMemoryBarrier *buffers, uint32_t image_count,
+    const VkImageMemoryBarrier *images);
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier2(VkCommandBuffer command,
+                                                 const VkDependencyInfo *info);
+VKAPI_ATTR void VKAPI_CALL
+vkCmdPipelineBarrier2KHR(VkCommandBuffer command, const VkDependencyInfo *info);
 VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandPool(
     VkDevice device, VkCommandPool command_pool,
     VkCommandPoolResetFlags flags);
@@ -286,12 +311,64 @@ Function ResolveProcessFunction(const char* name) {
   return reinterpret_cast<Function>(dlsym(RTLD_DEFAULT, name));
 }
 
+// Queue calls share the gate; device idle is exclusive.
+// Release it before fence waits and backend callbacks.
+std::shared_ptr<std::shared_mutex> DeviceIdleGate(VkDevice device) {
+  static std::mutex registry_mutex;
+  static std::unordered_map<VkDevice, std::shared_ptr<std::shared_mutex>>
+      registry;
+  std::lock_guard<std::mutex> lock(registry_mutex);
+  auto &gate = registry[device];
+  if (!gate)
+    gate = std::make_shared<std::shared_mutex>();
+  return gate;
+}
+std::shared_ptr<std::mutex> QueueCallMutex(VkQueue queue) {
+  static std::mutex registry_mutex;
+  static std::unordered_map<VkQueue, std::shared_ptr<std::mutex>> registry;
+  std::lock_guard<std::mutex> lock(registry_mutex);
+  auto &mutex = registry[queue];
+  if (!mutex)
+    mutex = std::make_shared<std::mutex>();
+  return mutex;
+}
+
+void NoteVrSubmitted(VkQueue queue, uint32_t count,
+                     const VkSubmitInfo *submits) {
+  static const auto note = ResolveProcessFunction<void (*)(
+      VkQueue, unsigned, const VkCommandBuffer *)>("mocktail_vr_xr_submitted");
+  if (note && submits)
+    for (uint32_t i = 0; i < count; ++i)
+      note(queue, submits[i].commandBufferCount, submits[i].pCommandBuffers);
+}
+void NoteVrSubmitted2(VkQueue queue, uint32_t count,
+                      const VkSubmitInfo2 *submits) {
+  static const auto note = ResolveProcessFunction<void (*)(
+      VkQueue, unsigned, const VkCommandBuffer *)>("mocktail_vr_xr_submitted");
+  if (note && submits)
+    for (uint32_t i = 0; i < count; ++i)
+      for (uint32_t j = 0; j < submits[i].commandBufferInfoCount; ++j)
+        note(queue, 1, &submits[i].pCommandBufferInfos[j].commandBuffer);
+}
+
 bool EnsureInitialized() {
   AdapterState& state = State();
   std::lock_guard<std::mutex> lock(state.mutex);
   if (state.initialized) {
     return true;
   }
+
+  const auto register_submit =
+      ResolveProcessFunction<void (*)(VkResult(VKAPI_PTR *)(
+          PFN_vkQueueSubmit, VkDevice, VkQueue, uint32_t, const VkSubmitInfo *,
+          VkFence))>("mocktail_vr_xr_queue_submit_adapter");
+  if (register_submit)
+    register_submit(mocktail_vulkan_submit_synchronized);
+  const auto register_idle = ResolveProcessFunction<void (*)(
+      VkResult(VKAPI_PTR *)(PFN_vkDeviceWaitIdle, VkDevice))>(
+      "mocktail_vr_xr_device_idle_adapter");
+  if (register_idle)
+    register_idle(mocktail_vulkan_idle_synchronized);
 
   const BackendWindowFn backend_window =
       ResolveProcessFunction<BackendWindowFn>("mocktail_window_backend_window");
@@ -564,6 +641,57 @@ const AdapterState::DeviceDispatch& HostDispatchForCommandBuffer(
   return kEmptyDeviceDispatch;
 }
 
+VkResult VKAPI_CALL LockedHostSubmit(VkQueue queue, uint32_t count,
+                                     const VkSubmitInfo *submits,
+                                     VkFence fence) {
+  return mocktail_vulkan_submit_synchronized(
+      HostDispatchForQueue(queue).queue_submit,
+      HostDispatchForQueue(queue).device, queue, count, submits, fence);
+}
+VkResult VKAPI_CALL LockedHostSubmit2(VkQueue queue, uint32_t count,
+                                      const VkSubmitInfo2 *submits,
+                                      VkFence fence) {
+  const auto raw = HostDispatchForQueue(queue).queue_submit2;
+  const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
+  std::shared_lock<std::shared_mutex> device_gate(*gate);
+  const auto mutex = QueueCallMutex(queue);
+  std::lock_guard<std::mutex> lock(*mutex);
+  return raw(queue, count, submits, fence);
+}
+VkResult VKAPI_CALL LockedHostSubmit2KHR(VkQueue queue, uint32_t count,
+                                         const VkSubmitInfo2 *submits,
+                                         VkFence fence) {
+  const auto raw = HostDispatchForQueue(queue).queue_submit2_khr;
+  const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
+  std::shared_lock<std::shared_mutex> device_gate(*gate);
+  const auto mutex = QueueCallMutex(queue);
+  std::lock_guard<std::mutex> lock(*mutex);
+  return raw(queue, count, submits, fence);
+}
+VkResult VKAPI_CALL LockedHostBindSparse(VkQueue queue, uint32_t count,
+                                         const VkBindSparseInfo *binds,
+                                         VkFence fence) {
+  const auto raw = HostDispatchForQueue(queue).queue_bind_sparse;
+  const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
+  std::shared_lock<std::shared_mutex> device_gate(*gate);
+  const auto mutex = QueueCallMutex(queue);
+  std::lock_guard<std::mutex> lock(*mutex);
+  return raw(queue, count, binds, fence);
+}
+VkResult VKAPI_CALL LockedHostQueueWaitIdle(VkQueue queue) {
+  const auto raw = HostDispatchForQueue(queue).queue_wait_idle;
+  const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
+  std::shared_lock<std::shared_mutex> device_gate(*gate);
+  const auto mutex = QueueCallMutex(queue);
+  std::lock_guard<std::mutex> lock(*mutex);
+  return raw(queue);
+}
+
+VkResult VKAPI_CALL LockedHostDeviceWaitIdle(VkDevice device) {
+  return mocktail_vulkan_idle_synchronized(
+      HostDispatchForDevice(device).device_wait_idle, device);
+}
+
 void RegisterHostDeviceDispatch(VkDevice device,
                                 VkPhysicalDevice physical_device,
                                 PFN_vkGetDeviceProcAddr get_device_proc_addr) {
@@ -834,9 +962,9 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   if (name == nullptr) {
     return nullptr;
   }
-#define MOCKTAIL_VK_PROC(function)                         \
-  if (std::strcmp(name, #function) == 0) {                 \
-    return reinterpret_cast<PFN_vkVoidFunction>(function); \
+#define MOCKTAIL_VK_PROC(function)                                             \
+  if (std::strcmp(name, #function) == 0) {                                     \
+    return reinterpret_cast<PFN_vkVoidFunction>(function);                     \
   }
   MOCKTAIL_VK_PROC(vkCreateInstance)
   MOCKTAIL_VK_PROC(vkDestroyInstance)
@@ -856,6 +984,10 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_PROC(vkAcquireNextImage2KHR)
   MOCKTAIL_VK_PROC(vkWaitForFences)
   MOCKTAIL_VK_PROC(vkResetFences)
+  MOCKTAIL_VK_PROC(vkCreateCommandPool)
+  MOCKTAIL_VK_PROC(vkCmdPipelineBarrier)
+  MOCKTAIL_VK_PROC(vkCmdPipelineBarrier2)
+  MOCKTAIL_VK_PROC(vkCmdPipelineBarrier2KHR)
   MOCKTAIL_VK_PROC(vkResetCommandPool)
   MOCKTAIL_VK_PROC(vkGetQueryPoolResults)
   MOCKTAIL_VK_PROC(vkAllocateCommandBuffers)
@@ -886,43 +1018,47 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   return nullptr;
 }
 
-bool IsDeviceAdapterProc(const char* name) {
-  return name != nullptr && (std::strcmp(name, "vkDestroyDevice") == 0 ||
-                             std::strcmp(name, "vkGetDeviceQueue") == 0 ||
-                             std::strcmp(name, "vkGetDeviceQueue2") == 0 ||
-                             std::strcmp(name, "vkCreateSwapchainKHR") == 0 ||
-                             std::strcmp(name, "vkDestroySwapchainKHR") == 0 ||
-                             std::strcmp(name, "vkAcquireNextImageKHR") == 0 ||
-                             std::strcmp(name, "vkAcquireNextImage2KHR") == 0 ||
-                             std::strcmp(name, "vkWaitForFences") == 0 ||
-                             std::strcmp(name, "vkResetFences") == 0 ||
-                             std::strcmp(name, "vkResetCommandPool") == 0 ||
-                             std::strcmp(name, "vkGetQueryPoolResults") == 0 ||
-                             std::strcmp(name, "vkAllocateCommandBuffers") ==
-                                 0 ||
-                             std::strcmp(name, "vkFreeCommandBuffers") == 0 ||
-                             std::strcmp(name, "vkDestroyCommandPool") == 0 ||
-                             std::strcmp(name, "vkBeginCommandBuffer") == 0 ||
-                             std::strcmp(name, "vkEndCommandBuffer") == 0 ||
-                             std::strcmp(name, "vkResetCommandBuffer") == 0 ||
-                             std::strcmp(name, "vkWaitSemaphores") == 0 ||
-                             std::strcmp(name, "vkWaitSemaphoresKHR") == 0 ||
-                             std::strcmp(name, "vkQueueSubmit") == 0 ||
-                             std::strcmp(name, "vkQueueSubmit2") == 0 ||
-                             std::strcmp(name, "vkQueueSubmit2KHR") == 0 ||
-                             std::strcmp(name, "vkQueueBindSparse") == 0 ||
-                             std::strcmp(name, "vkQueueWaitIdle") == 0 ||
-                             std::strcmp(name, "vkDeviceWaitIdle") == 0 ||
-                             std::strcmp(name, "vkQueuePresentKHR") == 0 ||
-                             std::strcmp(name, "vkCreateImage") == 0 ||
-                             std::strcmp(name, "vkDestroyImage") == 0 ||
-                             std::strcmp(name, "vkCreateImageView") == 0 ||
-                             std::strcmp(name, "vkDestroyImageView") == 0 ||
-                             std::strcmp(name, "vkCreateFramebuffer") == 0 ||
-                             std::strcmp(name, "vkDestroyFramebuffer") == 0 ||
-                             std::strcmp(name, "vkCreateRenderPass") == 0 ||
-                             std::strcmp(name, "vkDestroyRenderPass") == 0 ||
-                             std::strcmp(name, "vkCmdBeginRenderPass") == 0);
+bool IsDeviceAdapterProc(const char *name) {
+  return name != nullptr &&
+         (std::strcmp(name, "vkDestroyDevice") == 0 ||
+          std::strcmp(name, "vkGetDeviceQueue") == 0 ||
+          std::strcmp(name, "vkGetDeviceQueue2") == 0 ||
+          std::strcmp(name, "vkCreateSwapchainKHR") == 0 ||
+          std::strcmp(name, "vkDestroySwapchainKHR") == 0 ||
+          std::strcmp(name, "vkAcquireNextImageKHR") == 0 ||
+          std::strcmp(name, "vkAcquireNextImage2KHR") == 0 ||
+          std::strcmp(name, "vkWaitForFences") == 0 ||
+          std::strcmp(name, "vkResetFences") == 0 ||
+          std::strcmp(name, "vkCreateCommandPool") == 0 ||
+          std::strcmp(name, "vkCmdPipelineBarrier") == 0 ||
+          std::strcmp(name, "vkCmdPipelineBarrier2") == 0 ||
+          std::strcmp(name, "vkCmdPipelineBarrier2KHR") == 0 ||
+          std::strcmp(name, "vkResetCommandPool") == 0 ||
+          std::strcmp(name, "vkGetQueryPoolResults") == 0 ||
+          std::strcmp(name, "vkAllocateCommandBuffers") == 0 ||
+          std::strcmp(name, "vkFreeCommandBuffers") == 0 ||
+          std::strcmp(name, "vkDestroyCommandPool") == 0 ||
+          std::strcmp(name, "vkBeginCommandBuffer") == 0 ||
+          std::strcmp(name, "vkEndCommandBuffer") == 0 ||
+          std::strcmp(name, "vkResetCommandBuffer") == 0 ||
+          std::strcmp(name, "vkWaitSemaphores") == 0 ||
+          std::strcmp(name, "vkWaitSemaphoresKHR") == 0 ||
+          std::strcmp(name, "vkQueueSubmit") == 0 ||
+          std::strcmp(name, "vkQueueSubmit2") == 0 ||
+          std::strcmp(name, "vkQueueSubmit2KHR") == 0 ||
+          std::strcmp(name, "vkQueueBindSparse") == 0 ||
+          std::strcmp(name, "vkQueueWaitIdle") == 0 ||
+          std::strcmp(name, "vkDeviceWaitIdle") == 0 ||
+          std::strcmp(name, "vkQueuePresentKHR") == 0 ||
+          std::strcmp(name, "vkCreateImage") == 0 ||
+          std::strcmp(name, "vkDestroyImage") == 0 ||
+          std::strcmp(name, "vkCreateImageView") == 0 ||
+          std::strcmp(name, "vkDestroyImageView") == 0 ||
+          std::strcmp(name, "vkCreateFramebuffer") == 0 ||
+          std::strcmp(name, "vkDestroyFramebuffer") == 0 ||
+          std::strcmp(name, "vkCreateRenderPass") == 0 ||
+          std::strcmp(name, "vkDestroyRenderPass") == 0 ||
+          std::strcmp(name, "vkCmdBeginRenderPass") == 0);
 }
 
 bool IsGlobalAdapterProc(const char* name) {
@@ -1201,12 +1337,35 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
   }
   const VrXrNotePresentFn vr_note_present =
       state.vr_note_present.load(std::memory_order_acquire);
+  VkPresentInfoKHR synchronized{};
   if (vr_note_present != nullptr) {
-    vr_note_present(queue, HostDispatchForQueue(queue).device);
+    static const auto prepare = ResolveProcessFunction<VkResult (*)(
+        VkQueue, VkDevice, const VkPresentInfoKHR *)>(
+        "mocktail_vr_xr_prepare_present");
+    // Mirror/overlay may have consumed waits; use the final dependency list.
+    const VkResult prepared =
+        prepare
+            ? prepare(queue, HostDispatchForQueue(queue).device, present_info)
+            : VK_NOT_READY;
+    if (prepared < 0)
+      return prepared;
+    if (prepared == VK_SUCCESS) {
+      vr_note_present(queue, HostDispatchForQueue(queue).device);
+      synchronized = *present_info;
+      synchronized.waitSemaphoreCount = 0;
+      synchronized.pWaitSemaphores = nullptr;
+      present_info = &synchronized;
+    }
   }
   const bool fps_trace = FpsTraceEnabled();
   const std::uint64_t present_start_ns = fps_trace ? MonotonicNanos() : 0;
-  const VkResult result = host_present(queue, present_info);
+  const VkResult result = [&] {
+    const auto gate = DeviceIdleGate(HostDispatchForQueue(queue).device);
+    std::shared_lock<std::shared_mutex> device_gate(*gate);
+    const auto mutex = QueueCallMutex(queue);
+    std::lock_guard<std::mutex> lock(*mutex);
+    return host_present(queue, present_info);
+  }();
   if (fps_trace) {
     PresentWaitTrace().Record(present_start_ns);
   }
@@ -1689,7 +1848,23 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   VkSwapchainCreateInfoKHR host_info = *create_info;
-  static const auto vr_desktop_enabled = ResolveProcessFunction<bool (*)()>("mocktail_vr_desktop_enabled");
+  unsigned vr_families[256]{};
+  bool converted_to_concurrent = false;
+  static const auto shared_families =
+      ResolveProcessFunction<unsigned (*)(VkDevice, unsigned, unsigned *)>(
+          "mocktail_vr_desktop_queue_families");
+  if (shared_families &&
+      host_info.imageSharingMode == VK_SHARING_MODE_EXCLUSIVE) {
+    const unsigned count = shared_families(device, 256, vr_families);
+    if (count > 1) {
+      host_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+      host_info.queueFamilyIndexCount = count;
+      host_info.pQueueFamilyIndices = vr_families;
+      converted_to_concurrent = true;
+    }
+  }
+  static const auto vr_desktop_enabled =
+      ResolveProcessFunction<bool (*)()>("mocktail_vr_desktop_enabled");
   if (vr_desktop_enabled && vr_desktop_enabled()) {
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR caps;
     { std::lock_guard<std::mutex> lock(State().mutex); caps = State().host_surface_capabilities; }
@@ -1783,11 +1958,15 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
       host_get_images(device, *swapchain, &image_count, images.data());
   if (images_result == VK_SUCCESS || images_result == VK_INCOMPLETE) {
     images.resize(image_count);
-    static const auto record = ResolveProcessFunction<void (*)(VkDevice, VkSwapchainKHR,
-        const VkSwapchainCreateInfoKHR*, const VkImage*, unsigned)>("mocktail_vr_desktop_swapchain");
-    if (record) record(device, *swapchain, &host_info, images.data(), image_count);
-    (void)State().text_overlay.RegisterSwapchain(
-        device, *swapchain, *create_info, images.data(), image_count);
+    static const auto record = ResolveProcessFunction<void (*)(
+        VkDevice, VkSwapchainKHR, const VkSwapchainCreateInfoKHR *,
+        const VkImage *, unsigned, bool)>(
+        "mocktail_vr_desktop_swapchain_shared");
+    if (record)
+      record(device, *swapchain, &host_info, images.data(), image_count,
+             converted_to_concurrent);
+    (void)State().text_overlay.RegisterSwapchain(device, *swapchain, host_info,
+                                                 images.data(), image_count);
   }
   return result;
 }
@@ -1905,6 +2084,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandPool(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   const VkResult result = host_reset(device, command_pool, flags);
+  static const auto note = ResolveProcessFunction<void (*)(VkCommandPool)>(
+      "mocktail_vr_xr_reset_pool");
+  if (result == VK_SUCCESS && note)
+    note(command_pool);
   observation.SetResult(result);
   return result;
 }
@@ -1944,6 +2127,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAllocateCommandBuffers(
     RegisterHostCommandBuffers(device, allocate_info->commandPool,
                                allocate_info->commandBufferCount,
                                command_buffers);
+    static const auto note = ResolveProcessFunction<void (*)(
+        VkDevice, VkCommandPool, unsigned, const VkCommandBuffer *)>(
+        "mocktail_vr_xr_command_buffers");
+    if (note)
+      note(device, allocate_info->commandPool,
+           allocate_info->commandBufferCount, command_buffers);
   }
   observation.SetResult(result);
   return result;
@@ -1960,6 +2149,11 @@ VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return;
   }
+  static const auto note = ResolveProcessFunction<void (*)(
+      VkDevice, VkCommandPool, unsigned, const VkCommandBuffer *)>(
+      "mocktail_vr_xr_command_buffers");
+  if (note)
+    note(device, VK_NULL_HANDLE, command_buffer_count, command_buffers);
   host_free(device, command_pool, command_buffer_count, command_buffers);
   RemoveHostCommandBuffers(device, command_pool, command_buffer_count,
                            command_buffers);
@@ -1976,6 +2170,11 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyCommandPool(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return;
   }
+  static const auto note =
+      ResolveProcessFunction<void (*)(VkDevice, VkCommandPool, unsigned)>(
+          "mocktail_vr_xr_command_pool");
+  if (note)
+    note(device, command_pool, UINT32_MAX);
   host_destroy(device, command_pool, allocator);
   RemoveHostCommandPoolBindings(device, command_pool);
   observation.SetResult(VK_SUCCESS);
@@ -1992,6 +2191,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   const VkResult result = host_begin(command_buffer, begin_info);
+  static const auto note = ResolveProcessFunction<void (*)(VkCommandBuffer)>(
+      "mocktail_vr_xr_reset_command");
+  if (result == VK_SUCCESS && note)
+    note(command_buffer);
   observation.SetResult(result);
   return result;
 }
@@ -2020,6 +2223,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   const VkResult result = host_reset(command_buffer, flags);
+  static const auto note = ResolveProcessFunction<void (*)(VkCommandBuffer)>(
+      "mocktail_vr_xr_reset_command");
+  if (result == VK_SUCCESS && note)
+    note(command_buffer);
   observation.SetResult(result);
   return result;
 }
@@ -2056,7 +2263,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   const VkResult result = State().text_overlay.QueueSubmit(
-      queue, submit_count, submits, fence, host_submit);
+      queue, submit_count, submits, fence, LockedHostSubmit);
+  if (result == VK_SUCCESS)
+    NoteVrSubmitted(queue, submit_count, submits);
   observation.SetResult(result);
   return result;
 }
@@ -2072,7 +2281,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   const VkResult result = State().text_overlay.QueueSubmit2(
-      queue, submit_count, submits, fence, host_submit);
+      queue, submit_count, submits, fence, LockedHostSubmit2);
+  if (result == VK_SUCCESS)
+    NoteVrSubmitted2(queue, submit_count, submits);
   observation.SetResult(result);
   return result;
 }
@@ -2088,8 +2299,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   const VkResult result = State().text_overlay.QueueSubmit2(
-      queue, submit_count, submits, fence,
-      reinterpret_cast<PFN_vkQueueSubmit2>(host_submit));
+      queue, submit_count, submits, fence, LockedHostSubmit2KHR);
+  if (result == VK_SUCCESS)
+    NoteVrSubmitted2(queue, submit_count, submits);
   observation.SetResult(result);
   return result;
 }
@@ -2105,7 +2317,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueBindSparse(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   const VkResult result = State().text_overlay.QueueBindSparse(
-      queue, bind_info_count, bind_info, fence, host_bind);
+      queue, bind_info_count, bind_info, fence, LockedHostBindSparse);
   observation.SetResult(result);
   return result;
 }
@@ -2121,7 +2333,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueWaitIdle(VkQueue queue) {
   const bool fps_trace = FpsTraceEnabled();
   const std::uint64_t idle_start_ns = fps_trace ? MonotonicNanos() : 0;
   const VkResult result =
-      State().text_overlay.QueueWaitIdle(queue, host_wait);
+      State().text_overlay.QueueWaitIdle(queue, LockedHostQueueWaitIdle);
   if (fps_trace) {
     QueueIdleWaitTrace().Record(idle_start_ns);
   }
@@ -2138,7 +2350,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkDeviceWaitIdle(VkDevice device) {
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   const VkResult result =
-      State().text_overlay.DeviceWaitIdle(device, host_wait);
+      State().text_overlay.DeviceWaitIdle(device, LockedHostDeviceWaitIdle);
   observation.SetResult(result);
   return result;
 }
@@ -2434,4 +2646,100 @@ vkCmdBeginRenderPass(VkCommandBuffer command_buffer,
   }
 }
 
-}  // extern "C"
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateCommandPool(
+    VkDevice device, const VkCommandPoolCreateInfo *info,
+    const VkAllocationCallbacks *allocator, VkCommandPool *pool) {
+  const auto create = reinterpret_cast<PFN_vkCreateCommandPool>(
+      HostDeviceProc(device, "vkCreateCommandPool"));
+  if (!create)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  const VkResult result = create(device, info, allocator, pool);
+  static const auto note =
+      ResolveProcessFunction<void (*)(VkDevice, VkCommandPool, unsigned)>(
+          "mocktail_vr_xr_command_pool");
+  if (result == VK_SUCCESS && note && info && pool)
+    note(device, *pool, info->queueFamilyIndex);
+  return result;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier(
+    VkCommandBuffer command, VkPipelineStageFlags src, VkPipelineStageFlags dst,
+    VkDependencyFlags flags, uint32_t memory_count,
+    const VkMemoryBarrier *memory, uint32_t buffer_count,
+    const VkBufferMemoryBarrier *buffers, uint32_t image_count,
+    const VkImageMemoryBarrier *images) {
+  const auto barrier = reinterpret_cast<PFN_vkCmdPipelineBarrier>(
+      HostDeviceProc(HostDispatchForCommandBuffer(command).device,
+                     "vkCmdPipelineBarrier"));
+  if (!barrier)
+    return;
+  static const auto normalize = ResolveProcessFunction<VkImageLayout (*)(
+      VkCommandBuffer, VkImage, unsigned *, unsigned *, VkImageLayout *,
+      VkImageLayout)>("mocktail_vr_xr_desktop_barrier");
+  std::vector<VkImageMemoryBarrier> adjusted;
+  if (normalize && images && image_count) {
+    adjusted.assign(images, images + image_count);
+    for (auto &image : adjusted)
+      image.newLayout = normalize(
+          command, image.image, &image.srcQueueFamilyIndex,
+          &image.dstQueueFamilyIndex, &image.oldLayout, image.newLayout);
+    images = adjusted.data();
+  }
+  barrier(command, src, dst, flags, memory_count, memory, buffer_count, buffers,
+          image_count, images);
+}
+
+static void ForwardVrBarrier2(VkCommandBuffer command,
+                              const VkDependencyInfo *info, const char *name) {
+  const auto barrier = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(
+      HostDeviceProc(HostDispatchForCommandBuffer(command).device, name));
+  if (!barrier || !info)
+    return;
+  static const auto normalize = ResolveProcessFunction<VkImageLayout (*)(
+      VkCommandBuffer, VkImage, unsigned *, unsigned *, VkImageLayout *,
+      VkImageLayout)>("mocktail_vr_xr_desktop_barrier");
+  VkDependencyInfo adjusted_info = *info;
+  std::vector<VkImageMemoryBarrier2> adjusted;
+  if (normalize && info->pImageMemoryBarriers &&
+      info->imageMemoryBarrierCount) {
+    adjusted.assign(info->pImageMemoryBarriers,
+                    info->pImageMemoryBarriers + info->imageMemoryBarrierCount);
+    for (auto &image : adjusted)
+      image.newLayout = normalize(
+          command, image.image, &image.srcQueueFamilyIndex,
+          &image.dstQueueFamilyIndex, &image.oldLayout, image.newLayout);
+    adjusted_info.pImageMemoryBarriers = adjusted.data();
+  }
+  barrier(command, &adjusted_info);
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier2(VkCommandBuffer command,
+                                                 const VkDependencyInfo *info) {
+  ForwardVrBarrier2(command, info, "vkCmdPipelineBarrier2");
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdPipelineBarrier2KHR(
+    VkCommandBuffer command, const VkDependencyInfo *info) {
+  ForwardVrBarrier2(command, info, "vkCmdPipelineBarrier2KHR");
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL mocktail_vulkan_submit_synchronized(
+    PFN_vkQueueSubmit raw, VkDevice device, VkQueue queue, uint32_t count,
+    const VkSubmitInfo *submits, VkFence fence) {
+  if (!raw)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  const auto gate = DeviceIdleGate(device);
+  std::shared_lock<std::shared_mutex> device_gate(*gate);
+  const auto mutex = QueueCallMutex(queue);
+  std::lock_guard<std::mutex> lock(*mutex);
+  return raw(queue, count, submits, fence);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mocktail_vulkan_idle_synchronized(PFN_vkDeviceWaitIdle raw, VkDevice device) {
+  if (!raw)
+    return VK_ERROR_INITIALIZATION_FAILED;
+  const auto gate = DeviceIdleGate(device);
+  std::unique_lock<std::shared_mutex> device_gate(*gate);
+  return raw(device);
+}
+
+} // extern "C"

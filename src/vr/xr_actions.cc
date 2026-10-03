@@ -54,6 +54,14 @@ constexpr const char *kProfileTouch =
     "/interaction_profiles/oculus/touch_controller";
 constexpr const char *kProfileQuest2 =
     "/interaction_profiles/meta/touch_controller_quest_2";
+constexpr const char* kTouchProfiles[] = {
+    kProfileTouch,
+    kProfileQuest2,
+    "/interaction_profiles/facebook/touch_controller_pro",
+    "/interaction_profiles/meta/touch_controller_plus",
+    "/interaction_profiles/meta/touch_pro_controller",
+    "/interaction_profiles/meta/touch_plus_controller",
+};
 constexpr const char *kProfileIndex =
     "/interaction_profiles/valve/index_controller";
 constexpr const char *kProfileVive =
@@ -191,8 +199,9 @@ Status XrActions::Create(void *xr_instance) {
         binds.emplace_back(impl_->touches[static_cast<std::size_t>(kind)],
                            path(component));
       };
-      const bool is_touch = std::strcmp(profile, kProfileTouch) == 0 ||
-                            std::strcmp(profile, kProfileQuest2) == 0;
+      const bool is_touch = std::any_of(
+          std::begin(kTouchProfiles), std::end(kTouchProfiles),
+          [&](const char* name) { return std::strcmp(profile, name) == 0; });
       const bool is_index = std::strcmp(profile, kProfileIndex) == 0;
       if (is_touch || is_index) {
         touch(ControllerTouch::kTrigger, "/user/hand/left/input/trigger/touch");
@@ -209,7 +218,7 @@ Status XrActions::Create(void *xr_instance) {
         touch(ControllerTouch::kY, is_touch ? "/user/hand/left/input/y/touch"
                                             : "/user/hand/left/input/b/touch");
       }
-      if (is_touch) {
+      if (is_touch && std::strcmp(profile, kProfileQuest2) != 0) {
         touch(ControllerTouch::kThumbrest,
               "/user/hand/left/input/thumbrest/touch");
         touch(ControllerTouch::kThumbrest,
@@ -244,7 +253,7 @@ Status XrActions::Create(void *xr_instance) {
     const XrPath l_haptic = path("/user/hand/left/output/haptic");
     const XrPath r_haptic = path("/user/hand/right/output/haptic");
 
-    for (const char *profile : {kProfileTouch, kProfileQuest2}) {
+    for (const char* profile : kTouchProfiles) {
       suggest(
           profile,
           {
@@ -337,7 +346,8 @@ Status XrActions::Create(void *xr_instance) {
     created_ = true;
     Log("  [vr-input] action set created: grip+aim poses, trigger/squeeze "
         "analog, thumbstick, face/menu buttons, haptic output; bindings "
-        "suggested for Touch/Quest2/Index/Vive/Simple (system button never "
+        "suggested for Touch/Quest2/Touch Pro/Touch Plus/Index/Vive/Simple "
+        "(system button never "
         "bound)\n");
     return Status::Ok();
   } catch (const std::exception &error) {

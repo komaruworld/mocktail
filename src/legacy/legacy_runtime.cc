@@ -4507,17 +4507,11 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     return EXIT_FAILURE;
   }
 
-  const mocktail::compat::BuildProfile& build_profile =
-      *profile_result.profile;
-  // The experimental VR ABI has only been observed on the active 2998
-  // payload. Do not pass VR device parameters to unrelated builds, even when
-  // they have a general-purpose compatibility profile. Eye initialization and
-  // OpenXR projection are not yet implemented; this is a diagnostic launch.
+  const mocktail::compat::BuildProfile& build_profile = *profile_result.profile;
   if (IsEnabled("MOCKTAIL_VR_ENABLED") &&
-      build_profile.elf_build_id !=
-          "ade08266c67aee88ec9c1d00902150e1684dad3a") {
-    std::cerr << "[FATAL] Experimental Roblox VR requires exact Build ID "
-                 "ade08266c67aee88ec9c1d00902150e1684dad3a; loaded "
+      mocktail::vr::FindRobloxVrDeviceProfile(build_profile.elf_build_id) ==
+          nullptr) {
+    std::cerr << "[FATAL] Experimental Roblox VR has no verified profile for "
               << build_profile.elf_build_id << "\n";
     return EXIT_FAILURE;
   }

@@ -14,6 +14,23 @@ namespace {
 const std::string kManifestPath =
     std::string(MOCKTAIL_TEST_SOURCE_DIR) + "/config/roblox_compatibility.json";
 
+TEST(BuildProfileTest, Payload3092IncludesVrAndSecondAudioLayout) {
+  const auto result = FindBuildProfile(
+      kManifestPath, "5f0704edd9064f566ee3d6df2bd2fabbcc709f03");
+  ASSERT_TRUE(result) << result.error;
+  ASSERT_TRUE(result.profile.has_value());
+  EXPECT_EQ(result.profile->version_name, "2.738.1397");
+  EXPECT_EQ(result.profile->version_code, 3092);
+  EXPECT_TRUE(result.profile->default_allowed);
+  EXPECT_TRUE(result.profile->allow_host_abi_bridges);
+  EXPECT_FALSE(result.profile->allow_legacy_binary_patches);
+  ASSERT_TRUE(result.profile->vr_debug_device_bridge.has_value());
+  EXPECT_EQ(result.profile->vr_debug_device_bridge->vtable_rva, 0x6d08108u);
+  ASSERT_TRUE(result.profile->fmod_output_device_bridge.has_value());
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->vtable_layout_version,
+            2u);
+}
+
 TEST(BuildProfileTest, FindsCurrentPayloadAsSupported) {
   const ProfileLookupResult result = FindBuildProfile(
       kManifestPath, "d0cb1fa0deb3d9161b4cd77530cbcd2e50de3a21");

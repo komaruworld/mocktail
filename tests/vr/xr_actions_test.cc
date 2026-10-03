@@ -1,11 +1,15 @@
 #include "mocktail/vr/xr_actions.h"
+
+#include <gtest/gtest.h>
+#include <openxr/openxr.h>
+
+#include <algorithm>
+#include <cstring>
+#include <map>
+#include <string>
+
 #include "runtime/roblox_input_router.h"
 #include "runtime/roblox_xr_controller_input.h"
-#include <cstring>
-#include <gtest/gtest.h>
-#include <map>
-#include <openxr/openxr.h>
-#include <string>
 
 namespace {
 using namespace mocktail::vr;
@@ -23,6 +27,7 @@ float last_amplitude;
 XrDuration last_duration;
 XrPath last_haptic_hand;
 int simple_haptic_bindings;
+std::map<XrPath, std::vector<XrPath>> suggested_paths;
 } // namespace
 extern "C" {
 XRAPI_ATTR XrResult XRAPI_CALL
@@ -69,6 +74,10 @@ XRAPI_ATTR XrResult XRAPI_CALL xrCreateAction(XrActionSet,
 XRAPI_ATTR XrResult XRAPI_CALL xrDestroyAction(XrAction) { return XR_SUCCESS; }
 XRAPI_ATTR XrResult XRAPI_CALL xrSuggestInteractionProfileBindings(
     XrInstance, const XrInteractionProfileSuggestedBinding *info) {
+  for (std::uint32_t i = 0; i < info->countSuggestedBindings; ++i) {
+    suggested_paths[info->interactionProfile].push_back(
+        info->suggestedBindings[i].binding);
+  }
   if (info->interactionProfile ==
       paths["/interaction_profiles/khr/simple_controller"])
     for (std::uint32_t i = 0; i < info->countSuggestedBindings; ++i)
@@ -165,6 +174,7 @@ protected:
   void SetUp() override {
     names.clear();
     paths.clear();
+    suggested_paths.clear();
     next_handle = 100;
     focused = input_active = true;
     simple = click = touching = false;
@@ -187,6 +197,33 @@ protected:
     return d;
   }
 };
+
+TEST_F(XrActionsProduction, BindsTouchProAndPlusAndOmitsQuest2Thumbrest) {
+  for (const char* name :
+       {"/interaction_profiles/facebook/touch_controller_pro",
+        "/interaction_profiles/meta/touch_controller_plus",
+        "/interaction_profiles/meta/touch_pro_controller",
+        "/interaction_profiles/meta/touch_plus_controller"}) {
+    const auto& bindings = suggested_paths.at(paths.at(name));
+    for (const char* component :
+         {"/user/hand/left/input/grip/pose", "/user/hand/right/input/aim/pose",
+          "/user/hand/left/input/trigger/value",
+          "/user/hand/right/input/squeeze/value",
+          "/user/hand/left/output/haptic", "/user/hand/right/output/haptic"}) {
+      EXPECT_NE(
+          std::find(bindings.begin(), bindings.end(), paths.at(component)),
+          bindings.end())
+          << name << " " << component;
+    }
+  }
+  const auto& quest = suggested_paths.at(
+      paths.at("/interaction_profiles/meta/touch_controller_quest_2"));
+  for (const char* component : {"/user/hand/left/input/thumbrest/touch",
+                                "/user/hand/right/input/thumbrest/touch"}) {
+    EXPECT_EQ(std::find(quest.begin(), quest.end(), paths.at(component)),
+              quest.end());
+  }
+}
 
 TEST_F(XrActionsProduction, HapticSamplesKeepHandLeaseAndClampAmplitude) {
   EXPECT_EQ(simple_haptic_bindings, 2);

@@ -742,6 +742,12 @@ int main(int argc, char* argv[]) {
       std::cerr << "[FATAL] " << compatibility.error << '\n';
       return EXIT_FAILURE;
     }
+    if (!compatibility.profile.vr_debug_device_bridge.has_value()) {
+      if (const auto* vr_profile =
+              mocktail::vr::FindRobloxVrDeviceProfile(compatibility.build_id)) {
+        compatibility.profile.vr_debug_device_bridge = *vr_profile;
+      }
+    }
     vr_active = runtime_config.config.vr_enabled() &&
         (vr_requested ||
          compatibility.profile.vr_debug_device_bridge.has_value());
@@ -759,7 +765,8 @@ int main(int argc, char* argv[]) {
       std::cerr << "  [vr] experimental backend="
                 << mocktail::vr::VrBackendModeName(vr_backend_mode)
                 << ": Roblox renders both eyes through its DebugDeviceVR "
-                   "debug device (exact Build ID 2998 only)";
+                   "debug device (Build ID "
+                << compatibility.build_id << ")";
       if (vr_backend_mode == mocktail::vr::VrBackendMode::kXrOutput) {
         std::cerr << "; eye images are submitted to the active OpenXR runtime "
                      "as a projection layer. Start WiVRn or SteamVR/ALVR and "

@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="mocktail-xr-probe-") as directory:
         assert result.returncode == code, (scenario, result.returncode, result.stdout, result.stderr)
         assert message in result.stdout, (scenario, result.stdout, result.stderr)
         assert "SDK: 1.1.63" in result.stdout, result.stdout
-        assert "Roblox VR rendering: not implemented yet" in result.stdout
+        assert "Roblox VR rendering: run mocktail --vr" in result.stdout
         events = trace.read_text().splitlines() if trace.exists() else []
         assert events == ([] if scenario == "create_failure" else ["create", "destroy"]), (scenario, events)
         if code == 0:

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <string_view>
 
 #include "compat/build_profile.h"
 #include "mocktail/status.h"
@@ -11,7 +12,11 @@
 namespace mocktail::vr {
 namespace internal {
 struct VrBridgeTestAccess;
+struct VrBuildContract;
 }
+
+const compat::VrDebugDeviceBridgeProfile* FindRobloxVrDeviceProfile(
+    std::string_view build_id);
 
 // Experimental native stereo bring-up for the exact Build-ID-scoped
 // RBX::Graphics::DebugDeviceVR object of the guest client.
@@ -21,7 +26,7 @@ struct VrBridgeTestAccess;
 // initialization never dereferences cached guest object/device pointers. The
 // guest owns resource destruction. Recreated objects and reused addresses
 // therefore need no cache invalidation. Initialization happens only on a thread
-// observed presenting. OpenXR image submission and poses are not connected yet.
+// observed presenting.
 class RobloxVrDeviceBridge final {
 public:
   using StateGetterFn = void *(*)(void *result_buffer, void *device_object);
@@ -54,6 +59,7 @@ public:
 
   // Guest-side hooks invoked by the interposed vtable stubs.
   void OnHapticsCall(void* device_object, int hand, float amplitude);
+  void OnPointerFrameCall(void* result, void* service);
   void OnStateGetterCall(void *result_buffer, void *device_object);
   void OnEyeGetterCall(void *device_object, int eye_index, void *framebuffer);
 
@@ -85,6 +91,7 @@ private:
 
   mutable std::mutex mutex_;
   compat::VrDebugDeviceBridgeProfile profile_{};
+  const internal::VrBuildContract* contract_ = nullptr;
   bool installed_ = false;
   std::atomic<bool> active_{false};
   std::atomic<std::uintptr_t> image_base_{0};

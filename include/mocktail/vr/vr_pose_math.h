@@ -1,6 +1,7 @@
 #ifndef MOCKTAIL_VR_POSE_MATH_H_
 #define MOCKTAIL_VR_POSE_MATH_H_
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -147,16 +148,61 @@ inline ProjectionTangents FovToTangents(const EyeFov& fov) {
                             std::tan(-fov.angle_left), std::tan(fov.angle_right)};
 }
 
-// The pinned guest state can only represent two parallel eye orientations.
-// A canted (rotated) relative eye pose needs a different camera ABI, so it is
-// rejected explicitly rather than silently submitted with a projection that
-// does not match how the image was rendered.
-inline constexpr float kCantedTolerance = 0.001f;
+inline constexpr float kMaxEyeFovAngle = 1.56f;
 
-inline bool EyeOrientationIsParallel(const Quat& relative_orientation) {
-  return std::abs(relative_orientation.x) <= kCantedTolerance &&
-         std::abs(relative_orientation.y) <= kCantedTolerance &&
-         std::abs(relative_orientation.z) <= kCantedTolerance;
+// Enclose the display frustum in a head-parallel camera for the guest renderer.
+// The compositor receives this rendered FOV and pose, not the canted display's.
+inline bool ParallelEyeFov(const Quat& eye_orientation, const EyeFov& display,
+                           EyeFov* rendered) {
+  Quat orientation;
+  if (!rendered || !QuatNormalize(eye_orientation, &orientation) ||
+      !(display.angle_left < display.angle_right) ||
+      !(display.angle_down < display.angle_up)) {
+    return false;
+  }
+  const float angles[] = {display.angle_left, display.angle_right,
+                          display.angle_up, display.angle_down};
+  for (float angle : angles) {
+    if (!std::isfinite(angle) || std::abs(angle) >= kMaxEyeFovAngle)
+      return false;
+  }
+  if (orientation.x == 0.f && orientation.y == 0.f && orientation.z == 0.f) {
+    *rendered = display;
+    return true;
+  }
+  const float xs[] = {std::tan(display.angle_left),
+                      std::tan(display.angle_right)};
+  const float ys[] = {std::tan(display.angle_down), std::tan(display.angle_up)};
+  float left = 0.f, right = 0.f, down = 0.f, up = 0.f;
+  bool first = true;
+  for (float x : xs) {
+    for (float y : ys) {
+      const Vec3 ray = QuatRotate(orientation, {x, y, -1.f});
+      if (!std::isfinite(ray.z) || ray.z >= -1e-6f) return false;
+      const float horizontal = ray.x / -ray.z;
+      const float vertical = ray.y / -ray.z;
+      if (!std::isfinite(horizontal) || !std::isfinite(vertical)) return false;
+      if (first) {
+        left = right = horizontal;
+        down = up = vertical;
+        first = false;
+      } else {
+        left = std::min(left, horizontal);
+        right = std::max(right, horizontal);
+        down = std::min(down, vertical);
+        up = std::max(up, vertical);
+      }
+    }
+  }
+  const EyeFov result{std::atan(left), std::atan(right), std::atan(up),
+                      std::atan(down)};
+  const float bounds[] = {result.angle_left, result.angle_right,
+                          result.angle_up, result.angle_down};
+  for (float angle : bounds) {
+    if (std::abs(angle) >= kMaxEyeFovAngle) return false;
+  }
+  *rendered = result;
+  return true;
 }
 
 // Metres-to-studs factor the exact-build native helper applies itself. Exposed

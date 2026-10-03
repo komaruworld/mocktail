@@ -151,21 +151,64 @@ TEST(VrPoseMath, FovToTangentsPinsUpDownLeftRightOrderAndSigns) {
   EXPECT_NE(tangents.up, tangents.down);
 }
 
-// ---- canted-view rejection ----
+TEST(VrPoseMath, ParallelProjectionKeepsUnrotatedFovExact) {
+  const EyeFov display{-.7f, .8f, .9f, -.6f};
+  for (float sign : {1.f, -1.f}) {
+    EyeFov rendered;
+    ASSERT_TRUE(ParallelEyeFov({0, 0, 0, sign}, display, &rendered));
+    EXPECT_EQ(rendered.angle_left, display.angle_left);
+    EXPECT_EQ(rendered.angle_right, display.angle_right);
+    EXPECT_EQ(rendered.angle_up, display.angle_up);
+    EXPECT_EQ(rendered.angle_down, display.angle_down);
+  }
+}
 
-TEST(VrPoseMath, ParallelEyeOrientationsAcceptedCantedRejected) {
-  EXPECT_TRUE(EyeOrientationIsParallel(Quat{0.f, 0.f, 0.f, 1.f}));
-  // Sign flip only (q == -q) is still parallel.
-  EXPECT_TRUE(EyeOrientationIsParallel(Quat{0.f, 0.f, 0.f, -1.f}));
-  // Exactly at tolerance.
-  EXPECT_TRUE(EyeOrientationIsParallel(
-      Quat{kCantedTolerance, 0.f, 0.f, 1.f}));
-  // A canted runtime rotates the eye about its view axis (+Z): must reject.
-  const Quat canted = QuatFromAxisAngle(Vec3{0.f, 0.f, 1.f}, 0.1f);
-  EXPECT_FALSE(EyeOrientationIsParallel(canted));
-  // Any axis above tolerance rejects.
-  EXPECT_FALSE(EyeOrientationIsParallel(
-      Quat{0.f, 2.f * kCantedTolerance, 0.f, 1.f}));
+TEST(VrPoseMath, ParallelProjectionContainsEveryCantedDisplayRay) {
+  const EyeFov display{-.7f, .8f, .9f, -.6f};
+  for (const Vec3 axis : {Vec3{1, 0, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1}}) {
+    for (float angle : {-.2f, .2f}) {
+      const Quat rotation = QuatFromAxisAngle(axis, angle);
+      EyeFov rendered;
+      ASSERT_TRUE(ParallelEyeFov(rotation, display, &rendered));
+      for (int x = 0; x <= 4; ++x) {
+        for (int y = 0; y <= 4; ++y) {
+          const Vec3 ray =
+              QuatRotate(rotation, {std::tan(display.angle_left) +
+                                        x * .25f *
+                                            (std::tan(display.angle_right) -
+                                             std::tan(display.angle_left)),
+                                    std::tan(display.angle_down) +
+                                        y * .25f *
+                                            (std::tan(display.angle_up) -
+                                             std::tan(display.angle_down)),
+                                    -1});
+          const float horizontal = std::atan2(ray.x, -ray.z);
+          const float vertical = std::atan2(ray.y, -ray.z);
+          EXPECT_GE(horizontal, rendered.angle_left - 1e-6f);
+          EXPECT_LE(horizontal, rendered.angle_right + 1e-6f);
+          EXPECT_GE(vertical, rendered.angle_down - 1e-6f);
+          EXPECT_LE(vertical, rendered.angle_up + 1e-6f);
+        }
+      }
+      const Pose head{{1, 2, 3}, QuatFromYawPitch(.4f, -.1f)};
+      const Pose parallel_eye{{-.03f, .01f, .02f}, {}};
+      const Pose submitted = PoseMultiply(head, parallel_eye);
+      EXPECT_TRUE(
+          QuatSameRotation(submitted.orientation, head.orientation, 1e-6f));
+    }
+  }
+}
+
+TEST(VrPoseMath, UnrepresentableProjectionDoesNotModifyOutput) {
+  const EyeFov display{-.7f, .8f, .9f, -.6f};
+  EyeFov rendered{1, 2, 3, 4};
+  EXPECT_FALSE(ParallelEyeFov({0, 0, 0, 0}, display, &rendered));
+  EXPECT_FALSE(ParallelEyeFov({}, {.8f, -.7f, .9f, -.6f}, &rendered));
+  EXPECT_FALSE(
+      ParallelEyeFov(QuatFromAxisAngle({0, 1, 0}, 1.5f), display, &rendered));
+  EXPECT_FALSE(ParallelEyeFov({}, display, nullptr));
+  EXPECT_EQ(rendered.angle_left, 1);
+  EXPECT_EQ(rendered.angle_down, 4);
 }
 
 // ---- units: the 0.10 m translation check through the native conversion ----

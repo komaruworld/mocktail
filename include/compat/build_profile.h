@@ -22,13 +22,12 @@ struct FmodOutputDeviceBridgeProfile {
   std::uintptr_t info_method_rva = 0;
   std::uintptr_t current_method_rva = 0;
   std::uintptr_t select_method_rva = 0;
+  std::uint32_t vtable_layout_version = 1;
 };
 
 // Exact-build metadata for the experimental native VR bridge. The bridge
-// interposes only DebugDeviceVR virtual slots (state getter and eye
-// framebuffer getter) and invokes the guest eye-resource initializer through
-// its own vtable; executable guest code is never modified. All RVAs are
-// validated against machine-code contracts before the first use.
+// interposes DebugDeviceVR slots and a checked world-pointer trampoline.
+// All RVAs are validated against machine-code contracts before first use.
 struct VrDebugDeviceBridgeProfile {
   std::uintptr_t vtable_rva = 0;
   std::uintptr_t constructor_rva = 0;

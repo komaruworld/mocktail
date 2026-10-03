@@ -17,6 +17,16 @@
 
 namespace mocktail::vr {
 
+namespace internal {
+// Consume binary present dependencies exactly once. On success a later present
+// must omit them; on failure the caller must propagate the error, not retry.
+VkResult WaitForPresentDependencies(VkDevice device, VkQueue queue,
+                                    const VkPresentInfoKHR& present,
+                                    VkFence fence, PFN_vkResetFences reset,
+                                    PFN_vkQueueSubmit submit,
+                                    PFN_vkWaitForFences wait);
+}  // namespace internal
+
 // Resolved --vr output mode. kXrOutput drives the real Roblox stereo images
 // into an OpenXR projection layer; kNativeOnly keeps the diagnostic native
 // stereo prototype without any runtime requirement. Selected through
@@ -56,7 +66,10 @@ struct ScriptedPoseSample {
   float eye_fov[2][4] = {};  // left, right, up, down angles
   // Index 0 = left, 1 = right (Roblox UserCFrame LeftHand/RightHand).
   VrHandPose hands[2];
-  // Exact 2998 DebugDeviceVR input channels, published with the same pose.
+  float floor_position[3] = {};
+  float floor_orientation[4] = {0.f, 0.f, 0.f, 1.f};
+  bool floor_valid = false;
+  // Verified DebugDeviceVR input channels, published with the same pose.
   float controller_channels[28] = {};
   bool controllers_connected = false;
   std::uint64_t frame = 0;
@@ -126,6 +139,24 @@ class OpenXrBackend final {
   void NoteInstanceDestroyed(VkInstance instance);
   void NoteQueue(VkDevice device, VkQueue queue, std::uint32_t family,
                  std::uint32_t index);
+  std::vector<std::uint32_t> DesktopQueueFamilies(VkDevice device) const;
+  void RecordCommandPool(VkDevice device, VkCommandPool pool,
+                         std::uint32_t family);
+  void RecordCommandBuffers(VkDevice device, VkCommandPool pool,
+                            std::uint32_t count,
+                            const VkCommandBuffer* buffers);
+  void ForgetCommandBuffers(std::uint32_t count,
+                            const VkCommandBuffer* buffers);
+  void ForgetCommandPool(VkCommandPool pool);
+  void ResetCommandPool(VkCommandPool pool);
+  void ResetCommandBuffer(VkCommandBuffer buffer);
+  void NoteCommandBuffersSubmitted(VkQueue queue, std::uint32_t count,
+                                   const VkCommandBuffer* buffers);
+  VkImageLayout NormalizeDesktopBarrier(VkCommandBuffer command, VkImage image,
+                                        std::uint32_t* source,
+                                        std::uint32_t* destination,
+                                        VkImageLayout* old_layout,
+                                        VkImageLayout new_layout);
 
   // Resource provenance recording (adapter wrappers).
   bool WantsResourceRecords() const {
@@ -149,8 +180,14 @@ class OpenXrBackend final {
 
   // Render-thread frame cycle at host present begin.
   void NoteHostPresent(VkQueue queue, VkDevice device);
+  // VK_NOT_READY leaves the present untouched until eye submission provenance
+  // is known. VK_SUCCESS means its waits were consumed on the graphics queue.
+  VkResult PrepareHostPresent(VkQueue queue, VkDevice device,
+                              const VkPresentInfoKHR* info);
   void RecordDesktopSwapchain(VkDevice device, VkSwapchainKHR swapchain,
-      const VkSwapchainCreateInfoKHR* info, const VkImage* images, unsigned count);
+                              const VkSwapchainCreateInfoKHR* info,
+                              const VkImage* images, unsigned count,
+                              bool converted_to_concurrent = false);
   // On success the original present semaphores have been consumed and the
   // copy has completed. The caller must present with no wait semaphores.
   VkResult MirrorDesktop(VkQueue queue, const VkPresentInfoKHR* info);
@@ -197,6 +234,7 @@ class OpenXrBackend final {
     std::uint32_t height = 0;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageUsageFlags usage = 0;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     void* owner = nullptr;
     std::uint64_t order = 0;
   };
@@ -251,6 +289,9 @@ class OpenXrBackend final {
   void HandleReferenceSpaceChange(std::int64_t change_time);
   bool RecoverSessionLocked(std::uint64_t now_ns);
   void PollSessionEvents();
+  bool SupportsPresentQueueLocked(VkQueue queue) const;
+  VkQueue GraphicsQueueForPresentLocked(VkQueue present) const;
+  bool unsupported_present_queue_logged_ = false;
   // Drops the pose/images of the frame currently in flight without touching
   // guest ownership, so the next xrEndFrame submits no layer instead of an
   // image paired with a pose that no longer describes the same origin.
@@ -290,6 +331,7 @@ class OpenXrBackend final {
   void* xr_session_ = nullptr;
   void* xr_local_space_ = nullptr;
   void* xr_view_space_ = nullptr;
+  void* xr_stage_space_ = nullptr;
   std::uint32_t xr_eye_width_[2] = {};
   std::uint32_t xr_eye_height_[2] = {};
   EyeSwapchain eye_swapchains_[2];
@@ -302,6 +344,8 @@ class OpenXrBackend final {
   VkDevice vk_device_ = VK_NULL_HANDLE;
   VkPhysicalDevice vk_physical_device_ = VK_NULL_HANDLE;
   std::uint32_t vk_queue_family_ = 0;
+  VkQueue vk_graphics_queue_ = VK_NULL_HANDLE;
+  std::vector<std::uint32_t> device_queue_families_;
   void* vk_loader_ = nullptr;
   struct VkProcs;
   VkProcs* vk_ = nullptr;
@@ -319,6 +363,9 @@ class OpenXrBackend final {
     VkExtent2D extent;
     VkFormat format;
     std::vector<VkImage> images;
+    VkSharingMode sharing_mode = VK_SHARING_MODE_EXCLUSIVE;
+    std::vector<std::uint32_t> families;
+    bool converted_to_concurrent = false;
   };
   std::unordered_map<VkSwapchainKHR, DesktopSwapchain> desktop_swapchains_;
   std::unordered_map<VkImageView, VkImage> image_views_;
@@ -326,6 +373,15 @@ class OpenXrBackend final {
   std::unordered_map<VkFramebuffer, VkRenderPass> framebuffer_render_pass_;
   std::unordered_map<VkRenderPass, std::vector<VkImageLayout>> render_pass_final_layouts_;
   std::unordered_map<VkQueue, std::uint32_t> queue_families_;
+  struct CommandRecord {
+    VkCommandPool pool = VK_NULL_HANDLE;
+    std::uint32_t family = UINT32_MAX;
+    std::vector<std::pair<VkImage, std::uint64_t>> eye_images;
+  };
+  std::unordered_map<VkCommandPool, std::uint32_t> command_pool_families_;
+  std::unordered_map<VkCommandBuffer, CommandRecord> command_records_;
+  std::unordered_map<VkImage, VkQueue> eye_render_queues_;
+  std::unordered_map<VkImage, std::uint64_t> eye_render_frames_;
   std::uint64_t image_order_ = 0;
   EyeBinding eyes_[2];
 
@@ -353,7 +409,7 @@ class OpenXrBackend final {
   bool frame_views_valid_ = false;
   // One-shot guard so a canted-view runtime reports the rejection reason once
   // instead of once per frame per eye.
-  bool canted_rejection_logged_ = false;
+  bool projection_rejection_logged_ = false;
   mutable ScriptedPoseSample published_pose_;
   std::uint64_t xr_frame_counter_ = 0;
   std::unordered_map<void*, std::uint64_t> applied_poses_;

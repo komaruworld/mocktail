@@ -28,6 +28,28 @@
 namespace mocktail::compat {
 namespace {
 
+TEST(HostAbiProfileTest, Payload3092KeepsVerifiedConstructorBoundaries) {
+  const auto* profile =
+      FindHostAbiProfile("5f0704edd9064f566ee3d6df2bd2fabbcc709f03");
+  ASSERT_NE(profile, nullptr);
+  EXPECT_EQ(profile->bridge_entry_count, 6u);
+  EXPECT_EQ(profile->init_array_offset, 0x70e1618u);
+  EXPECT_EQ(profile->init_array_count, 3599u);
+  EXPECT_TRUE(profile->HasValidConstructorRanges());
+  EXPECT_TRUE(profile->AllowsConstructor(2));
+  EXPECT_FALSE(profile->AllowsConstructor(3));
+  EXPECT_FALSE(profile->AllowsConstructor(4));
+  EXPECT_TRUE(profile->AllowsConstructor(5));
+  EXPECT_TRUE(profile->AllowsConstructor(3598));
+  EXPECT_FALSE(profile->AllowsConstructor(3599));
+  EXPECT_TRUE(profile->HasValidNativeMimallocConstructorRanges());
+  EXPECT_FALSE(profile->AllowsNativeMimallocConstructor(1));
+  EXPECT_TRUE(profile->AllowsNativeMimallocConstructor(2));
+  EXPECT_TRUE(profile->AllowsNativeMimallocConstructor(3598));
+  EXPECT_FALSE(profile->AllowsNativeMimallocConstructor(3599));
+  EXPECT_TRUE(profile->HasValidNativePreJniBootstrap());
+}
+
 TEST(HostAbiProfileTest, Supported2908HasExactDerivedBoundaries) {
   const HostAbiProfile* profile =
       FindHostAbiProfile("63c5109637b7d7b2bdb8ed8f858023ff5ef49326");

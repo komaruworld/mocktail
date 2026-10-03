@@ -54,6 +54,11 @@ const std::vector<uint8_t> kEyeGetter = {0x48, 0x63, 0xc6, 0x48, 0xc1, 0xe0,
                                          0x04, 0x48, 0x8b, 0x84, 0x07, 0x50,
                                          0x01, 0x00, 0x00, 0xc3};
 
+const internal::VrBuildContract& TestContract() {
+  return *internal::FindVrBuildContract(
+      "ade08266c67aee88ec9c1d00902150e1684dad3a");
+}
+
 std::vector<uint8_t> ValidConstructor() {
   std::vector<uint8_t> code(kConstructorContractSize, 0x90);
   const std::vector<uint8_t> prologue = {
@@ -70,6 +75,7 @@ std::vector<uint8_t> ValidConstructor() {
        0x00, 0x00},
       {0x4c, 0x89, 0xbb, 0x98, 0x01, 0x00, 0x00},
   };
+  std::memcpy(code.data() + 43, markers.front().data(), markers.front().size());
   size_t offset = 64;
   for (const auto &marker : markers) {
     std::memcpy(code.data() + offset, marker.data(), marker.size());
@@ -240,19 +246,100 @@ TEST(VrResourceReadiness,
 
 TEST(VrStateGetterContract, AcceptsExact2998Bytes) {
   ASSERT_EQ(kStateGetter.size(), kStateGetterContractSize);
-  EXPECT_TRUE(internal::HasExpectedVrStateGetterContract(kStateGetter.data(),
-                                                         kStateGetter.size()));
+  EXPECT_TRUE(internal::HasExpectedVrStateGetterContract(
+      kStateGetter.data(), kStateGetter.size(), TestContract()));
 }
 
 TEST(VrStateGetterContract, RejectsCorruptionAndShortInput) {
-  EXPECT_FALSE(internal::HasExpectedVrStateGetterContract(nullptr, 0));
+  EXPECT_FALSE(
+      internal::HasExpectedVrStateGetterContract(nullptr, 0, TestContract()));
   EXPECT_FALSE(internal::HasExpectedVrStateGetterContract(
-      kStateGetter.data(), kStateGetter.size() - 1));
+      kStateGetter.data(), kStateGetter.size() - 1, TestContract()));
   std::vector<uint8_t> corrupted = kStateGetter;
   // The sret copy size (0x138) must be pinned; corrupt one byte of it.
   corrupted[13] ^= 0xff;
-  EXPECT_FALSE(internal::HasExpectedVrStateGetterContract(corrupted.data(),
-                                                          corrupted.size()));
+  EXPECT_FALSE(internal::HasExpectedVrStateGetterContract(
+      corrupted.data(), corrupted.size(), TestContract()));
+}
+
+TEST(VrBuildContracts, RejectsUnknownBuildsAndMismatchedMetadata) {
+  EXPECT_EQ(FindRobloxVrDeviceProfile("unknown"), nullptr);
+  auto profile = MakeBuildProfile(true, true);
+  profile.elf_build_id = "5f0704edd9064f566ee3d6df2bd2fabbcc709f03";
+  RobloxVrDeviceBridge bridge;
+  EXPECT_FALSE(bridge.Install(profile).ok());
+  profile.vr_debug_device_bridge =
+      *FindRobloxVrDeviceProfile(profile.elf_build_id);
+  EXPECT_TRUE(bridge.Install(profile).ok());
+  EXPECT_FALSE(bridge.active());
+}
+
+TEST(VrBuildContracts, RestoresVrForApprovedProfileWithoutVrMetadata) {
+  auto profile = MakeBuildProfile(false, true);
+  profile.elf_build_id = "5f0704edd9064f566ee3d6df2bd2fabbcc709f03";
+  const auto* vr = FindRobloxVrDeviceProfile(profile.elf_build_id);
+  ASSERT_NE(vr, nullptr);
+  EXPECT_EQ(vr->device_create_framebuffer_vtable_offset, 0x188u);
+  profile.vr_debug_device_bridge = *vr;
+  RobloxVrDeviceBridge bridge;
+  EXPECT_TRUE(bridge.Install(profile).ok());
+}
+
+TEST(VrStateGetterContract, Verifies3092CopyTargetAndRejectsWrongBuild) {
+  const auto& latest = *internal::FindVrBuildContract(
+      "5f0704edd9064f566ee3d6df2bd2fabbcc709f03");
+  auto code = kStateGetter;
+  const std::uint8_t displacement[] = {0xa3, 0x0d, 0x40, 0x03};
+  std::memcpy(code.data() + 19, displacement, sizeof(displacement));
+  EXPECT_TRUE(internal::HasExpectedVrStateGetterContract(code.data(),
+                                                         code.size(), latest));
+  EXPECT_FALSE(internal::HasExpectedVrStateGetterContract(
+      code.data(), code.size(), TestContract()));
+  code[19] ^= 1;
+  EXPECT_FALSE(internal::HasExpectedVrStateGetterContract(code.data(),
+                                                          code.size(), latest));
+}
+
+TEST(VrConstructorContract, VerifiesRelocatedVtableFor3092) {
+  const auto& latest =
+      *FindRobloxVrDeviceProfile("5f0704edd9064f566ee3d6df2bd2fabbcc709f03");
+  auto code = ValidConstructor();
+  const std::uint8_t displacement[] = {0xf2, 0xe0, 0x50, 0x03};
+  std::memcpy(code.data() + 46, displacement, sizeof(displacement));
+  EXPECT_TRUE(internal::HasExpectedVrConstructorContract(code.data(),
+                                                         code.size(), latest));
+  EXPECT_FALSE(internal::HasExpectedVrConstructorContract(
+      code.data(), code.size(), TestProfile()));
+}
+
+TEST(VrPointerContract, PinsWorkspaceAndCameraSlotForEachBuild) {
+  for (const auto* id : {"ade08266c67aee88ec9c1d00902150e1684dad3a",
+                         "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"}) {
+    const auto& contract = *internal::FindVrBuildContract(id);
+    std::array<std::uint8_t, 0x1b2> code{};
+    const std::uint8_t prologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41,
+                                     0x57, 0x41, 0x56, 0x41, 0x54,
+                                     0x53, 0x48, 0x83, 0xec, 0x70};
+    std::memcpy(code.data(), prologue, sizeof(prologue));
+    code[0x59] = 0xe8;
+    const std::int32_t displacement =
+        static_cast<std::int64_t>(contract.workspace_getter_rva) -
+        (contract.pointer_frame_rva + 0x5e);
+    std::memcpy(code.data() + 0x5a, &displacement, sizeof(displacement));
+    code[0x6d] = 0xff;
+    code[0x6e] = 0x91;
+    const std::uint32_t slot = contract.camera_vtable_offset;
+    std::memcpy(code.data() + 0x6f, &slot, sizeof(slot));
+    EXPECT_TRUE(internal::HasExpectedVrPointerContract(code.data(), code.size(),
+                                                       contract));
+    code[0x6f] ^= 8;
+    EXPECT_FALSE(internal::HasExpectedVrPointerContract(code.data(),
+                                                        code.size(), contract));
+    code[0x6f] ^= 8;
+    code[0x5a] ^= 1;
+    EXPECT_FALSE(internal::HasExpectedVrPointerContract(code.data(),
+                                                        code.size(), contract));
+  }
 }
 
 TEST(VrEyeGetterContract, AcceptsExact2998Bytes) {
@@ -271,10 +358,10 @@ TEST(VrEyeGetterContract, RejectsDifferentEyeSlotOffset) {
 
 TEST(VrConstructorContract, AcceptsMarkersAndRejectsEachMissingOne) {
   const std::vector<uint8_t> valid = ValidConstructor();
-  EXPECT_TRUE(
-      internal::HasExpectedVrConstructorContract(valid.data(), valid.size()));
-  EXPECT_FALSE(internal::HasExpectedVrConstructorContract(valid.data(),
-                                                          valid.size() - 1));
+  EXPECT_TRUE(internal::HasExpectedVrConstructorContract(
+      valid.data(), valid.size(), TestProfile()));
+  EXPECT_FALSE(internal::HasExpectedVrConstructorContract(
+      valid.data(), valid.size() - 1, TestProfile()));
   // Corrupting the graphics-device capture (+0x198 store) must fail closed.
   std::vector<uint8_t> no_device_store = valid;
   for (size_t index = 0; index + 7 <= no_device_store.size(); ++index) {
@@ -285,7 +372,7 @@ TEST(VrConstructorContract, AcceptsMarkersAndRejectsEachMissingOne) {
     }
   }
   EXPECT_FALSE(internal::HasExpectedVrConstructorContract(
-      no_device_store.data(), no_device_store.size()));
+      no_device_store.data(), no_device_store.size(), TestProfile()));
 }
 
 TEST(VrInitializerContract, PinsDeviceVtableSlotFromProfile) {
@@ -484,7 +571,8 @@ TEST(VrProfileParsing, Issue153VrBridgeFailsWithoutMetadataForArmedProfile) {
         "count_method_rva": "0x32d1000",
         "info_method_rva": "0x32d10a0",
         "current_method_rva": "0x32d1050",
-        "select_method_rva": "0x32d0d04"
+        "select_method_rva": "0x32d0d04",
+        "vtable_layout_version": 2
       },
       "reason": "issue 153 reproduction profile: armed without vr metadata"
     }]
@@ -500,6 +588,8 @@ TEST(VrProfileParsing, Issue153VrBridgeFailsWithoutMetadataForArmedProfile) {
   ASSERT_TRUE(result);
   ASSERT_TRUE(result.profile.has_value());
   ASSERT_TRUE(result.profile->fmod_output_device_bridge.has_value());
+  EXPECT_EQ(result.profile->fmod_output_device_bridge->vtable_layout_version,
+            2u);
   ASSERT_TRUE(result.profile->user_game_settings_fullscreen_setter_rva
                   .has_value());
   // But it carries no VR debug-device bridge metadata.
@@ -605,6 +695,30 @@ TEST(VrHandPoseBridge, ValidGripPosesFillBothHandRecordsInMetres) {
   EXPECT_FLOAT_EQ(left_ori[1], std::sin(0.3f));
   EXPECT_FLOAT_EQ(left_ori[3], std::cos(0.3f));
   EXPECT_FLOAT_EQ(right_pos[0], 0.25f);
+}
+
+TEST(VrFloorPoseBridge, PublishesStagePoseInMetresAndClearsTrackingLoss) {
+  std::array<std::uint8_t, internal::kStateCopySize> state{};
+  state[internal::kStateReadyOffsetInCopy] = 1;
+  ScriptedPoseSample pose;
+  pose.valid = pose.floor_valid = true;
+  pose.floor_position[1] = -1.7f;
+  pose.floor_orientation[1] = std::sin(.2f);
+  pose.floor_orientation[3] = std::cos(.2f);
+  ASSERT_TRUE(internal::ApplyXrPose(state.data(), pose));
+  EXPECT_EQ(state[internal::kExtraRecordOffset], 1);
+  float height = 0;
+  std::memcpy(&height, state.data() + internal::kExtraRecordOffset + 8, 4);
+  EXPECT_FLOAT_EQ(height, -1.7f);
+  EXPECT_EQ(state[internal::kStateReadyOffsetInCopy], 1);
+  pose.floor_valid = false;
+  ASSERT_TRUE(internal::ApplyXrPose(state.data(), pose));
+  EXPECT_EQ(state[internal::kExtraRecordOffset], 0);
+  EXPECT_EQ(state[internal::kHeadRecordOffset], 1);
+  pose.floor_valid = true;
+  pose.floor_position[1] = std::numeric_limits<float>::quiet_NaN();
+  ASSERT_TRUE(internal::ApplyXrPose(state.data(), pose));
+  EXPECT_EQ(state[internal::kExtraRecordOffset], 0);
 }
 
 TEST(VrHandPoseBridge, UntrackedOrNonFiniteHandsStayInvalidWithoutTouchingHead) {

@@ -3,12 +3,26 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 #include "compat/build_profile.h"
 #include "mocktail/vr/xr_controller.h"
 
 namespace mocktail::vr { struct ScriptedPoseSample; }
 namespace mocktail::vr::internal {
+
+struct VrBuildContract {
+  std::string_view build_id;
+  compat::VrDebugDeviceBridgeProfile device;
+  std::uintptr_t state_memcpy_rva;
+  std::uintptr_t pointer_frame_rva;
+  std::uintptr_t workspace_getter_rva;
+  std::uintptr_t camera_vtable_offset;
+  std::uintptr_t hand_pitch_storage_rva;
+  std::uintptr_t haptic_sink_rva;
+};
+
+const VrBuildContract* FindVrBuildContract(std::string_view build_id);
 
 // Writes only a caller-owned state copy; preserves all resource readiness.
 bool ApplyXrPose(void* state, const ScriptedPoseSample& pose);
@@ -78,16 +92,21 @@ EyeResourceState InspectEyeResources(const void *object);
 
 // Exact 33-byte state getter: sret ABI (rdi = hidden 0x138-byte result
 // buffer, rsi = device), copies state from self+0x14 and returns the buffer.
-bool HasExpectedVrStateGetterContract(const std::uint8_t *code,
-                                      std::size_t size);
+bool HasExpectedVrStateGetterContract(const std::uint8_t* code,
+                                      std::size_t size,
+                                      const VrBuildContract& contract);
 
 // Exact 16-byte eye framebuffer getter: self + 0x150 + eyeIndex * 16.
 bool HasExpectedVrEyeGetterContract(const std::uint8_t *code, std::size_t size);
 
 // Constructor: captures rcx (graphics device) into self+0x198, width/height
 // into +0x190/+0x194, type dword 6 into +0x10, and clears the state block.
-bool HasExpectedVrConstructorContract(const std::uint8_t *code,
-                                      std::size_t size);
+bool HasExpectedVrConstructorContract(
+    const std::uint8_t* code, std::size_t size,
+    const compat::VrDebugDeviceBridgeProfile& profile);
+
+bool HasExpectedVrPointerContract(const std::uint8_t* code, std::size_t size,
+                                  const VrBuildContract& contract);
 
 // Eye-resource initializer: raises ready byte self+0x147 plus +0x94/+0x144
 // and creates the per-eye resources through the graphics-device vtable slot
