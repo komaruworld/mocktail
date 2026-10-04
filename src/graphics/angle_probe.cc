@@ -67,9 +67,8 @@ bool HasSymbols(const SharedLibrary& library,
   return true;
 }
 
-}  // namespace
-
-BackendCapability ProbeAngleVulkan(const AngleProbeOptions& options) {
+BackendCapability CheckAngleLibraries(const AngleProbeOptions& options,
+                                      bool initialize_display) {
   if (options.egl_library_path.empty() || options.gles_library_path.empty()) {
     return Unavailable(
         "pinned ANGLE EGL and GLES library paths are both required");
@@ -104,6 +103,20 @@ BackendCapability ProbeAngleVulkan(const AngleProbeOptions& options) {
                        missing);
   }
 
+  auto query_string =
+      reinterpret_cast<PFNEGLQUERYSTRINGPROC>(egl.Find("eglQueryString"));
+  const char* extensions = query_string(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+  const std::string extension_list =
+      std::string(" ") + (extensions != nullptr ? extensions : "") + " ";
+  if (extension_list.find(" EGL_ANGLE_platform_angle ") == std::string::npos) {
+    return Unavailable("EGL library does not support EGL_ANGLE_platform_angle");
+  }
+  if (!initialize_display) {
+    return {GraphicsBackendKind::kAngleVulkan, CapabilityState::kLoadable,
+            HardwareAcceleration::kUnknown,
+            "ANGLE EGL/GLES entry points available"};
+  }
+
   auto get_proc_address =
       reinterpret_cast<PFNEGLGETPROCADDRESSPROC>(egl.Find("eglGetProcAddress"));
   auto get_platform_display = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
@@ -121,9 +134,6 @@ BackendCapability ProbeAngleVulkan(const AngleProbeOptions& options) {
       reinterpret_cast<PFNEGLINITIALIZEPROC>(egl.Find("eglInitialize"));
   auto terminate =
       reinterpret_cast<PFNEGLTERMINATEPROC>(egl.Find("eglTerminate"));
-  auto query_string =
-      reinterpret_cast<PFNEGLQUERYSTRINGPROC>(egl.Find("eglQueryString"));
-
   const EGLint device_type =
       options.allow_software_device
           ? EGL_PLATFORM_ANGLE_DEVICE_TYPE_SWIFTSHADER_ANGLE
@@ -171,6 +181,16 @@ BackendCapability ProbeAngleVulkan(const AngleProbeOptions& options) {
           options.allow_software_device ? HardwareAcceleration::kSoftware
                                         : HardwareAcceleration::kHardware,
           std::move(detail)};
+}
+
+}  // namespace
+
+BackendCapability InspectAngleLibraries(const AngleProbeOptions& options) {
+  return CheckAngleLibraries(options, false);
+}
+
+BackendCapability ProbeAngleVulkan(const AngleProbeOptions& options) {
+  return CheckAngleLibraries(options, true);
 }
 
 }  // namespace graphics

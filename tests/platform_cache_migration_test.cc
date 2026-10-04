@@ -340,6 +340,66 @@ TEST(PlatformCacheMigrationTest, MissingRobloxThemeUsesCallerDefault) {
   EXPECT_FALSE(std::filesystem::exists(fixture.app_storage));
 }
 
+TEST(PlatformCacheMigrationTest, UnknownAccountThemeUsesAuthenticatedTheme) {
+  TemporaryDirectory temporary;
+  FixturePaths fixture = PathsFor(temporary);
+  const nlohmann::json invalid_themes[] = {
+      "system", "", nullptr, false, 42, nlohmann::json::object()};
+  for (const auto& theme : invalid_themes) {
+    SCOPED_TRACE(theme.dump());
+    const nlohmann::json device_themes = {{"42", theme}, {"99", "dark"}};
+    ASSERT_TRUE(WriteJson(fixture.app_storage,
+                         {{"DeviceLevelTheme", device_themes.dump()},
+                          {"AuthenticatedTheme", "light"},
+                          {"UnrelatedPreference", "keep"}}));
+    const std::string original = ReadFile(fixture.app_storage);
+
+    const auto result = ReadRobloxThemeCache(fixture.app_storage, 42);
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_EQ(result.dark_theme, std::optional<bool>(false));
+    EXPECT_EQ(ReadFile(fixture.app_storage), original);
+  }
+}
+
+TEST(PlatformCacheMigrationTest, MalformedDeviceThemesUseAuthenticatedTheme) {
+  TemporaryDirectory temporary;
+  FixturePaths fixture = PathsFor(temporary);
+  const nlohmann::json invalid_caches[] = {
+      "{broken", "[]", "null", 42, nullptr, nlohmann::json::object()};
+  for (const auto& cache : invalid_caches) {
+    SCOPED_TRACE(cache.dump());
+    ASSERT_TRUE(WriteJson(fixture.app_storage,
+                         {{"DeviceLevelTheme", cache},
+                          {"AuthenticatedTheme", "dark"}}));
+    const std::string original = ReadFile(fixture.app_storage);
+
+    const auto result = ReadRobloxThemeCache(fixture.app_storage, 42);
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_EQ(result.dark_theme, std::optional<bool>(true));
+    EXPECT_EQ(ReadFile(fixture.app_storage), original);
+  }
+}
+
+TEST(PlatformCacheMigrationTest, UnknownThemesUseCallerDefault) {
+  TemporaryDirectory temporary;
+  FixturePaths fixture = PathsFor(temporary);
+  const nlohmann::json device_themes = {{"42", "system"}};
+  const nlohmann::json invalid_themes[] = {
+      "future-theme", "", nullptr, true, 42, nlohmann::json::array()};
+  for (const auto& theme : invalid_themes) {
+    SCOPED_TRACE(theme.dump());
+    ASSERT_TRUE(WriteJson(fixture.app_storage,
+                         {{"DeviceLevelTheme", device_themes.dump()},
+                          {"AuthenticatedTheme", theme}}));
+    const std::string original = ReadFile(fixture.app_storage);
+
+    const auto result = ReadRobloxThemeCache(fixture.app_storage, 42);
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_FALSE(result.dark_theme.has_value());
+    EXPECT_EQ(ReadFile(fixture.app_storage), original);
+  }
+}
+
 }  // namespace
 }  // namespace runtime
 }  // namespace mocktail

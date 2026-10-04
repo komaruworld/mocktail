@@ -4841,9 +4841,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         mocktail::runtime::ReadRobloxThemeCache(
             app_storage_file, dependencies.account_identity().user_id);
     if (!saved_theme) {
-      std::cerr << "[FATAL] Cannot read Roblox theme cache: "
+      std::cerr << "  [theme] Cannot read Roblox theme cache; using default: "
                 << saved_theme.error << '\n';
-      return EXIT_FAILURE;
     }
     if (saved_theme.dark_theme.has_value()) {
       dark_theme = *saved_theme.dark_theme;
@@ -4854,7 +4853,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   if (runtime_config.theme_mode() == "roblox") {
     std::cout << "  [theme] "
               << (roblox_theme_found ? "Roblox saved theme="
-                                     : "Roblox theme missing; default=")
+                                     : "Roblox theme unavailable; default=")
               << (dark_theme ? "dark" : "light") << '\n'
               << std::flush;
   } else if (app_storage_file != nullptr) {
@@ -4862,9 +4861,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     if (!mocktail::runtime::ApplyRobloxThemeCacheOverride(
             app_storage_file, dependencies.account_identity().user_id,
             dark_theme, &theme_error)) {
-      std::cerr << "[FATAL] Roblox theme cache override failed: " << theme_error
-                << '\n';
-      return EXIT_FAILURE;
+      std::cerr << "  [theme] Cannot persist Roblox theme override: "
+                << theme_error << '\n';
     }
     std::cout << "  [theme] Roblox local theme="
               << (dark_theme ? "dark" : "light") << '\n'

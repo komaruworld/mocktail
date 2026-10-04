@@ -75,6 +75,8 @@ TEST(AngleProbeTest, RequiresExplicitPinnedLibraryPaths) {
   auto capability = graphics::ProbeAngleVulkan({});
   EXPECT_EQ(capability.state, CapabilityState::kUnavailable);
   EXPECT_NE(capability.detail.find("required"), std::string::npos);
+  EXPECT_EQ(graphics::InspectAngleLibraries({}).state,
+            CapabilityState::kUnavailable);
 }
 
 TEST(AngleProbeTest, ValidatesConfiguredAngleVulkanDistribution) {
@@ -87,6 +89,8 @@ TEST(AngleProbeTest, ValidatesConfiguredAngleVulkanDistribution) {
   graphics::AngleProbeOptions options;
   options.egl_library_path = egl;
   options.gles_library_path = gles;
+  const auto inspected = graphics::InspectAngleLibraries(options);
+  ASSERT_EQ(inspected.state, CapabilityState::kLoadable) << inspected.detail;
   auto capability = graphics::ProbeAngleVulkan(options);
   EXPECT_EQ(capability.state, CapabilityState::kReady) << capability.detail;
   EXPECT_EQ(capability.acceleration, HardwareAcceleration::kHardware);
@@ -164,6 +168,26 @@ TEST(SdlEventConverterTest, PreservesHostWheelDirectionAndPrecision) {
     EXPECT_FLOAT_EQ(wheel->delta_y, -1.5f);
     EXPECT_FLOAT_EQ(wheel->mouse_x, 120.0f);
     EXPECT_FLOAT_EQ(wheel->mouse_y, 240.0f);
+  }
+}
+
+TEST(SdlEventConverterTest, PreservesRelativeModeForAllMouseEvents) {
+  auto* window = reinterpret_cast<SDL_Window*>(0x1);
+  platform::PlatformEvent event;
+  for (const bool relative_mode : {false, true}) {
+    SDL_Event source{};
+    source.type = SDL_EVENT_MOUSE_MOTION;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseMotionEvent>(event.payload).relative_mode,
+              relative_mode);
+    source.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseButtonEvent>(event.payload).relative_mode,
+              relative_mode);
+    source.type = SDL_EVENT_MOUSE_WHEEL;
+    ASSERT_TRUE(platform::ConvertSdlEvent(window, source, &event, relative_mode));
+    EXPECT_EQ(std::get<platform::MouseWheelEvent>(event.payload).relative_mode,
+              relative_mode);
   }
 }
 

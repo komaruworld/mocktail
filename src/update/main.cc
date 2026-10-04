@@ -145,8 +145,10 @@ mocktail::update::UpdatePaths ResolvePaths() {
       runtime = public_runtime;
     }
   }
-  paths.runtime_binary =
+  paths.runtime_launcher =
       Environment("MOCKTAIL_UPDATE_CANARY_BIN").value_or(runtime.string());
+  paths.runtime_binary = Environment("MOCKTAIL_UPDATE_RUNTIME_BINARY")
+                             .value_or(paths.runtime_launcher.string());
   return paths;
 }
 

@@ -13,11 +13,11 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
-#include <mutex>
-#include <unordered_map>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "mocktail/graphics/angle_probe.h"
 #include "mocktail/graphics/gles_text_overlay_compositor.h"
 #include "mocktail/graphics/present_mode_policy.h"
 #include "mocktail/platform/display_refresh_capabilities.h"
@@ -66,6 +66,11 @@ static constexpr EGLint EGL_ALPHA_SIZE_VAL = 0x3021;
 static constexpr EGLint EGL_DEPTH_SIZE_VAL = 0x3025;
 static constexpr EGLint EGL_STENCIL_SIZE_VAL = 0x3026;
 static constexpr EGLint EGL_CONTEXT_CLIENT_VERSION_VAL = 0x3098;
+static constexpr EGLint EGL_EXTENSIONS_VAL = 0x3055;
+static constexpr EGLint EGL_DEBUG_MSG_CRITICAL_KHR_VAL = 0x33B9;
+static constexpr EGLint EGL_DEBUG_MSG_ERROR_KHR_VAL = 0x33BA;
+static constexpr EGLint EGL_DEBUG_MSG_WARN_KHR_VAL = 0x33BB;
+static constexpr EGLint EGL_DEBUG_MSG_INFO_KHR_VAL = 0x33BC;
 static constexpr EGLint EGL_PLATFORM_ANGLE_ANGLE_VAL = 0x3202;
 static constexpr EGLint EGL_PLATFORM_ANGLE_TYPE_ANGLE_VAL = 0x3203;
 static constexpr EGLint EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE_VAL = 0x3209;
@@ -76,6 +81,10 @@ static constexpr EGLint EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED_ANGLE_VAL =
 static constexpr EGLint EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE_VAL = 0x3450;
 static constexpr EGLint EGL_PLATFORM_ANGLE_DEVICE_TYPE_SWIFTSHADER_ANGLE_VAL =
     0x3487;
+static constexpr EGLint EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE_VAL =
+    0x348F;
+static constexpr EGLint EGL_PLATFORM_X11_EXT_VAL = 0x31D5;
+static constexpr EGLint EGL_PLATFORM_WAYLAND_EXT_VAL = 0x31D8;
 static constexpr EGLint EGL_TRUE_VAL = 1;
 static constexpr EGLint EGL_FALSE_VAL = 0;
 static constexpr EGLBoolean EGL_TRUE_B = 1;
@@ -153,8 +162,6 @@ static std::unique_ptr<WindowTextInputOwner> g_text_input_owner;
 static std::unique_ptr<SdlPointerCaptureBackend> g_pointer_capture_backend;
 static std::unique_ptr<WindowPointerCaptureOwner> g_pointer_capture_owner;
 static std::unique_ptr<graphics::GlesTextOverlayCompositor> g_gles_text_overlay;
-static char g_preferred_egl_library[4096];
-static char g_preferred_gles_library[4096];
 static bool g_auto_angle_retry_attempted = false;
 static std::filesystem::path g_window_state_path;
 
@@ -219,17 +226,8 @@ const char* GetEnvNonEmpty(const char* name) {
   if (name == nullptr) {
     return nullptr;
   }
-  static std::mutex mutex;
-  static std::unordered_map<const char*, const char*> cache;
-  std::lock_guard<std::mutex> lock(mutex);
-  const auto existing = cache.find(name);
-  if (existing != cache.end()) {
-    return existing->second;
-  }
   const char* raw = std::getenv(name);
-  const char* value = (raw != nullptr && raw[0] != '\0') ? raw : nullptr;
-  cache.emplace(name, value);
-  return value;
+  return raw != nullptr && raw[0] != '\0' ? raw : nullptr;
 }
 
 bool IsEnabledEnv(const char* name) {
@@ -415,19 +413,6 @@ bool FileExists(const char* path) {
   return path != nullptr && path[0] != '\0' && access(path, R_OK) == 0;
 }
 
-bool JoinExistingLibraryPath(const char* dir, const char* soname, char* out,
-                             size_t out_size) {
-  if (dir == nullptr || dir[0] == '\0' || soname == nullptr ||
-      soname[0] == '\0' || out == nullptr || out_size == 0) {
-    return false;
-  }
-  int written = std::snprintf(out, out_size, "%s/%s", dir, soname);
-  if (written <= 0 || static_cast<size_t>(written) >= out_size) {
-    return false;
-  }
-  return FileExists(out);
-}
-
 bool ShouldUseAngleBackend() {
   const char* backend = GetEnvNonEmpty("MOCKTAIL_GRAPHICS_BACKEND");
   return StartsWith(backend, "angle") ||
@@ -471,8 +456,7 @@ VideoDriverChoice ResolveConfiguredVideoDriverChoice() {
   input.has_wayland_session = HasWaylandSession();
   input.has_x11_display = GetEnvNonEmpty("DISPLAY") != nullptr;
   input.uses_direct_vulkan = ShouldUseNativeVulkanBackend();
-  input.has_nvidia_kernel_driver =
-      access("/proc/driver/nvidia/version", R_OK) == 0;
+  input.has_nvidia_kernel_driver = HasNvidiaKernelDriver();
   return ResolveVideoDriverChoice(input);
 }
 
@@ -533,25 +517,26 @@ bool ShouldShowWindowImmediately() {
   return IsEnabledEnv("MOCKTAIL_DEBUG_SHOW_WINDOW_BEFORE_FRAME");
 }
 
-const char* FindAngleLibrary(const char* explicit_env, const char* soname,
-                             char* out, size_t out_size) {
-  const char* explicit_path = GetEnvNonEmpty(explicit_env);
-  if (explicit_path != nullptr) {
-    return explicit_path;
-  }
+struct GraphicsLibraries {
+  std::string egl_path;
+  std::string gles_path;
+};
 
-  const char* angle_dir = GetEnvNonEmpty("MOCKTAIL_ANGLE_LIB_DIR");
-  if (JoinExistingLibraryPath(angle_dir, soname, out, out_size)) {
-    return out;
-  }
-
-  if (!ShouldUseAngleBackend()) {
-    return nullptr;
-  }
-
-  static const char* kAngleDirs[] = {
+GraphicsLibraries FindInstalledAngleLibraries() {
+  const char* runtime_directory =
+      GetEnvNonEmpty("MOCKTAIL_RUNTIME_LIBRARY_DIR");
+  const std::string bundled_directory =
+      runtime_directory != nullptr
+          ? (std::filesystem::path(runtime_directory) / "angle").string()
+          : std::string();
+  const char* kAngleDirs[] = {
+      bundled_directory.empty() ? nullptr : bundled_directory.c_str(),
+      "/usr/lib64/chromium",
+      "/usr/lib64/chromium-browser",
       "/usr/lib/chromium",
       "/usr/lib/chromium-browser",
+      "/usr/lib64/electron43",
+      "/usr/lib/electron43",
       "/usr/lib/electron42",
       "/usr/lib/electron41",
       "/usr/lib/electron40",
@@ -562,47 +547,59 @@ const char* FindAngleLibrary(const char* explicit_env, const char* soname,
       "/opt/google/chrome-unstable",
   };
   for (const char* dir : kAngleDirs) {
-    if (JoinExistingLibraryPath(dir, soname, out, out_size)) {
-      return out;
+    if (dir == nullptr) {
+      continue;
+    }
+    const std::filesystem::path directory(dir);
+    GraphicsLibraries libraries{(directory / "libEGL.so").string(),
+                                (directory / "libGLESv2.so").string()};
+    if (FileExists(libraries.egl_path.c_str()) &&
+        FileExists(libraries.gles_path.c_str()) &&
+        graphics::InspectAngleLibraries(
+            {libraries.egl_path, libraries.gles_path})
+                .state == graphics::CapabilityState::kLoadable) {
+      return libraries;
     }
   }
-  return nullptr;
+  return {};
 }
 
-const char* FindInstalledAngleLibrary(const char* soname, char* out,
-                                      size_t out_size) {
-  static const char* kAngleDirs[] = {
-      "/usr/lib/chromium",
-      "/usr/lib/chromium-browser",
-      "/usr/lib/electron42",
-      "/usr/lib/electron41",
-      "/usr/lib/electron40",
-      "/usr/lib/electron39",
-      "/usr/lib/cef",
-      "/opt/google/chrome",
-      "/opt/google/chrome-beta",
-      "/opt/google/chrome-unstable",
-  };
-  for (const char* dir : kAngleDirs) {
-    if (JoinExistingLibraryPath(dir, soname, out, out_size)) {
-      return out;
+GraphicsLibraries ResolveGraphicsLibraries() {
+  const char* egl_path = GetEnvNonEmpty("MOCKTAIL_EGL_LIBRARY");
+  const char* gles_path = GetEnvNonEmpty("MOCKTAIL_GLES_LIBRARY");
+  GraphicsLibraries libraries{egl_path != nullptr ? egl_path : "",
+                              gles_path != nullptr ? gles_path : ""};
+  std::filesystem::path directory;
+  const char* angle_dir = GetEnvNonEmpty("MOCKTAIL_ANGLE_LIB_DIR");
+  if (angle_dir != nullptr) {
+    directory = angle_dir;
+  } else if (ShouldUseAngleBackend()) {
+    if (libraries.egl_path.empty() && libraries.gles_path.empty()) {
+      return FindInstalledAngleLibraries();
     }
+    directory =
+        std::filesystem::path(libraries.egl_path.empty() ? libraries.gles_path
+                                                         : libraries.egl_path)
+            .parent_path();
+  } else {
+    return libraries;
   }
-  return nullptr;
+  if (libraries.egl_path.empty()) {
+    libraries.egl_path = (directory / "libEGL.so").string();
+  }
+  if (libraries.gles_path.empty()) {
+    libraries.gles_path = (directory / "libGLESv2.so").string();
+  }
+  return libraries;
 }
 
 bool HasInstalledAnglePair() {
-  char egl_path[4096];
-  char gles_path[4096];
-  return FindInstalledAngleLibrary("libEGL.so", egl_path, sizeof(egl_path)) !=
-             nullptr &&
-         FindInstalledAngleLibrary("libGLESv2.so", gles_path,
-                                   sizeof(gles_path)) != nullptr;
+  return !FindInstalledAngleLibraries().egl_path.empty();
 }
 
 SDL_EGLAttrib* SDLCALL AnglePlatformAttributes(void* /*userdata*/) {
   SDL_EGLAttrib* attrs =
-      static_cast<SDL_EGLAttrib*>(SDL_malloc(sizeof(SDL_EGLAttrib) * 7));
+      static_cast<SDL_EGLAttrib*>(SDL_malloc(sizeof(SDL_EGLAttrib) * 9));
   if (attrs == nullptr) {
     return nullptr;
   }
@@ -613,6 +610,13 @@ SDL_EGLAttrib* SDLCALL AnglePlatformAttributes(void* /*userdata*/) {
   attrs[i++] = ShouldUseAngleSwiftShader()
                    ? EGL_PLATFORM_ANGLE_DEVICE_TYPE_SWIFTSHADER_ANGLE_VAL
                    : EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE_VAL;
+  const char* video_driver = SDL_GetCurrentVideoDriver();
+  if (StringEquals(video_driver, "x11") || StringEquals(video_driver, "wayland")) {
+    attrs[i++] = EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE_VAL;
+    attrs[i++] = StringEquals(video_driver, "x11")
+                     ? EGL_PLATFORM_X11_EXT_VAL
+                     : EGL_PLATFORM_WAYLAND_EXT_VAL;
+  }
   if (IsEnabledEnv("MOCKTAIL_ANGLE_DEBUG_LAYERS")) {
     attrs[i++] = EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED_ANGLE_VAL;
     attrs[i++] = EGL_TRUE_VAL;
@@ -621,10 +625,7 @@ SDL_EGLAttrib* SDLCALL AnglePlatformAttributes(void* /*userdata*/) {
   return attrs;
 }
 
-void ConfigureGraphicsBackendBeforeSDL() {
-  g_preferred_egl_library[0] = '\0';
-  g_preferred_gles_library[0] = '\0';
-
+bool ConfigureGraphicsBackendBeforeSDL() {
   SanitizeSdlVideoDriverOverrides();
 
   SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, "1");
@@ -650,21 +651,47 @@ void ConfigureGraphicsBackendBeforeSDL() {
             "X11/XWayland WSI; set SDL_VIDEODRIVER=wayland to override\n");
   }
 
-  const char* egl_library = FindAngleLibrary(
-      "MOCKTAIL_EGL_LIBRARY", "libEGL.so", g_preferred_egl_library,
-      sizeof(g_preferred_egl_library));
-  const char* gles_library = FindAngleLibrary(
-      "MOCKTAIL_GLES_LIBRARY", "libGLESv2.so", g_preferred_gles_library,
-      sizeof(g_preferred_gles_library));
+  const GraphicsLibraries libraries = ResolveGraphicsLibraries();
+  const char* egl_library =
+      libraries.egl_path.empty() ? nullptr : libraries.egl_path.c_str();
+  const char* gles_library =
+      libraries.gles_path.empty() ? nullptr : libraries.gles_path.c_str();
+
+  if (ShouldUseAngleBackend() && !ShouldUseNativeVulkanBackend() &&
+      (!FileExists(egl_library) || !FileExists(gles_library))) {
+    const char* directory = GetEnvNonEmpty("MOCKTAIL_ANGLE_LIB_DIR");
+    SDL_SetError(
+        "ANGLE requires compatible libEGL.so and libGLESv2.so; "
+        "directory=%s egl=%s gles=%s",
+        directory != nullptr ? directory : "(automatic)",
+        egl_library != nullptr ? egl_library : "(missing)",
+        gles_library != nullptr ? gles_library : "(missing)");
+    fprintf(stderr, "  [window] %s\n", SDL_GetError());
+    return false;
+  }
+
+  if (ShouldUseAngleVulkanBackend()) {
+    const auto capability =
+        graphics::InspectAngleLibraries({egl_library, gles_library});
+    if (capability.state != graphics::CapabilityState::kLoadable) {
+      SDL_SetError("ANGLE unavailable: %s", capability.detail.c_str());
+      fprintf(stderr, "  [window] %s\n", SDL_GetError());
+      return false;
+    }
+  }
 
   if (egl_library != nullptr) {
     setenv("MOCKTAIL_EGL_LIBRARY", egl_library, 0);
-    SDL_SetHint(SDL_HINT_EGL_LIBRARY, egl_library);
+    SDL_SetHintWithPriority(SDL_HINT_EGL_LIBRARY, egl_library,
+                            ShouldUseAngleBackend() ? SDL_HINT_OVERRIDE
+                                                    : SDL_HINT_NORMAL);
   }
   if (gles_library != nullptr) {
     setenv("MOCKTAIL_GLES_LIBRARY", gles_library, 0);
-    SDL_SetHint(SDL_HINT_OPENGL_LIBRARY, gles_library);
-    SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
+    const auto priority = ShouldUseAngleBackend() ? SDL_HINT_OVERRIDE
+                                                 : SDL_HINT_NORMAL;
+    SDL_SetHintWithPriority(SDL_HINT_OPENGL_LIBRARY, gles_library, priority);
+    SDL_SetHintWithPriority(SDL_HINT_OPENGL_ES_DRIVER, "1", priority);
   }
 
   if (ShouldUseAngleVulkanBackend()) {
@@ -673,37 +700,88 @@ void ConfigureGraphicsBackendBeforeSDL() {
 
   if (ShouldUseAngleBackend() || egl_library != nullptr ||
       gles_library != nullptr || WindowTraceEnabled()) {
+    const char* requested_video_driver = GetEnvNonEmpty("SDL_VIDEO_DRIVER");
+    if (requested_video_driver == nullptr) {
+      requested_video_driver = GetEnvNonEmpty("SDL_VIDEODRIVER");
+    }
     fprintf(stderr, "  [window] graphics backend=%s video=%s egl=%s gles=%s\n",
             GetEnvNonEmpty("MOCKTAIL_GRAPHICS_BACKEND")
                 ? GetEnvNonEmpty("MOCKTAIL_GRAPHICS_BACKEND")
                 : "system",
-            GetEnvNonEmpty("SDL_VIDEODRIVER")
-                ? GetEnvNonEmpty("SDL_VIDEODRIVER")
-                : "(SDL default)",
+            requested_video_driver ? requested_video_driver : "(SDL default)",
             egl_library ? egl_library : "(system)",
             gles_library ? gles_library : "(system)");
   }
+  return true;
 }
 
-void ConfigureGraphicsBackendAfterSDLInit() {
+void LogEglError(EGLenum error, const char* command, EGLint /*message_type*/,
+                 void* /*thread_label*/, void* /*object_label*/,
+                 const char* message) {
+  fprintf(stderr, "  [window][EGL] %s: error=0x%04x %s\n",
+          command != nullptr ? command : "(unknown call)", error,
+          message != nullptr ? message : "(no details)");
+}
+
+void EnableEglErrorLogging() {
+  using QueryString = const char* (*)(EGLDisplay, EGLint);
+  using DebugCallback = void (*)(EGLenum, const char*, EGLint, void*, void*,
+                                 const char*);
+  using DebugMessageControl = EGLint (*)(DebugCallback, const SDL_EGLAttrib*);
+  const auto query_string = reinterpret_cast<QueryString>(
+      SDL_EGL_GetProcAddress("eglQueryString"));
+  if (query_string == nullptr) {
+    return;
+  }
+  const char* extensions = query_string(EGL_NO_DISPLAY, EGL_EXTENSIONS_VAL);
+  const std::string extension_list =
+      std::string(" ") + (extensions != nullptr ? extensions : "") + " ";
+  if (extension_list.find(" EGL_KHR_debug ") == std::string::npos) {
+    return;
+  }
+  const auto debug_message_control = reinterpret_cast<DebugMessageControl>(
+      SDL_EGL_GetProcAddress("eglDebugMessageControlKHR"));
+  if (debug_message_control != nullptr) {
+    const SDL_EGLAttrib attributes[] = {
+        EGL_DEBUG_MSG_CRITICAL_KHR_VAL, EGL_TRUE_VAL,
+        EGL_DEBUG_MSG_ERROR_KHR_VAL, EGL_TRUE_VAL,
+        EGL_DEBUG_MSG_WARN_KHR_VAL, EGL_FALSE_VAL,
+        EGL_DEBUG_MSG_INFO_KHR_VAL, EGL_FALSE_VAL, EGL_NONE_VAL};
+    debug_message_control(LogEglError, attributes);
+  }
+}
+
+bool ConfigureGraphicsBackendAfterSDLInit() {
+  if (ShouldUseAngleVulkanBackend()) {
+    if (!SDL_GL_SetAttribute(SDL_GL_EGL_PLATFORM, EGL_PLATFORM_ANGLE_ANGLE_VAL)) {
+      fprintf(stderr, "  [window] cannot select ANGLE EGL platform: %s\n",
+              SDL_GetError());
+      return false;
+    }
+    SDL_EGL_SetAttributeCallbacks(AnglePlatformAttributes, nullptr, nullptr,
+                                  nullptr);
+    fprintf(stderr,
+            "  [window] ANGLE Vulkan EGL platform attributes enabled "
+            "(video=%s)\n", SDL_GetCurrentVideoDriver());
+  }
+
   const char* gles_library = GetEnvNonEmpty("MOCKTAIL_GLES_LIBRARY");
   if (gles_library != nullptr) {
     if (!SDL_GL_LoadLibrary(gles_library)) {
       fprintf(stderr, "  [window] SDL_GL_LoadLibrary(%s) failed: %s\n",
               gles_library, SDL_GetError());
-    } else if (WindowTraceEnabled() || ShouldUseAngleBackend()) {
+      return false;
+    }
+    if (WindowTraceEnabled() || ShouldUseAngleBackend()) {
       fprintf(stderr, "  [window] SDL_GL_LoadLibrary(%s) succeeded\n",
               gles_library);
     }
+    if (WindowTraceEnabled() || TraceFlagEnabled("MOCKTAIL_EGL_TRACE")) {
+      EnableEglErrorLogging();
+    }
   }
 
-  if (ShouldUseAngleVulkanBackend()) {
-    SDL_GL_SetAttribute(SDL_GL_EGL_PLATFORM, EGL_PLATFORM_ANGLE_ANGLE_VAL);
-    SDL_EGL_SetAttributeCallbacks(AnglePlatformAttributes, nullptr, nullptr,
-                                  nullptr);
-    fprintf(stderr,
-            "  [window] ANGLE Vulkan EGL platform attributes enabled\n");
-  }
+  return true;
 }
 
 void ShowWindowAccordingToStartupMode() {
@@ -1015,7 +1093,9 @@ bool Init(int width, int height, const char* title) {
   g_fullscreen_menu_request_gate.Reset();
   g_real_swap_count.store(0, std::memory_order_relaxed);
 
-  ConfigureGraphicsBackendBeforeSDL();
+  if (!ConfigureGraphicsBackendBeforeSDL()) {
+    return false;
+  }
 
   if (StringEquals(GetEnvNonEmpty("MOCKTAIL_GRAPHICS_BACKEND"),
                    "direct-vulkan")) {
@@ -1155,10 +1235,9 @@ bool Init(int width, int height, const char* title) {
     return false;
   }
   if (WindowTraceEnabled()) {
-    fprintf(stderr, "  [window] SDL_Init(SDL_INIT_VIDEO) succeeded\n");
+    fprintf(stderr, "  [window] SDL_Init(SDL_INIT_VIDEO) succeeded (video=%s)\n",
+            SDL_GetCurrentVideoDriver());
   }
-
-  ConfigureGraphicsBackendAfterSDLInit();
 
   // SDL may recheck this hint during context creation.
   SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, "1");
@@ -1173,6 +1252,11 @@ bool Init(int width, int height, const char* title) {
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
   SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+  if (!ConfigureGraphicsBackendAfterSDLInit()) {
+    SDL_Quit();
+    return false;
+  }
 
   const WindowStartupPresentationPlan presentation =
       RestoredWindowPresentationPlan();
@@ -2173,7 +2257,9 @@ bool PumpEvents() {
     const bool fullscreen_shortcut = HandleFullscreenShortcut(event);
     platform::PlatformEvent platform_event;
     const bool converted =
-        platform::ConvertSdlEvent(g_state.sdl_window, event, &platform_event);
+        platform::ConvertSdlEvent(
+            g_state.sdl_window, event, &platform_event,
+            SDL_GetWindowRelativeMouseMode(g_state.sdl_window));
     if (is_window_event && g_window_surface_lifecycle.active()) {
       int pixel_width = 0;
       int pixel_height = 0;
@@ -2239,7 +2325,8 @@ bool PumpEvents() {
               std::get_if<platform::MouseMotionEvent>(&pending_motion.payload);
           const auto* nxt =
               std::get_if<platform::MouseMotionEvent>(&platform_event.payload);
-          if (cur != nullptr && nxt != nullptr) {
+          if (cur != nullptr && nxt != nullptr &&
+              cur->relative_mode == nxt->relative_mode) {
             cur->delta_x += nxt->delta_x;
             cur->delta_y += nxt->delta_y;
             cur->x = nxt->x;

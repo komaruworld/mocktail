@@ -26,6 +26,8 @@ struct UpdatePaths {
   // build the single file happens to describe.
   std::filesystem::path host_abi_reference_profile;
   std::filesystem::path runtime_binary;
+  // Optional packaging wrapper; runtime_binary identifies the actual ELF.
+  std::filesystem::path runtime_launcher;
 };
 
 struct UpdateRequest {

@@ -16,6 +16,9 @@ struct AngleProbeOptions {
   bool allow_software_device = false;
 };
 
+// Checks ANGLE entry points and client extensions without initializing a display.
+BackendCapability InspectAngleLibraries(const AngleProbeOptions& options);
+
 // Loads a pinned ANGLE pair, verifies the required EGL/GLES symbols, and
 // initializes an EGL_PLATFORM_ANGLE Vulkan display. No context is fabricated.
 BackendCapability ProbeAngleVulkan(const AngleProbeOptions& options);

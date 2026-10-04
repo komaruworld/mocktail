@@ -36,12 +36,14 @@ finish_args = set(manifest["finish-args"])
 required_permissions = {
     "--share=network",
     "--socket=wayland",
-    "--socket=fallback-x11",
+    "--socket=x11",
     "--socket=pulseaudio",
     "--device=dri",
     "--filesystem=xdg-run/discord-ipc-0:rw",
 }
 assert required_permissions <= finish_args
+# Keep NVIDIA's XWayland fallback available even when Wayland is present.
+assert "--socket=fallback-x11" not in finish_args
 assert not any(argument.startswith("--filesystem=host") for argument in finish_args)
 assert not any(argument == "--filesystem=home" for argument in finish_args)
 

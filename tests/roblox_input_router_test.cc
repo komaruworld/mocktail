@@ -257,6 +257,85 @@ TEST_F(RobloxInputRouterTest, MiddleClickUsesMouseButton3OnPressAndRelease) {
   EXPECT_EQ(router_.Snapshot().active_mouse_buttons, 0U);
 }
 
+TEST_F(RobloxInputRouterTest, MouseOriginIsAnAbsolutePosition) {
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      100.0F, 80.0F, 0.0F, 0.0F, 0})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      0.0F, 0.0F, -4.0F, -7.0F, 0})).dispatched());
+
+  const auto& move = probe_.mouse_moves.back();
+  EXPECT_FLOAT_EQ(move.x, 0.0F);
+  EXPECT_FLOAT_EQ(move.y, 0.0F);
+  EXPECT_FLOAT_EQ(move.delta_x, -4.0F);
+  EXPECT_FLOAT_EQ(move.delta_y, -7.0F);
+}
+
+TEST_F(RobloxInputRouterTest, ClickAtOriginDoesNotReusePreviousPosition) {
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      100.0F, 80.0F, 0.0F, 0.0F, 0})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseButtonEvent{
+      true, SDL_BUTTON_RIGHT, 1, 0.0F, 0.0F})).dispatched());
+
+  const auto& button = probe_.mouse_buttons.back();
+  EXPECT_FLOAT_EQ(button.x, 0.0F);
+  EXPECT_FLOAT_EQ(button.y, 0.0F);
+}
+
+TEST_F(RobloxInputRouterTest, CapturedPointerKeepsMovingBeyondWindowEdges) {
+  float x = 640.0F;
+  float y = 360.0F;
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      x, y, 0.0F, 0.0F, 0})).dispatched());
+  const std::pair<float, float> deltas[] = {
+      {4000.0F, 0.0F}, {-8000.0F, 0.0F}, {4000.0F, 0.0F},
+      {0.0F, 4000.0F}, {0.0F, -8000.0F}, {0.0F, 4000.0F}};
+  for (const auto& delta : deltas) {
+    ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+        640.0F, 360.0F, delta.first, delta.second, SDL_BUTTON_RMASK, true}))
+                    .dispatched());
+    x += delta.first;
+    y += delta.second;
+    const auto& move = probe_.mouse_moves.back();
+    EXPECT_FLOAT_EQ(move.x, x);
+    EXPECT_FLOAT_EQ(move.y, y);
+    EXPECT_FLOAT_EQ(move.delta_x, delta.first);
+    EXPECT_FLOAT_EQ(move.delta_y, delta.second);
+  }
+}
+
+TEST_F(RobloxInputRouterTest, CapturedButtonsAndWheelPreserveVirtualPosition) {
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      100.0F, 80.0F, 0.0F, 0.0F, 0})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      1279.0F, 0.0F, 1500.0F, -200.0F, 0, true})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseButtonEvent{
+      true, SDL_BUTTON_LEFT, 1, 640.0F, 360.0F, true})).dispatched());
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons.back().x, 1279.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_buttons.back().y, 0.0F);
+
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseWheelEvent{
+      0.0F, -1.0F, 640.0F, 360.0F, true})).dispatched());
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels.back().x, 1600.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels.back().y, 0.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_wheels.back().delta_y, -1.0F);
+
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      1279.0F, 0.0F, 1.0F, 2.0F, 0, true})).dispatched());
+  EXPECT_FLOAT_EQ(probe_.mouse_moves.back().x, 1601.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves.back().y, -118.0F);
+}
+
+TEST_F(RobloxInputRouterTest, AbsoluteMotionResetsPositionAfterCapture) {
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      640.0F, 360.0F, 4000.0F, -4000.0F, 0, true})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      20.0F, 30.0F, 0.0F, 0.0F, 0})).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::MouseMotionEvent{
+      640.0F, 360.0F, 1.0F, 2.0F, 0, true})).dispatched());
+  EXPECT_FLOAT_EQ(probe_.mouse_moves.back().x, 21.0F);
+  EXPECT_FLOAT_EQ(probe_.mouse_moves.back().y, 32.0F);
+}
+
 TEST_F(RobloxInputRouterTest,
        ScalesMouseCoordinatesAfterDisplayScaleChange) {
   const RobloxInputDispatchResult resize = router_.HandleEvent(

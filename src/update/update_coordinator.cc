@@ -495,7 +495,9 @@ UpdateResult RunUnsafeLatest(
   // Staging preserves the immutable APK for inspection, but this path must
   // never promote it or alter the normal current payload.
   UnsafeLatestRunOptions launch;
-  launch.runtime_binary = paths.runtime_binary;
+  launch.runtime_binary = paths.runtime_launcher.empty()
+                              ? paths.runtime_binary
+                              : paths.runtime_launcher;
   launch.payload_directory = candidate.staged.payload_directory;
   launch.compatibility_manifest = candidate.exact_supported
                                       ? paths.compatibility_manifest
@@ -536,7 +538,9 @@ bool RunCandidateCanaries(const UpdatePaths& paths, const Candidate& candidate,
                               : "Testing latest Roblox (" +
                                     std::to_string(index + 1) + "/2)...");
     CanaryOptions canary;
-    canary.runtime_binary = paths.runtime_binary;
+    canary.runtime_binary = paths.runtime_launcher.empty()
+                                ? paths.runtime_binary
+                                : paths.runtime_launcher;
     canary.payload_directory = candidate.staged.payload_directory;
     canary.compatibility_manifest = candidate.exact_supported
                                         ? paths.compatibility_manifest
