@@ -217,6 +217,43 @@ bool ApplyVulkanIcdPolicy(const HostGpus& gpus, std::string* error) {
          SetDefault("VK_ICD_FILENAMES", icd, error);
 }
 
+bool RadvIcdSelected() {
+  const char* manifests = std::getenv("VK_DRIVER_FILES");
+  if (manifests == nullptr || manifests[0] == '\0') {
+    manifests = std::getenv("VK_ICD_FILENAMES");
+  }
+  if (manifests == nullptr || manifests[0] == '\0') {
+    return false;
+  }
+  std::string_view remaining(manifests);
+  while (!remaining.empty()) {
+    const std::size_t separator = remaining.find(':');
+    const std::filesystem::path manifest{remaining.substr(0, separator)};
+    const std::string filename = manifest.filename().string();
+    if (filename.rfind("radeon_icd.", 0) != 0 || manifest.extension() != ".json") {
+      return false;
+    }
+    if (separator == std::string_view::npos) {
+      return true;
+    }
+    remaining.remove_prefix(separator + 1);
+  }
+  return false;
+}
+
+bool UsesCpuTextureOptions() {
+  for (const char* name : {"MOCKTAIL_TEXTURE_OVERRIDE_DIR",
+                            "MOCKTAIL_TEXTURE_DUMP_DIR",
+                            "MOCKTAIL_SMALL_TEXTURE_UPSCALE"}) {
+    const char* value = std::getenv(name);
+    if (value != nullptr && value[0] != '\0') {
+      return true;
+    }
+  }
+  const char* advertise = std::getenv("MOCKTAIL_ADVERTISE_ETC2");
+  return advertise != nullptr && std::strcmp(advertise, "0") == 0;
+}
+
 }  // namespace
 
 std::string SelectVulkanIcdManifest(
@@ -298,6 +335,11 @@ bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
         // worker so the render thread is not stuck in i915 ioctl.
         !SetDefault("MESA_VK_ENABLE_SUBMIT_THREAD", "1", error) ||
         !ApplyVulkanIcdPolicy(gpus, error)) {
+      return false;
+    }
+    if (RadvIcdSelected() &&
+        !SetDefault("vk_require_etc2",
+                    UsesCpuTextureOptions() ? "false" : "true", error)) {
       return false;
     }
     // Low FRM only on Intel-only machines. Hybrid NVIDIA/AMD laptops should

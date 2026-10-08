@@ -323,8 +323,13 @@ int BionicStrError(int error_number, char* buffer,
       ::strerror_r(error_number, host_buffer.data(), host_buffer.size());
   const char* message = HostStrErrorResult(host_result, host_buffer.data());
 
-  std::array<char, 64> unknown_buffer{};
-  if (message == nullptr) {
+  std::array<char, 256> unknown_buffer{};
+  const char* unknown_message = HostStrErrorResult(
+      ::strerror_r(-1, unknown_buffer.data(), unknown_buffer.size()),
+      unknown_buffer.data());
+  if (message == nullptr ||
+      (error_number != 0 && unknown_message != nullptr &&
+       std::strcmp(message, unknown_message) == 0)) {
     std::snprintf(unknown_buffer.data(), unknown_buffer.size(),
                   "Unknown error %d", error_number);
     message = unknown_buffer.data();
@@ -371,6 +376,10 @@ extern "C" int mocktail_bionic_cxa_thread_atexit_impl(
 
 extern "C" void mocktail_bionic_arc4random_buf(void* buffer, size_t size) {
   mocktail::compat::BionicArc4RandomBuffer(buffer, size);
+}
+
+extern "C" int mocktail_bionic_atoi(const char* text) {
+  return static_cast<int>(std::strtol(text, nullptr, 10));
 }
 
 extern "C" mocktail::compat::BionicMallinfoSnapshot mocktail_bionic_mallinfo() {

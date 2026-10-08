@@ -86,6 +86,7 @@ class VulkanEtc2Emulation final {
                           const VkCommandBuffer* secondaries);
 
   // Resubmission must reread the source bytes.
+  bool HasPendingUploads() const;
   void PrepareSubmit(const VkCommandBuffer* command_buffers,
                      std::uint32_t count);
   // Call only after the command buffer is no longer pending.

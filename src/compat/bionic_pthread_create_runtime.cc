@@ -114,7 +114,7 @@ int CopySupportedThreadAttributes(const MocktailBionicPthreadAttr& source,
   if (RejectRealtimeScheduling(source.sched_policy)) {
     return EPERM;
   }
-  if (source.sched_policy != SCHED_NORMAL) {
+  if (source.sched_policy != SCHED_OTHER) {
     result = pthread_attr_setschedpolicy(destination, source.sched_policy);
     if (result != 0) {
       return result;

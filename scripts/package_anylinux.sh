@@ -206,7 +206,13 @@ EOF
     "${ANYLINUX_TOOL}" --make-appimage
   local result="${ANYLINUX_WORK}/image/$(basename -- "${ANYLINUX_OUTPUT}")"
   [[ -x "${result}" ]] || AnyLinuxDie "quick-sharun did not create the requested AppImage"
+  if [[ -n "${UPINFO:-}" ]]; then
+    [[ -s "${result}.zsync" ]] || AnyLinuxDie "update information was set but no .zsync was generated"
+  fi
   mv -f -- "${result}" "${ANYLINUX_OUTPUT}"
+  if [[ -f "${result}.zsync" ]]; then
+    mv -fT -- "${result}.zsync" "${ANYLINUX_OUTPUT}.zsync"
+  fi
   printf '[anylinux] AppImage ready: %s\n' "${ANYLINUX_OUTPUT}" >&2
 }
 

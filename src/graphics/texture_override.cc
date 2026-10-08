@@ -82,6 +82,36 @@ void ResampleRgba(const std::uint8_t* source, std::uint32_t source_width,
       height == 0 || source_width == 0 || source_height == 0) {
     return;
   }
+  if (width == source_width && height == source_height) {
+    if (source != destination) {
+      std::memcpy(destination, source,
+                  static_cast<std::size_t>(width) * height * 4);
+    }
+    return;
+  }
+  if (width % source_width == 0 && height % source_height == 0) {
+    const std::uint32_t scale_x = width / source_width;
+    const std::uint32_t scale_y = height / source_height;
+    const std::size_t row_bytes = static_cast<std::size_t>(width) * 4;
+    std::vector<std::uint8_t> row(row_bytes);
+    for (std::uint32_t y = 0; y < source_height; ++y) {
+      const std::uint8_t* source_row =
+          source + static_cast<std::size_t>(y) * source_width * 4;
+      for (std::uint32_t x = 0; x < source_width; ++x) {
+        for (std::uint32_t repeat = 0; repeat < scale_x; ++repeat) {
+          std::memcpy(row.data() +
+                          (static_cast<std::size_t>(x) * scale_x + repeat) * 4,
+                      source_row + static_cast<std::size_t>(x) * 4, 4);
+        }
+      }
+      std::uint8_t* target_row =
+          destination + static_cast<std::size_t>(y) * scale_y * row_bytes;
+      for (std::uint32_t repeat = 0; repeat < scale_y; ++repeat) {
+        std::memcpy(target_row + repeat * row_bytes, row.data(), row_bytes);
+      }
+    }
+    return;
+  }
   for (std::uint32_t y = 0; y < height; ++y) {
     const std::uint64_t y0 = static_cast<std::uint64_t>(y) * source_height / height;
     std::uint64_t y1 =

@@ -350,7 +350,7 @@ TEST(WebViewHelperLauncherTest, OwnsAndClosesTheExactSpawnedProcess) {
   const std::filesystem::path close_packet = temporary.path() / "close-packet";
   const std::filesystem::path ready = temporary.path() / "ready";
   ASSERT_TRUE(WriteExecutable(helper,
-                              "#!/bin/sh\n"
+                              "#!/usr/bin/env bash\n"
                               "cat >/dev/null\n"
                               "touch '" +
                                   ready.string() +

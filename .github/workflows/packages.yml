@@ -36,6 +36,8 @@ jobs:
     name: AppImage (AnyLinux)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|continuous|mocktail-nightly.AppImage.zsync
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,6 +54,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
             --env GH_TOKEN \
+            --env UPINFO \
             ghcr.io/archlinux/archlinux:base-devel@sha256:c3953446016873a756fb7814f10087cac1634c127f7302e80c81c512da796d05 bash -Eeuo pipefail -c '
               pacman -Syu --noconfirm --needed \
                 cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
@@ -115,11 +118,12 @@ jobs:
               export RUNTIME=/tmp/uruntime
               export DWARFS_CMD=/tmp/mkdwarfs
               make appimage BUILD_DIR=build-appimage JOBS=4 \
-                APPIMAGE=dist/Mocktail-x86_64.AppImage \
+                APPIMAGE=dist/mocktail-nightly.AppImage \
                 PORTABLE_MODE=standalone APPIMAGE_FORMAT=anylinux \
                 ANYLINUX_PACKAGER=/tmp/quick-sharun \
                 ANYLINUX_APPIMAGETOOL=/tmp/appimagetool
-              test -x dist/Mocktail-x86_64.AppImage
+              test -x dist/mocktail-nightly.AppImage
+              test -s dist/mocktail-nightly.AppImage.zsync
             '
 
       - name: Smoke-test AppImage without FUSE
@@ -132,14 +136,17 @@ jobs:
           export XDG_CACHE_HOME="$smoke_dir/cache"
           export XDG_STATE_HOME="$smoke_dir/state"
           mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
-          timeout 60s dist/Mocktail-x86_64.AppImage --appimage-extract-and-run --help
-          timeout 60s dist/Mocktail-x86_64.AppImage --appimage-extract-and-run mocktail_updater status
+          test "$(dist/mocktail-nightly.AppImage --appimage-updateinformation)" = "$UPINFO"
+          timeout 60s dist/mocktail-nightly.AppImage --appimage-extract-and-run --help
+          timeout 60s dist/mocktail-nightly.AppImage --appimage-extract-and-run mocktail_updater status
 
       - name: Upload AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Mocktail-AppImage
-          path: dist/Mocktail-x86_64.AppImage
+          path: |
+            dist/mocktail-nightly.AppImage
+            dist/mocktail-nightly.AppImage.zsync
           if-no-files-found: error
           retention-days: 14
 
@@ -147,6 +154,8 @@ jobs:
     name: AppImage (AnyLinux aarch64)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
+    env:
+      UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|continuous|mocktail-nightly-aarch64.AppImage.zsync
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -163,6 +172,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
             --env GH_TOKEN \
+            --env UPINFO \
             ghcr.io/pkgforge-dev/archlinux:latest@sha256:b2507f1964270cab3cc190aa8df858521f6a7e45e969146a012877891d5dfc9b bash -Eeuo pipefail -c '
               test "$(uname -m)" = aarch64
               pacman-key --init
@@ -226,11 +236,12 @@ jobs:
               export RUNTIME=/tmp/uruntime
               export DWARFS_CMD=/tmp/mkdwarfs
               make appimage BUILD_DIR=build-appimage-aarch64 JOBS=4 \
-                APPIMAGE=dist/Mocktail-aarch64.AppImage \
+                APPIMAGE=dist/mocktail-nightly-aarch64.AppImage \
                 PORTABLE_MODE=standalone APPIMAGE_FORMAT=anylinux \
                 ANYLINUX_PACKAGER=/tmp/quick-sharun \
                 ANYLINUX_APPIMAGETOOL=/tmp/appimagetool
-              test -x dist/Mocktail-aarch64.AppImage
+              test -x dist/mocktail-nightly-aarch64.AppImage
+              test -s dist/mocktail-nightly-aarch64.AppImage.zsync
             '
 
       - name: Smoke-test aarch64 AppImage without FUSE
@@ -243,14 +254,17 @@ jobs:
           export XDG_CACHE_HOME="$smoke_dir/cache"
           export XDG_STATE_HOME="$smoke_dir/state"
           mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
-          timeout 60s dist/Mocktail-aarch64.AppImage --appimage-extract-and-run --help
-          timeout 60s dist/Mocktail-aarch64.AppImage --appimage-extract-and-run mocktail_updater status
+          test "$(dist/mocktail-nightly-aarch64.AppImage --appimage-updateinformation)" = "$UPINFO"
+          timeout 60s dist/mocktail-nightly-aarch64.AppImage --appimage-extract-and-run --help
+          timeout 60s dist/mocktail-nightly-aarch64.AppImage --appimage-extract-and-run mocktail_updater status
 
       - name: Upload aarch64 AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Mocktail-AppImage-aarch64
-          path: dist/Mocktail-aarch64.AppImage
+          path: |
+            dist/mocktail-nightly-aarch64.AppImage
+            dist/mocktail-nightly-aarch64.AppImage.zsync
           if-no-files-found: error
           retention-days: 14
 
@@ -419,8 +433,10 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          mv -- release/Mocktail-x86_64.AppImage release/mocktail-nightly.AppImage
-          mv -- release/Mocktail-aarch64.AppImage release/mocktail-nightly-aarch64.AppImage
+          for appimage in mocktail-nightly.AppImage mocktail-nightly-aarch64.AppImage; do
+            test -s "release/$appimage"
+            test -s "release/$appimage.zsync"
+          done
           mv -- release/*.deb release/mocktail-nightly.deb
           mv -- release/*.rpm release/mocktail-nightly.rpm
           mv -- release/*.pkg.tar.zst release/mocktail-nightly.pkg.tar.zst
@@ -475,9 +491,9 @@ jobs:
           gh release upload continuous release/* --clobber
           while IFS= read -r asset; do
             case "$asset" in
-              mocktail-nightly.AppImage|mocktail-nightly-aarch64.AppImage|mocktail-nightly.deb|mocktail-nightly.rpm|mocktail-nightly.pkg.tar.zst)
+              mocktail-nightly.AppImage|mocktail-nightly.AppImage.zsync|mocktail-nightly-aarch64.AppImage|mocktail-nightly-aarch64.AppImage.zsync|mocktail-nightly.deb|mocktail-nightly.rpm|mocktail-nightly.pkg.tar.zst)
                 ;;
-              Mocktail-*.AppImage|mocktail_*.deb|mocktail-*.deb|mocktail-*.rpm|mocktail-*.pkg.tar.zst)
+              Mocktail-*.AppImage|Mocktail-*.AppImage.zsync|mocktail_*.deb|mocktail-*.deb|mocktail-*.rpm|mocktail-*.pkg.tar.zst)
                 gh release delete-asset continuous "$asset" --yes
                 ;;
             esac

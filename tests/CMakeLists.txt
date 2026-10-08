@@ -132,6 +132,38 @@ target_link_libraries(texture_memory_policy_test PRIVATE
   GTest::gtest_main
 )
 
+find_package(PNG REQUIRED)
+add_executable(texture_resample_test
+  texture_resample_test.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(texture_resample_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(texture_resample_test PRIVATE PNG::PNG GTest::gtest_main)
+mocktail_apply_compile_options(texture_resample_test)
+
+add_executable(etc2_decoder_test
+  etc2_decoder_test.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+)
+target_include_directories(etc2_decoder_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(etc2_decoder_test PRIVATE GTest::gtest_main Threads::Threads)
+target_link_options(etc2_decoder_test PRIVATE -Wl,--wrap=pthread_create)
+mocktail_apply_compile_options(etc2_decoder_test)
+
+add_executable(vulkan_etc2_emulation_test
+  vulkan_etc2_emulation_test.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(vulkan_etc2_emulation_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(vulkan_etc2_emulation_test PRIVATE
+  Vulkan::Headers PNG::PNG GTest::gtest_main Threads::Threads
+)
+mocktail_apply_compile_options(vulkan_etc2_emulation_test)
+
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
   Mocktail::Runtime
@@ -909,6 +941,9 @@ gtest_discover_tests(failure_dialog_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)
 gtest_discover_tests(texture_memory_policy_test)
+gtest_discover_tests(texture_resample_test)
+gtest_discover_tests(etc2_decoder_test)
+gtest_discover_tests(vulkan_etc2_emulation_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)

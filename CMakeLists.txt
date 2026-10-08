@@ -557,50 +557,6 @@ target_link_libraries(mocktail_bionic_abi_exports PRIVATE
   Threads::Threads
 )
 
-include(CheckCXXSourceCompiles)
-include(CheckIncludeFileCXX)
-include(CMakePushCheckState)
-
-check_include_file_cxx(execinfo.h MOCKTAIL_HAVE_EXECINFO_H)
-if(NOT MOCKTAIL_HAVE_EXECINFO_H)
-  message(FATAL_ERROR
-    "execinfo.h is required for crash diagnostics; on musl install "
-    "libexecinfo-devel"
-  )
-endif()
-
-set(MOCKTAIL_EXECINFO_LINK_LIBRARY "")
-set(_mocktail_execinfo_link_probe [=[
-  #include <execinfo.h>
-  int main() {
-    void* frames[1] = {};
-    const int count = backtrace(frames, 1);
-    return backtrace_symbols(frames, count) == nullptr;
-  }
-]=])
-check_cxx_source_compiles(
-  "${_mocktail_execinfo_link_probe}"
-  MOCKTAIL_EXECINFO_IN_HOST_LIBC
-)
-if(NOT MOCKTAIL_EXECINFO_IN_HOST_LIBC)
-  find_library(MOCKTAIL_EXECINFO_LIBRARY NAMES execinfo REQUIRED)
-  cmake_push_check_state(RESET)
-  set(CMAKE_REQUIRED_LIBRARIES "${MOCKTAIL_EXECINFO_LIBRARY}")
-  check_cxx_source_compiles(
-    "${_mocktail_execinfo_link_probe}"
-    MOCKTAIL_EXECINFO_IN_EXTERNAL_LIBRARY
-  )
-  cmake_pop_check_state()
-  if(NOT MOCKTAIL_EXECINFO_IN_EXTERNAL_LIBRARY)
-    message(FATAL_ERROR
-      "execinfo.h is available, but backtrace and backtrace_symbols cannot "
-      "be linked"
-    )
-  endif()
-  set(MOCKTAIL_EXECINFO_LINK_LIBRARY "${MOCKTAIL_EXECINFO_LIBRARY}")
-endif()
-unset(_mocktail_execinfo_link_probe)
-
 add_library(mocktail_legacy_runtime STATIC
   src/legacy/legacy_runtime.cc
   src/runtime/roblox_text_input_jni_bridge.cc
@@ -625,7 +581,6 @@ target_link_libraries(mocktail_legacy_runtime PRIVATE
   libc_shim
   mocktail_window
   mocktail_graphics_foundation
-  ${MOCKTAIL_EXECINFO_LINK_LIBRARY}
 )
 target_compile_definitions(mocktail_legacy_runtime PRIVATE
   "MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=\"${MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST}\""

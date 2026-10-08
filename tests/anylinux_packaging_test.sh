@@ -10,6 +10,7 @@ readonly TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mocktail-anylinux-test.XXXXXX")"
 trap 'rm -rf -- "${TEMP_DIR}"' EXIT
 
 source "${ROOT}/scripts/package_anylinux.sh"
+export UPINFO=""
 mkdir -p -- "${TEMP_DIR}/fixtures"
 
 # Compile the real adapter loader and updater canary. The fake runtime
@@ -78,6 +79,18 @@ if [[ "$1" == --make-appimage ]]; then
   printf 'make-appimage\n' >>"${MOCKTAIL_PACKAGING_FIXTURES}/calls"
   mkdir -p -- "${OUTPATH}"
   cp -- "$(type -P true)" "${OUTPATH}/${OUTNAME}"
+  if [[ -n "${UPINFO:-}" ]]; then
+    printf '%s\n' "${UPINFO}" >"${OUTPATH}/update-info"
+    case "${MOCKTAIL_TEST_ZSYNC:-present}" in
+      present)
+        printf 'Filename: %s\nURL: %s\n\n\0checksum fixture' "${OUTNAME}" "${OUTNAME}" \
+          >"${OUTPATH}/${OUTNAME}.zsync"
+        cp -- "${OUTPATH}/${OUTNAME}.zsync" "${OUTPATH}/expected.zsync"
+        ;;
+      empty) touch "${OUTPATH}/${OUTNAME}.zsync" ;;
+      missing) : ;;
+    esac
+  fi
   exit 0
 fi
 [[ "$#" == 7 && "$1" == /usr/bin/mocktail &&
@@ -144,7 +157,40 @@ mkdir -p -- "${ANYLINUX_WORK}"
 AnyLinuxVerifyInstalled() { :; }
 AnyLinuxDeploy
 [[ -x "${ANYLINUX_OUTPUT}" ]]
+[[ ! -e "${ANYLINUX_OUTPUT}.zsync" ]]
 [[ "$(<"${TEMP_DIR}/fixtures/calls")" == $'deploy-usr\nmake-appimage' ]]
+
+for filename in mocktail-nightly.AppImage mocktail-nightly-aarch64.AppImage \
+    Mocktail-1.0.5-x86_64.AppImage; do
+  (
+    ANYLINUX_WORK="${TEMP_DIR}/updates/${filename}"
+    ANYLINUX_OUTPUT="${TEMP_DIR}/${filename}"
+    export UPINFO="gh-releases-zsync|owner|repository|continuous|${filename}.zsync"
+    if [[ "${filename}" == Mocktail-* ]]; then
+      UPINFO='gh-releases-zsync|owner|repository|latest|Mocktail-*-x86_64.AppImage.zsync'
+    fi
+    AnyLinuxDeploy
+    [[ "$(<"${ANYLINUX_WORK}/image/update-info")" == "${UPINFO}" ]]
+    cmp -- "${ANYLINUX_WORK}/image/expected.zsync" "${ANYLINUX_OUTPUT}.zsync"
+    grep -aFxq "URL: ${filename}" "${ANYLINUX_OUTPUT}.zsync"
+    [[ ! -e "${ANYLINUX_WORK}/image/${filename}.zsync" ]]
+  )
+done
+
+for sidecar in missing empty; do
+  if (
+    ANYLINUX_WORK="${TEMP_DIR}/updates/${sidecar}"
+    ANYLINUX_OUTPUT="${TEMP_DIR}/${sidecar}.AppImage"
+    export UPINFO="gh-releases-zsync|owner|repository|continuous|${sidecar}.AppImage.zsync"
+    export MOCKTAIL_TEST_ZSYNC="${sidecar}"
+    AnyLinuxDeploy
+  ) >"${TEMP_DIR}/${sidecar}.log" 2>&1; then
+    printf 'packager accepted a %s .zsync file\n' "${sidecar}" >&2
+    exit 1
+  fi
+  grep -Fq 'no .zsync was generated' "${TEMP_DIR}/${sidecar}.log"
+  [[ ! -e "${TEMP_DIR}/${sidecar}.AppImage" ]]
+done
 
 mv -- "${ANYLINUX_WORK}/AppDir" "${TEMP_DIR}/relocated AppDir"
 app_dir="${TEMP_DIR}/relocated AppDir"

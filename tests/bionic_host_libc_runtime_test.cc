@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <thread>
 
 #include "libc_shim/libc_shim.h"
@@ -205,6 +206,21 @@ TEST(BionicHostLibcRuntimeTest, HidesPrivilegedHostIdentityFromAndroidGuest) {
             mocktail::compat::NormalizeBionicApplicationUid(::geteuid()));
 }
 
+TEST(BionicHostLibcRuntimeTest, ParsesAtoiWithBionicOverflowBehavior) {
+  EXPECT_EQ(mocktail_bionic_atoi(""), 0);
+  EXPECT_EQ(mocktail_bionic_atoi("invalid"), 0);
+  EXPECT_EQ(mocktail_bionic_atoi("  -42suffix"), -42);
+  EXPECT_EQ(mocktail_bionic_atoi("2147483647"), INT_MAX);
+  EXPECT_EQ(mocktail_bionic_atoi("-2147483648"), INT_MIN);
+  EXPECT_EQ(mocktail_bionic_atoi("2147483648"), INT_MIN);
+  EXPECT_EQ(mocktail_bionic_atoi("4294967295"), -1);
+  EXPECT_EQ(mocktail_bionic_atoi("9999999999"), 1410065407);
+
+  errno = 0;
+  EXPECT_EQ(mocktail_bionic_atoi("9223372036854775808"), -1);
+  EXPECT_EQ(errno, ERANGE);
+}
+
 TEST(BionicHostLibcRuntimeTest, UsesBionicPosixStrErrorContract) {
   std::array<char, 128> buffer{};
 
@@ -214,9 +230,18 @@ TEST(BionicHostLibcRuntimeTest, UsesBionicPosixStrErrorContract) {
   EXPECT_NE(std::strstr(buffer.data(), "Invalid"), nullptr);
   EXPECT_EQ(errno, EDOM);
 
-  buffer.fill('\0');
-  EXPECT_EQ(mocktail_bionic_strerror_r(4567, buffer.data(), buffer.size()), 0);
-  EXPECT_NE(std::strstr(buffer.data(), "4567"), nullptr);
+  EXPECT_EQ(mocktail_bionic_strerror_r(0, buffer.data(), buffer.size()), 0);
+  EXPECT_STREQ(buffer.data(), std::strerror(0));
+  EXPECT_EQ(errno, EDOM);
+
+  for (const int error_number : {-1, 4567, INT_MIN, INT_MAX}) {
+    errno = EDOM;
+    ASSERT_EQ(mocktail_bionic_strerror_r(error_number, buffer.data(),
+                                       buffer.size()), 0);
+    EXPECT_EQ(std::string(buffer.data()),
+              "Unknown error " + std::to_string(error_number));
+    EXPECT_EQ(errno, EDOM);
+  }
 
   std::array<char, 2> truncated{};
   errno = 0;

@@ -320,6 +320,7 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
            "LOGNAME",
            "VK_DRIVER_FILES",
            "VK_ICD_FILENAMES",
+           "vk_require_etc2",
            "MESA_LOADER_DRIVER_OVERRIDE",
            "DRI_PRIME",
            "__NV_PRIME_RENDER_OFFLOAD",
@@ -467,7 +468,9 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
   }
   std::filesystem::remove_all(isolated, filesystem_error);
   if (!result.error.empty()) return result;
-  result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+  result.exit_code = WIFEXITED(status)
+                         ? WEXITSTATUS(status)
+                         : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
   if (result.exit_code != 0) {
     result.error =
         "graphics canary exited with status " +

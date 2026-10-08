@@ -1179,16 +1179,19 @@ void ReleaseEtc2PoolCommandBuffers(VkDevice device,
 
 void PrepareEtc2Submit2(std::uint32_t submit_count,
                         const VkSubmitInfo2* submits) {
-  if (submits == nullptr) {
+  if (submits == nullptr || !State().etc2.HasPendingUploads()) {
     return;
   }
+  std::vector<VkCommandBuffer> command_buffers;
   for (std::uint32_t index = 0; index < submit_count; ++index) {
     for (std::uint32_t info = 0; info < submits[index].commandBufferInfoCount;
          ++info) {
-      State().etc2.PrepareSubmit(
-          &submits[index].pCommandBufferInfos[info].commandBuffer, 1);
+      command_buffers.push_back(
+          submits[index].pCommandBufferInfos[info].commandBuffer);
     }
   }
+  State().etc2.PrepareSubmit(command_buffers.data(),
+                             static_cast<std::uint32_t>(command_buffers.size()));
 }
 
 }  // namespace
@@ -1998,10 +2001,23 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  if (submits != nullptr) {
-    for (std::uint32_t index = 0; index < submit_count; ++index) {
-      State().etc2.PrepareSubmit(submits[index].pCommandBuffers,
-                                 submits[index].commandBufferCount);
+  if (submits != nullptr && State().etc2.HasPendingUploads()) {
+    if (submit_count == 1) {
+      State().etc2.PrepareSubmit(submits->pCommandBuffers,
+                                 submits->commandBufferCount);
+    } else {
+      std::vector<VkCommandBuffer> command_buffers;
+      for (std::uint32_t index = 0; index < submit_count; ++index) {
+        if (submits[index].commandBufferCount != 0) {
+          command_buffers.insert(command_buffers.end(),
+                                   submits[index].pCommandBuffers,
+                                   submits[index].pCommandBuffers +
+                                       submits[index].commandBufferCount);
+        }
+      }
+      State().etc2.PrepareSubmit(
+          command_buffers.data(),
+          static_cast<std::uint32_t>(command_buffers.size()));
     }
   }
   const VkResult result = State().text_overlay.QueueSubmit(
