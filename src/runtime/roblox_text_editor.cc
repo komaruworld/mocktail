@@ -187,6 +187,7 @@ Status RobloxTextEditor::BeginFocusSession(RobloxTextFocusSession session) {
   SecureClear(&composition_replaced_text_);
   composition_active_ = false;
   active_shortcuts_ = 0;
+  mouse_selecting_ = false;
   snapshot_.focused = true;
   snapshot_.textbox_handle = session_.textbox_handle;
   snapshot_.generation = session_.generation;
@@ -235,6 +236,7 @@ Status RobloxTextEditor::ReplaceFocusedTextFromEngine(
   // the stale host buffer remains visible and the next word starts with it.
   if (authoritative_utf8.empty()) {
     ClearPendingNativeEchoesLocked();
+    mouse_selecting_ = false;
     SecureClear(&text_);
     cursor_byte_ = 0;
     selection_anchor_byte_ = 0;
@@ -263,6 +265,7 @@ Status RobloxTextEditor::ReplaceFocusedTextFromEngine(
   }
   SecureClear(&text_);
   text_ = std::move(authoritative_utf8);
+  mouse_selecting_ = false;
   cursor_byte_ = text_.size();
   selection_anchor_byte_ = cursor_byte_;
   composition_begin_byte_ = 0;
@@ -455,6 +458,53 @@ RobloxTextEditResult RobloxTextEditor::HandleKey(
 RobloxTextEditorSnapshot RobloxTextEditor::Snapshot() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return snapshot_;
+}
+
+bool RobloxTextEditor::HandleMouseSelection(float x, float y, bool begin,
+                                             bool extend) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!snapshot_.focused || display_sink_.hit_test == nullptr ||
+      composition_active_ || (!begin && !mouse_selecting_)) {
+    return false;
+  }
+  std::size_t offset = 0;
+  if (!display_sink_.hit_test(display_sink_.context, session_.generation, x, y,
+                              &offset)) {
+    // A frame may be rasterizing after a geometry or text update. Keep the
+    // pointer gesture owned by the editor until release, even in that frame.
+    return !begin && mouse_selecting_;
+  }
+  const Utf8Layout layout = Layout(text_);
+  const auto boundary = std::lower_bound(layout.grapheme_boundaries.begin(),
+                                         layout.grapheme_boundaries.end(),
+                                         std::min(offset, text_.size()));
+  // The renderer may return an internal offset of a shaped cluster. Never
+  // split an extended grapheme in the editor or on the clipboard.
+  offset = boundary == layout.grapheme_boundaries.end() ? text_.size()
+                                                       : *boundary;
+  if (begin) {
+    mouse_selecting_ = true;
+  }
+  (void)MoveCursorLocked(offset, extend);
+  return true;
+}
+
+bool RobloxTextEditor::EndMouseSelection() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const bool was_selecting = mouse_selecting_;
+  mouse_selecting_ = false;
+  return was_selecting;
+}
+
+bool RobloxTextEditor::ContainsFocusedPoint(float x, float y) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return snapshot_.focused && session_.area_width > 0 &&
+         session_.area_height > 0 && x >= session_.area_x &&
+         y >= session_.area_y &&
+         static_cast<double>(x) < static_cast<double>(session_.area_x) +
+                                      session_.area_width &&
+         static_cast<double>(y) < static_cast<double>(session_.area_y) +
+                                      session_.area_height;
 }
 
 RobloxTextEditResult RobloxTextEditor::ReplaceLocked(
@@ -796,6 +846,7 @@ void RobloxTextEditor::ClearLocked() {
   composition_original_anchor_byte_ = 0;
   SecureClear(&composition_replaced_text_);
   composition_active_ = false;
+  mouse_selecting_ = false;
   active_shortcuts_ = 0;
   snapshot_.focused = false;
   snapshot_.textbox_handle = 0;

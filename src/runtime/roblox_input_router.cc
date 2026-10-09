@@ -558,6 +558,11 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseMotionLocked(
   const float clamped_x = std::clamp(mouse_x_, 0.0f, max_x);
   const float clamped_y = std::clamp(mouse_y_, 0.0f, max_y);
 
+  if (text_editor_.HandleMouseSelection(clamped_x, clamped_y, false, true)) {
+    return Result(RobloxInputDispatchState::kStateUpdated,
+                  RobloxInputEventKind::kText);
+  }
+
   return NativeResultLocked(
       sink_.mouse_move(sink_.context,
                        event.relative_mode ? mouse_x_ : clamped_x,
@@ -589,6 +594,19 @@ RobloxInputDispatchResult RobloxInputRouter::HandleMouseButtonLocked(
   const float max_y = std::max(0.0F, transform.guest_height() - 1.0F);
   const float clamped_x = std::clamp(mouse_x_, 0.0f, max_x);
   const float clamped_y = std::clamp(mouse_y_, 0.0f, max_y);
+  if (event.button == SDL_BUTTON_LEFT) {
+    if (event.pressed &&
+        text_editor_.ContainsFocusedPoint(clamped_x, clamped_y) &&
+        text_editor_.HandleMouseSelection(
+            clamped_x, clamped_y, true, false)) {
+      return Result(RobloxInputDispatchState::kStateUpdated,
+                    RobloxInputEventKind::kText);
+    }
+    if (!event.pressed && text_editor_.EndMouseSelection()) {
+      return Result(RobloxInputDispatchState::kStateUpdated,
+                    RobloxInputEventKind::kText);
+    }
+  }
   // Let Roblox decide whether a click releases TextBox focus.
   Status status = sink_.mouse_button(sink_.context, clamped_x, clamped_y,
                                      event.pressed, roblox_button);

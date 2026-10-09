@@ -521,6 +521,27 @@ TEST(RobloxTextEditorTest, CtrlCopyAndCutUseTheSelectedUtf8Range) {
   EXPECT_EQ(editor.Snapshot().text_bytes, 0u);
 }
 
+TEST(RobloxTextEditorTest, CopyWithoutSelectionLeavesClipboardUntouched) {
+  Probe probe;
+  ClipboardProbe clipboard;
+  RobloxTextEditor editor(Sink(&probe), {}, &clipboard);
+  ASSERT_TRUE(editor.BeginFocusSession(Session(42, 7, u8"lobby🙂")).ok());
+
+  const auto copy = editor.HandleKey(Shortcut(SDL_SCANCODE_C));
+  EXPECT_TRUE(copy.handled);
+  EXPECT_FALSE(copy.dispatched);
+  EXPECT_EQ(clipboard.write_calls, 0);
+  EXPECT_TRUE(probe.calls.empty());
+
+  EXPECT_TRUE(editor.HandleKey(Shortcut(SDL_SCANCODE_X)).handled);
+  EXPECT_EQ(clipboard.write_calls, 0);
+  EXPECT_EQ(editor.Snapshot().text_bytes, std::string(u8"lobby🙂").size());
+
+  ASSERT_TRUE(editor.ReplaceFocusedTextFromEngine(7, "").ok());
+  EXPECT_TRUE(editor.HandleKey(Shortcut(SDL_SCANCODE_C)).handled);
+  EXPECT_EQ(clipboard.write_calls, 0);
+}
+
 TEST(RobloxTextEditorTest, PasswordCopyAndClipboardFailuresStayFailClosed) {
   Probe probe;
   ClipboardProbe clipboard;
@@ -532,6 +553,8 @@ TEST(RobloxTextEditorTest, PasswordCopyAndClipboardFailuresStayFailClosed) {
   ASSERT_TRUE(editor.HandleKey(Shortcut(SDL_SCANCODE_A)).status.ok());
 
   EXPECT_TRUE(editor.HandleKey(Shortcut(SDL_SCANCODE_C)).status.ok());
+  EXPECT_EQ(clipboard.write_calls, 0);
+  EXPECT_TRUE(editor.HandleKey(Shortcut(SDL_SCANCODE_X)).status.ok());
   EXPECT_EQ(clipboard.write_calls, 0);
   EXPECT_TRUE(editor.HandleKey(Shortcut(SDL_SCANCODE_V)).status.ok());
   EXPECT_EQ(clipboard.read_calls, 1);

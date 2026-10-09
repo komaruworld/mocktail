@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,86 @@ TEST(RobloxTextDisplayStateTest, PreservesValidNativeTextBoxGeometry) {
   EXPECT_EQ(geometry.width, 360);
   EXPECT_EQ(geometry.height, 44);
   EXPECT_FALSE(geometry.used_fallback);
+}
+
+TEST(RobloxTextDisplayStateTest, HitTestUsesRasterizedLayoutAndSelectionIsBlue) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({1280, 720, 1.0F}).ok());
+  const std::string text = "join code";
+  auto update = Show(1, text, 0);
+  update.font_size = 20.0F;
+  const RobloxTextDisplaySink sink = overlay.sink();
+  sink.update(sink.context, update);
+
+  MocktailTextOverlayFrameInfo frame;
+  ASSERT_TRUE(overlay.QueryFrame(&frame));
+  std::size_t byte = 99;
+  ASSERT_TRUE(sink.hit_test(sink.context, 1, 120.0F, 100.0F, &byte));
+  EXPECT_EQ(byte, 0u);
+  ASSERT_TRUE(sink.hit_test(sink.context, 1, 450.0F, 100.0F, &byte));
+  EXPECT_EQ(byte, text.size());
+  std::set<std::size_t> positions;
+  for (int x = 120; x <= 300; ++x) {
+    ASSERT_TRUE(sink.hit_test(sink.context, 1, static_cast<float>(x), 100.0F,
+                              &byte));
+    positions.insert(byte);
+  }
+  EXPECT_EQ(positions.size(), text.size() + 1);
+  for (std::size_t offset = 0; offset <= text.size(); ++offset) {
+    EXPECT_NE(positions.find(offset), positions.end()) << offset;
+  }
+  EXPECT_FALSE(sink.hit_test(sink.context, 2, 120.0F, 100.0F, &byte));
+
+  update.event = RobloxTextDisplayEvent::kUpdate;
+  update.selection_begin_utf16 = 0;
+  update.selection_end_utf16 = 1;
+  sink.update(sink.context, update);
+  ASSERT_TRUE(overlay.QueryFrame(&frame));
+  std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+  ASSERT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+  const auto highlight_right = [](const std::vector<std::uint8_t>& pixels,
+                                  std::uint32_t width) {
+    int right = -1;
+    for (std::size_t index = 0; index + 3 < pixels.size(); index += 4) {
+      if (pixels[index] == 65 && pixels[index + 1] == 132 &&
+          pixels[index + 2] == 228 && pixels[index + 3] == 112) {
+        right = std::max(right, static_cast<int>((index / 4) % width));
+      }
+    }
+    return right;
+  };
+  const int first_letter_right = highlight_right(rgba, frame.width);
+  ASSERT_GE(first_letter_right, 0);
+
+  update.selection_end_utf16 = 4;
+  sink.update(sink.context, update);
+  ASSERT_TRUE(overlay.QueryFrame(&frame));
+  rgba.resize(frame.rgba_bytes);
+  ASSERT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+  EXPECT_GT(highlight_right(rgba, frame.width), first_letter_right);
+  EXPECT_TRUE(overlay.Shutdown().ok());
+}
+
+TEST(RobloxTextDisplayStateTest, HitTestAdvancesByUnicodeGrapheme) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({1280, 720, 1.0F}).ok());
+  const std::string text = u8"a🙂b";
+  auto update = Show(1, text, 0);
+  update.font_size = 20.0F;
+  const RobloxTextDisplaySink sink = overlay.sink();
+  sink.update(sink.context, update);
+  MocktailTextOverlayFrameInfo frame;
+  ASSERT_TRUE(overlay.QueryFrame(&frame));
+
+  std::set<std::size_t> positions;
+  for (int x = 120; x <= 300; ++x) {
+    std::size_t offset = text.size() + 1;
+    ASSERT_TRUE(sink.hit_test(sink.context, 1, static_cast<float>(x), 100.0F,
+                              &offset));
+    positions.insert(offset);
+  }
+  EXPECT_EQ(positions, (std::set<std::size_t>{0, 1, 5, 6}));
+  EXPECT_TRUE(overlay.Shutdown().ok());
 }
 
 TEST(RobloxTextDisplayStateTest, RejectsDetachedFallbackForMissingGeometry) {
