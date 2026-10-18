@@ -1529,8 +1529,10 @@ int main(int argc, char *argv[]) {
   g_weak_ref_init(&state.primary_web_view, nullptr);
   g_weak_ref_init(&state.primary_window, nullptr);
 
+  const char* flatpak_id = std::getenv("FLATPAK_ID");
   GtkApplication *application = gtk_application_new(
-      "org.mocktail.WebViewHelper", G_APPLICATION_NON_UNIQUE);
+      flatpak_id != nullptr ? flatpak_id : "org.mocktail.WebViewHelper",
+      G_APPLICATION_NON_UNIQUE);
   state.application = application;
   g_signal_connect(application, "activate", G_CALLBACK(Activate), &state);
   state.termination_source =
