@@ -84,9 +84,13 @@ struct RobloxTextDisplayUpdate {
 struct RobloxTextDisplaySink {
   using UpdateFn = void (*)(void* context,
                             const RobloxTextDisplayUpdate& update);
+  // Resolves a guest-coordinate pointer against the rendered text layout.
+  using HitTestFn = bool (*)(void* context, uint64_t generation, float x,
+                             float y, std::size_t* byte_offset);
 
   void* context = nullptr;
   UpdateFn update = nullptr;
+  HitTestFn hit_test = nullptr;
 };
 
 struct RobloxTextSink {
@@ -146,6 +150,9 @@ class RobloxTextEditor final {
       const platform::TextEditingEvent& event);
   RobloxTextEditResult HandleKey(const platform::KeyEvent& event);
   RobloxTextEditorSnapshot Snapshot() const;
+  bool ContainsFocusedPoint(float x, float y) const;
+  bool HandleMouseSelection(float x, float y, bool begin, bool extend);
+  bool EndMouseSelection();
 
  private:
   RobloxTextEditResult ReplaceLocked(std::size_t begin, std::size_t end,
@@ -185,6 +192,7 @@ class RobloxTextEditor final {
   std::size_t composition_original_anchor_byte_ = 0;
   std::string composition_replaced_text_;
   bool composition_active_ = false;
+  bool mouse_selecting_ = false;
   uint32_t active_shortcuts_ = 0;
   std::deque<std::string> pending_native_echoes_;
   std::size_t pending_native_echo_bytes_ = 0;
