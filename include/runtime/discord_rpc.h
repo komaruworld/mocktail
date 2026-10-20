@@ -27,7 +27,8 @@ std::string BuildDiscordJoinUrl(const RobloxExperienceLaunchRequest& request);
 DiscordRpcActivity BuildDiscordRpcActivity(
     const DiscordRpcConfig& config, RobloxExperiencePresencePhase phase,
     const RobloxExperienceLaunchRequest* request, std::string place_name,
-    int64_t session_started_at, std::string place_icon_url = {});
+    int64_t session_started_at, std::string place_icon_url = {},
+    std::string creator_name = {});
 
 // Maintains a direct, unauthenticated Discord Desktop RPC connection. The
 // worker owns all network and IPC work; lifecycle notifications only replace
