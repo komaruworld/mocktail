@@ -264,6 +264,10 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       keyboard.has_value()) {
     config.input_capabilities_.keyboard_enabled = *keyboard;
   }
+  config.controller_vibration_ =
+      ReadBoolean(environment, "MOCKTAIL_CONTROLLER_VIBRATION",
+                  config.controller_vibration_,
+                  &config.controller_vibration_valid_);
   bool customized_device = false;
   config.device_profile_valid_ =
       config.device_profile_valid_ &&

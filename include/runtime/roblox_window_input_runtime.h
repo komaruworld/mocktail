@@ -6,6 +6,7 @@
 #include "mocktail/platform/sdl_gamepad_manager.h"
 #include "mocktail/platform/text_clipboard.h"
 #include "mocktail/status.h"
+#include "runtime/roblox_haptics.h"
 #include "runtime/roblox_input_native_adapter.h"
 #include "runtime/roblox_text_surface_overlay.h"
 
@@ -19,7 +20,8 @@ namespace runtime {
 class RobloxWindowInputRuntime final {
  public:
   RobloxWindowInputRuntime(JniEnvironmentProvider environment,
-                           RobloxInputSymbols symbols);
+                           RobloxInputSymbols symbols,
+                           std::shared_ptr<RobloxHaptics> haptics);
   ~RobloxWindowInputRuntime();
 
   RobloxWindowInputRuntime(const RobloxWindowInputRuntime&) = delete;
@@ -38,6 +40,8 @@ class RobloxWindowInputRuntime final {
   RobloxInputSnapshot Snapshot() const;
 
  private:
+  void SynchronizeHapticsTarget();
+  static bool HapticsPump(void* context);
   static void PlatformEventCallback(void* context,
                                     const platform::PlatformEvent& event);
   static bool MouseLockQueryCallback(void* context, bool* locked_center);
@@ -48,6 +52,11 @@ class RobloxWindowInputRuntime final {
   std::unique_ptr<platform::TextClipboard> text_clipboard_;
   RobloxInputRuntime runtime_;
   platform::SdlGamepadManager gamepads_;
+  std::shared_ptr<RobloxHaptics> haptics_;
+  SDL_JoystickID haptics_target_ = 0;
+  float last_rumble_ = 0;
+  uint64_t last_rumble_ns_ = 0;
+  bool haptics_pump_registered_ = false;
   bool observer_registered_ = false;
   bool mouse_lock_query_registered_ = false;
   bool initialized_ = false;

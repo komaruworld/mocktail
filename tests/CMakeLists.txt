@@ -395,6 +395,15 @@ target_link_libraries(roblox_permissions_bridge_test PRIVATE
 )
 mocktail_apply_compile_options(roblox_permissions_bridge_test)
 
+add_executable(roblox_haptics_test roblox_haptics_test.cc)
+target_link_libraries(roblox_haptics_test PRIVATE
+  Mocktail::LegacyJni
+  Mocktail::Runtime
+  GTest::gtest_main
+  Threads::Threads
+)
+mocktail_apply_compile_options(roblox_haptics_test)
+
 add_executable(roblox_browser_service_bridge_test
   roblox_browser_service_bridge_test.cc
 )
@@ -975,6 +984,7 @@ gtest_discover_tests(roblox_game_session_native_adapter_test)
 gtest_discover_tests(roblox_experience_launch_bridge_test)
 gtest_discover_tests(roblox_web_view_bridge_test)
 gtest_discover_tests(roblox_permissions_bridge_test)
+gtest_discover_tests(roblox_haptics_test)
 gtest_discover_tests(roblox_browser_service_bridge_test)
 gtest_discover_tests(roblox_fresh_game_launch_controller_test)
 gtest_discover_tests(roblox_experience_composition_test)

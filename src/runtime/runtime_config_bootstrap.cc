@@ -83,6 +83,11 @@ performance:
   # client library are available. Supported values: auto, on, off.
   gamemode: auto
 
+input:
+  # Boolean (default: true): translate Roblox phone haptics into controller
+  # rumble. Set false to disable vibration. Restart Mocktail to apply.
+  controller_vibration: true
+
 audio:
   # String (default: default): `default` follows the host system output.
   # To pin output, copy an exact SDL device name printed during startup.

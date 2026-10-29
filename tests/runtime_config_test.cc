@@ -457,6 +457,27 @@ TEST(RuntimeConfigTest, AllowsOnlyEmptyOrZeroDetachedThreadOverrides) {
   EXPECT_TRUE(config.unsafe_detached_thread_overrides().empty());
 }
 
+TEST(RuntimeConfigTest, ControllerVibrationDefaultsAndBooleanOverrides) {
+  const auto defaults = RuntimeConfig::FromEnvironment(MapEnvironment());
+  EXPECT_TRUE(defaults.controller_vibration());
+  EXPECT_TRUE(defaults.controller_vibration_valid());
+  for (const char* value : {"0", "false", "off"}) {
+    const auto config = RuntimeConfig::FromEnvironment(
+        MapEnvironment({{"MOCKTAIL_CONTROLLER_VIBRATION", value}}));
+    EXPECT_FALSE(config.controller_vibration()) << value;
+    EXPECT_TRUE(config.controller_vibration_valid()) << value;
+  }
+  for (const char* value : {"1", "true", "on"}) {
+    const auto config = RuntimeConfig::FromEnvironment(
+        MapEnvironment({{"MOCKTAIL_CONTROLLER_VIBRATION", value}}));
+    EXPECT_TRUE(config.controller_vibration()) << value;
+    EXPECT_TRUE(config.controller_vibration_valid()) << value;
+  }
+  const auto invalid = RuntimeConfig::FromEnvironment(
+      MapEnvironment({{"MOCKTAIL_CONTROLLER_VIBRATION", "sometimes"}}));
+  EXPECT_FALSE(invalid.controller_vibration_valid());
+}
+
 TEST(RuntimeConfigTest, ReportsUnsafeOverridesInStablePolicyOrder) {
   const MapEnvironment environment({
       {"MOCKTAIL_SEND_GAME_LOADED_THREAD", "1"},
