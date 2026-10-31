@@ -6690,6 +6690,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                   << platform_protocol_status.message() << '\n';
         return EXIT_FAILURE;
       }
+      const mocktail::Status haptics_status =
+          experience_composition->InitializeHaptics(
+              platform_web_symbols.update_mobile_haptics_state,
+              runtime_config.controller_vibration());
+      if (!haptics_status.ok()) {
+        std::cerr << "  [haptics] unavailable: " << haptics_status.message()
+                  << '\n';
+      }
       std::cout
           << "  [platform] WebView, BrowserService and Permissions protocols "
              "initialized before native bootstrap\n"
@@ -6909,7 +6917,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
           raw_vm, jni_vm.get(), &RestoreGameSessionJniEnvironment};
       window_input_runtime =
           std::make_shared<mocktail::runtime::RobloxWindowInputRuntime>(
-              input_environment, roblox_capabilities.input);
+              input_environment, roblox_capabilities.input,
+              experience_composition != nullptr
+                  ? experience_composition->haptics()
+                  : nullptr);
       const mocktail::Status input_status = window_input_runtime->Initialize();
       if (!input_status.ok()) {
         std::cerr << "[FATAL] Typed production input did not initialize: "

@@ -99,6 +99,10 @@ class RuntimeConfig {
   const InputCapabilityConfig& input_capabilities() const {
     return input_capabilities_;
   }
+  bool controller_vibration() const { return controller_vibration_; }
+  bool controller_vibration_valid() const {
+    return controller_vibration_valid_;
+  }
   const DeviceProfile& device_profile() const { return device_profile_; }
   bool device_profile_valid() const { return device_profile_valid_; }
   bool desktop_playability() const {
@@ -160,6 +164,8 @@ class RuntimeConfig {
   WindowConfig window_;
   std::string theme_mode_ = "roblox";
   InputCapabilityConfig input_capabilities_;
+  bool controller_vibration_ = true;
+  bool controller_vibration_valid_ = true;
   DeviceProfile device_profile_ = *FindDeviceProfile(kDefaultDeviceProfileName);
   bool device_profile_valid_ = true;
   std::optional<std::string> roblox_http_user_agent_;

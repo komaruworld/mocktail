@@ -185,6 +185,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
        "window.title",
        "window.high_dpi",
        "input.touch_enabled",
+       "input.controller_vibration",
       "compatibility.desktop_playability",
       "network.use_system_proxy",
       "network.proxy_host",
@@ -444,6 +445,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)["MOCKTAIL_TOUCH_MODE"] = parsed ? "on" : "off";
+  }
+  if (const auto vibration = value("input.controller_vibration");
+      vibration.has_value()) {
+    bool parsed = false;
+    if (!ParseBoolean(*vibration, &parsed)) {
+      *error = "input.controller_vibration must be true or false";
+      return false;
+    }
+    (*environment)["MOCKTAIL_CONTROLLER_VIBRATION"] = parsed ? "1" : "0";
   }
   if (const auto desktop_playability =
           value("compatibility.desktop_playability");
@@ -781,6 +791,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     result.error = "theme mode is invalid";
   } else if (!result.config.window().high_dpi_valid) {
     result.error = "window high-DPI policy is invalid";
+  } else if (!result.config.controller_vibration_valid()) {
+    result.error = "controller vibration policy is invalid";
   } else if (result.config.vsync_mode() != "auto" &&
              result.config.vsync_mode() != "on" &&
              result.config.vsync_mode() != "off") {
@@ -834,6 +846,12 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
   if (!config.audio_input_device_valid()) {
     if (error != nullptr) {
       *error = "cannot export an invalid audio input device";
+    }
+    return false;
+  }
+  if (!config.controller_vibration_valid()) {
+    if (error != nullptr) {
+      *error = "cannot export an invalid controller vibration policy";
     }
     return false;
   }
@@ -915,6 +933,8 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
           config.input_capabilities().keyboard_enabled ? "on" : "off", error) &&
       SetEnvironmentValue("MOCKTAIL_DESKTOP_PLAYABILITY",
                           config.desktop_playability() ? "1" : "0", error) &&
+      SetEnvironmentValue("MOCKTAIL_CONTROLLER_VIBRATION",
+                          config.controller_vibration() ? "1" : "0", error) &&
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",
                           FrameRateValue(config.frame_rate()), error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&

@@ -464,6 +464,39 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
   return Status::Ok();
 }
 
+Status RobloxExperienceComposition::InitializeHaptics(
+    UpdateMobileHapticsStateFn update_state, bool enabled) {
+  RobloxMessageBusObjects haptics_objects;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (haptics_bridge_ != nullptr || objects_ == nullptr ||
+        objects_->message_bus == nullptr) {
+      return FailedPrecondition("haptics lifecycle is unavailable");
+    }
+    haptics_objects.message_bus = objects_->message_bus;
+  }
+  haptics_objects.context = jni_factory_.context;
+  haptics_objects.create_raw_callback = jni_factory_.create_raw_callback;
+  haptics_objects.clear_raw_callback = jni_factory_.clear_raw_callback;
+  haptics_objects.create_async_handler =
+      jni_factory_.create_async_request_handler;
+  haptics_objects.clear_async_handler =
+      jni_factory_.clear_async_request_handler;
+  haptics_->SetEnabled(enabled);
+  auto haptics_bridge = std::make_unique<RobloxHapticsBridge>(
+      environment_, permissions_symbols_, haptics_objects, haptics_,
+      update_state);
+  const Status status = haptics_bridge->Initialize();
+  if (!status.ok()) {
+    return status;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    haptics_bridge_ = std::move(haptics_bridge);
+  }
+  return Status::Ok();
+}
+
 Status RobloxExperienceComposition::OnLuaAppReady(
     RobloxLuaAppExperienceReadiness readiness) {
   if (!readiness.complete()) {
@@ -999,6 +1032,8 @@ Status RobloxExperienceComposition::RouteCurrentWebSurfaceEvent(
 Status RobloxExperienceComposition::DrainPlatformEvents() {
   RobloxWebViewBridge* web_view_bridge = nullptr;
   RobloxBrowserServiceBridge* browser_service_bridge = nullptr;
+  RobloxHapticsBridge* haptics_bridge = nullptr;
+  jclass native_gl_class = nullptr;
   std::shared_ptr<WebViewHelperProcess> web_surface_process;
   uint64_t process_generation = 0;
   uint64_t logical_generation = 0;
@@ -1006,9 +1041,15 @@ Status RobloxExperienceComposition::DrainPlatformEvents() {
     std::lock_guard<std::mutex> lock(mutex_);
     web_view_bridge = web_view_bridge_.get();
     browser_service_bridge = browser_service_bridge_.get();
+    haptics_bridge = haptics_bridge_.get();
+    native_gl_class =
+        objects_ != nullptr ? objects_->native_gl_class : nullptr;
     web_surface_process = web_surface_process_;
     process_generation = web_surface_process_generation_;
     logical_generation = web_surface_logical_generation_;
+  }
+  if (haptics_bridge != nullptr) {
+    haptics_bridge->RefreshCapabilities(native_gl_class);
   }
   const auto drain_helper =
       [&](const std::shared_ptr<WebViewHelperProcess>& process,
@@ -1262,6 +1303,7 @@ Status RobloxExperienceComposition::DrainExternalLaunchRequests() {
 }
 
 void RobloxExperienceComposition::NotifyLuaAppDidReturn() {
+  haptics_->Cancel();
   std::lock_guard<std::mutex> lock(mutex_);
   if (subscribed_)
     lua_app_return_pending_ = true;
@@ -1491,6 +1533,7 @@ void RobloxExperienceComposition::RunActiveLaunch() {
 }
 
 Status RobloxExperienceComposition::LeaveGame() {
+  haptics_->Cancel();
   std::shared_ptr<RobloxFreshGameLaunchController> controller;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1590,6 +1633,7 @@ Status RobloxExperienceComposition::Shutdown() {
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge;
   std::unique_ptr<RobloxPermissionsBridge> permissions_bridge;
   std::unique_ptr<RobloxCallProtocolBridge> call_protocol_bridge;
+  std::unique_ptr<RobloxHapticsBridge> haptics_bridge;
   std::shared_ptr<WebViewHelperProcess> web_surface_process;
   jnivm::VM* late_lifecycle_vm = nullptr;
   {
@@ -1614,6 +1658,7 @@ Status RobloxExperienceComposition::Shutdown() {
     browser_service_bridge = std::move(browser_service_bridge_);
     permissions_bridge = std::move(permissions_bridge_);
     call_protocol_bridge = std::move(call_protocol_bridge_);
+    haptics_bridge = std::move(haptics_bridge_);
     web_surface_process = std::move(web_surface_process_);
     web_surface_logical_exit_observer_ = {};
     web_surface_route_ = WebSurfaceRoute::kNone;
@@ -1630,9 +1675,14 @@ Status RobloxExperienceComposition::Shutdown() {
   if (web_surface_process != nullptr) {
     (void)web_surface_process->RequestClose();
   }
-  Status status = call_protocol_bridge != nullptr
-                      ? call_protocol_bridge->Shutdown()
-                      : Status::Ok();
+  haptics_->Cancel();
+  Status status = haptics_bridge != nullptr ? haptics_bridge->Shutdown()
+                                            : Status::Ok();
+  const Status call_protocol_status = call_protocol_bridge != nullptr
+                                          ? call_protocol_bridge->Shutdown()
+                                          : Status::Ok();
+  if (status.ok())
+    status = call_protocol_status;
   const Status permissions_status = permissions_bridge != nullptr
                                         ? permissions_bridge->Shutdown()
                                         : Status::Ok();
@@ -1655,6 +1705,7 @@ Status RobloxExperienceComposition::Shutdown() {
   }
   browser_service_bridge.reset();
   call_protocol_bridge.reset();
+  haptics_bridge.reset();
   permissions_bridge.reset();
   web_view_bridge.reset();
   bridge.reset();
