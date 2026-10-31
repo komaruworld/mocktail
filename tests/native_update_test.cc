@@ -285,6 +285,153 @@ TEST(ReadinessCanaryTest, ReportsTerminatingSignal) {
                              std::to_string(128 + SIGTERM));
 }
 
+TEST(ReadinessCanaryTest, AcceptsTeardownCrashAfterReadiness) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        "'[compat] legacy binary patches: disabled' "
+        "'[compat] signal-recovery handler disabled' "
+        "'[compat] native allocator retained; host allocator bridges "
+        "disabled' "
+        "'[window] first Roblox Vulkan frame presented' "
+        "'[window] vkQueuePresentKHR #240 window=0x1234' "
+        "'[window] automatic exit requested 5000 ms after first present' "
+        "'[main] window closed, shutting down' "
+        "'[FLog::Graphics] Vulkan: Saved pipeline cache (178167 bytes, "
+        "hash 1)'\n"
+        "kill -SEGV $$\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_TRUE(result.teardown_crash);
+  EXPECT_EQ(result.exit_code, 128 + SIGSEGV);
+}
+
+TEST(ReadinessCanaryTest, RejectsNonCrashExitAfterReadiness) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        "'[compat] legacy binary patches: disabled' "
+        "'[compat] signal-recovery handler disabled' "
+        "'[compat] native allocator retained; host allocator bridges "
+        "disabled' "
+        "'[window] first Roblox Vulkan frame presented' "
+        "'[window] vkQueuePresentKHR #240 window=0x1234' "
+        "'[window] automatic exit requested 5000 ms after first present' "
+        "'[main] window closed, shutting down'\n"
+        "exit 1\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_FALSE(result.teardown_crash);
+  EXPECT_EQ(result.exit_code, 1);
+}
+
+TEST(ReadinessCanaryTest, RejectsCrashBeforeReadinessCompletes) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        "'[compat] legacy binary patches: disabled' "
+        "'[compat] signal-recovery handler disabled' "
+        "'[compat] native allocator retained; host allocator bridges "
+        "disabled' "
+        "'[window] first Roblox Vulkan frame presented' "
+        "'[window] vkQueuePresentKHR #12 window=0x1234'\n"
+        "kill -SEGV $$\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_FALSE(result.teardown_crash);
+  EXPECT_EQ(result.exit_code, 128 + SIGSEGV);
+  EXPECT_EQ(result.error, "graphics canary exited with status " +
+                             std::to_string(128 + SIGSEGV));
+}
+
+TEST(ReadinessCanaryTest, TeardownCrashLogStillRequiresRealEvidence) {
+  const std::string crashed =
+      "[compat] legacy binary patches: disabled\n"
+      "[compat] signal-recovery handler disabled\n"
+      "[compat] native allocator retained; host allocator bridges disabled\n"
+      "[window] first Roblox Vulkan frame presented\n"
+      "[window] vkQueuePresentKHR #240 window=0x1234\n"
+      "[window] automatic exit requested 5000 ms after first present\n"
+      "[main] window closed, shutting down\n"
+      "[FLog::Graphics] Vulkan: Saved pipeline cache (178167 bytes, "
+      "hash 1)\n";
+  std::string error;
+  EXPECT_TRUE(ValidateTeardownCrashLog(CanaryGraphicsBackend::kDirectVulkan,
+                                       crashed, &error))
+      << error;
+  error.clear();
+  EXPECT_FALSE(ValidateReadinessLog(CanaryGraphicsBackend::kDirectVulkan,
+                                    crashed, &error));
+
+  std::string no_auto_exit = crashed;
+  const std::string exit_marker =
+      "[window] automatic exit requested 5000 ms after first present\n"
+      "[main] window closed, shutting down\n";
+  no_auto_exit.erase(no_auto_exit.find(exit_marker), exit_marker.size());
+  error.clear();
+  EXPECT_FALSE(ValidateTeardownCrashLog(CanaryGraphicsBackend::kDirectVulkan,
+                                        no_auto_exit, &error));
+
+  error.clear();
+  EXPECT_FALSE(ValidateTeardownCrashLog(
+      CanaryGraphicsBackend::kDirectVulkan, crashed + "[FATAL] boom\n",
+      &error));
+
+  const std::string fmod_submission =
+      "[mocktail][audio] fmod_java first_submission submitted_buffers=4 "
+      "submitted_bytes=16384 consumed_buffers=0 consumed_bytes=0 "
+      "discarded_buffers=0 discarded_bytes=0 pending_buffers=4\n";
+  error.clear();
+  EXPECT_FALSE(ValidateTeardownCrashLog(
+      CanaryGraphicsBackend::kDirectVulkan, crashed + fmod_submission,
+      &error));
+
+  const std::string fmod_consumed =
+      fmod_submission +
+      "[mocktail][audio] fmod_java first_consumption submitted_buffers=4 "
+      "submitted_bytes=16384 consumed_buffers=1 consumed_bytes=4096 "
+      "discarded_buffers=0 discarded_bytes=0 pending_buffers=3\n";
+  error.clear();
+  EXPECT_TRUE(ValidateTeardownCrashLog(
+      CanaryGraphicsBackend::kDirectVulkan, crashed + fmod_consumed,
+      &error))
+      << error;
+
+  error.clear();
+  EXPECT_FALSE(ValidateTeardownCrashLog(
+      CanaryGraphicsBackend::kDirectVulkan,
+      crashed + fmod_consumed +
+          "[mocktail][audio] fmod_java write_failed reason=test\n",
+      &error));
+}
+
 TEST(ReadinessCanaryTest, AcceptsRealPresentWithoutShaderPackSummary) {
   const std::string valid =
       "[compat] legacy binary patches: disabled\n"

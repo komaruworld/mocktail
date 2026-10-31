@@ -21,6 +21,7 @@ namespace {
 struct FmodJniAudioBridgeContext {
   FmodJavaAudioRuntime runtime;
   std::atomic<bool> logged_first_submission{false};
+  std::atomic<bool> logged_first_consumption{false};
   std::atomic<std::uint64_t> rejected_writes{0};
   std::mutex log_mutex;
 };
@@ -75,6 +76,12 @@ bool Write(void* opaque_context, const void* identity,
   if (!context->logged_first_submission.exchange(true,
                                                   std::memory_order_relaxed)) {
     LogRuntimeStats("first_submission", context);
+  }
+  if (!context->logged_first_consumption.load(
+          std::memory_order_relaxed) &&
+      context->runtime.GetStats().consumed_buffers != 0) {
+    LogRuntimeStats("first_consumption", context);
+    context->logged_first_consumption.store(true, std::memory_order_relaxed);
   }
   return true;
 }
