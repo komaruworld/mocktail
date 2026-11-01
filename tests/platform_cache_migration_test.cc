@@ -344,7 +344,7 @@ TEST(PlatformCacheMigrationTest, UnknownAccountThemeUsesAuthenticatedTheme) {
   TemporaryDirectory temporary;
   FixturePaths fixture = PathsFor(temporary);
   const nlohmann::json invalid_themes[] = {
-      "system", "", nullptr, false, 42, nlohmann::json::object()};
+      "", nullptr, false, 42, nlohmann::json::object()};
   for (const auto& theme : invalid_themes) {
     SCOPED_TRACE(theme.dump());
     const nlohmann::json device_themes = {{"42", theme}, {"99", "dark"}};
@@ -380,10 +380,34 @@ TEST(PlatformCacheMigrationTest, MalformedDeviceThemesUseAuthenticatedTheme) {
   }
 }
 
-TEST(PlatformCacheMigrationTest, UnknownThemesUseCallerDefault) {
+TEST(PlatformCacheMigrationTest, SystemThemesRequestHostTheme) {
   TemporaryDirectory temporary;
   FixturePaths fixture = PathsFor(temporary);
   const nlohmann::json device_themes = {{"42", "system"}};
+  ASSERT_TRUE(WriteJson(fixture.app_storage,
+                        {{"DeviceLevelTheme", device_themes.dump()},
+                         {"AuthenticatedTheme", "light"},
+                         {"UnrelatedPreference", "keep"}}));
+  const std::string original = ReadFile(fixture.app_storage);
+
+  const auto account = ReadRobloxThemeCache(fixture.app_storage, 42);
+  ASSERT_TRUE(account) << account.error;
+  EXPECT_TRUE(account.system_theme);
+  EXPECT_FALSE(account.dark_theme.has_value());
+  EXPECT_EQ(ReadFile(fixture.app_storage), original);
+
+  ASSERT_TRUE(WriteJson(fixture.app_storage,
+                        {{"AuthenticatedTheme", "system"}}));
+  const auto authenticated = ReadRobloxThemeCache(fixture.app_storage, -1);
+  ASSERT_TRUE(authenticated) << authenticated.error;
+  EXPECT_TRUE(authenticated.system_theme);
+  EXPECT_FALSE(authenticated.dark_theme.has_value());
+}
+
+TEST(PlatformCacheMigrationTest, UnknownThemesUseCallerDefault) {
+  TemporaryDirectory temporary;
+  FixturePaths fixture = PathsFor(temporary);
+  const nlohmann::json device_themes = {{"99", "system"}};
   const nlohmann::json invalid_themes[] = {
       "future-theme", "", nullptr, true, 42, nlohmann::json::array()};
   for (const auto& theme : invalid_themes) {
