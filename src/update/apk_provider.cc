@@ -29,16 +29,22 @@ ProviderVersion ProviderChain::CheckLatest() const {
   std::string failures;
   for (const std::unique_ptr<ApkProvider>& provider : providers_) {
     const ProviderVersion version = provider->CheckLatest();
-    if (version) return version;
-    AppendFailure(&failures, provider->name(), version.error);
+    if (version) {
+      if (!result || version.version_code > result.version_code)
+        result = version;
+    } else {
+      AppendFailure(
+          &failures, provider->name(),
+          version.error.empty() ? "invalid version identity" : version.error);
+    }
   }
-  result.error = std::move(failures);
+  if (!result) result.error = std::move(failures);
   return result;
 }
 
 ProviderDownloadResult ProviderChain::DownloadExact(
-    std::string_view version, const std::filesystem::path& output_directory,
-    int progress_fd) const {
+    const ProviderVersion& version,
+    const std::filesystem::path& output_directory, int progress_fd) const {
   ProviderDownloadResult result;
   if (providers_.empty()) {
     result.error = "no APK provider is configured";

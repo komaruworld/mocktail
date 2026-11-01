@@ -195,6 +195,13 @@ InstallHostAbiExperiment(uintptr_t library_base, const HostAbiProfile &profile,
                          const HostAbiExperimentOptions &options) noexcept {
   HostAbiExperimentResult result;
   result.uses_native_mimalloc = !options.install_allocator_bridges;
+  if (!profile.host_allocator_bridges_supported &&
+      (options.install_allocator_bridges || options.seed_allocator_object ||
+       options.seed_empty_string || options.initialize_arena ||
+       options.seed_jni_singleton)) {
+    result.error = "this host ABI profile only supports native mimalloc";
+    return result;
+  }
   if (library_base == 0 || profile.bridge_entry_count == 0 ||
       profile.bridge_entry_count > profile.bridge_entries.size()) {
     result.error = "invalid host ABI profile";

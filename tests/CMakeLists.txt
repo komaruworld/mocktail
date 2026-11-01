@@ -78,6 +78,16 @@ target_compile_definitions(native_update_test PRIVATE
   MOCKTAIL_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
 )
 
+add_executable(http_download_fixture http_download_fixture.cc)
+target_link_libraries(http_download_fixture PRIVATE Mocktail::Update)
+mocktail_apply_compile_options(http_download_fixture)
+if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
+  add_test(NAME HttpDownloadIntegrationTest.Resume
+    COMMAND ${MOCKTAIL_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/http_download_integration_test.py
+            $<TARGET_FILE:http_download_fixture> ${MOCKTAIL_TEST_OPENSSL})
+  set_tests_properties(HttpDownloadIntegrationTest.Resume PROPERTIES TIMEOUT 60)
+endif()
+
 add_executable(compatibility_catalog_test compatibility_catalog_test.cc)
 target_link_libraries(compatibility_catalog_test PRIVATE
   Mocktail::Update

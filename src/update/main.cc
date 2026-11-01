@@ -168,7 +168,7 @@ void Usage(std::ostream& output) {
   output << "Usage: mocktail_updater COMMAND [OPTIONS]\n\n"
             "Commands:\n"
             "  update [--startup-preflight] [--no-latest-check] "
-            "[--skip-canary]\n"
+            "[--skip-canary] [--download-only]\n"
             "  check-latest\n"
             "  verify-current\n"
             "  verify-apk APK\n"
@@ -336,6 +336,8 @@ int main(int argc, char** argv) {
       request.startup_preflight = true;
     } else if (option == "--no-latest-check") {
       request.check_latest = false;
+    } else if (option == "--download-only") {
+      request.download_only = true;
     } else if (option == "--skip-canary") {
       request.run_canary = false;
     } else if (option == "--force-run-latest") {
@@ -346,9 +348,11 @@ int main(int argc, char** argv) {
     }
   }
   if (request.force_run_latest &&
-      (request.startup_preflight || !request.check_latest || !request.run_canary)) {
+      (request.startup_preflight || request.download_only ||
+       !request.check_latest || !request.run_canary)) {
     std::cerr << "[native-updater] --force-run-latest cannot be combined with "
-                 "--startup-preflight, --no-latest-check, or --skip-canary\n";
+                 "--startup-preflight, --download-only, --no-latest-check, or "
+                 "--skip-canary\n";
     return 2;
   }
   if (request.force_run_latest) {

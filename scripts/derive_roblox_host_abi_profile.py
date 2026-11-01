@@ -786,7 +786,7 @@ def validate_profile_shape(profile: dict[str, Any], anchors: dict[str, Any]) -> 
             "native_mimalloc_thread_initializer_after_constructor",
             "native_pre_jni_bootstrap",
             "default_allocator_strategy",
-        },
+        } | ({"host_allocator_bridges_supported"} if "host_allocator_bridges_supported" in profile else set()),
         "reference profile",
     )
     require_exact_keys(
@@ -797,7 +797,7 @@ def validate_profile_shape(profile: dict[str, Any], anchors: dict[str, Any]) -> 
             "empty_string_initializer_rva",
             "jni_singleton_initializer_rva",
             "constructor_rvas",
-        },
+        } | ({"constructor_indices"} if "constructor_indices" in anchors else set()),
         "reference derivation anchors",
     )
     bridge_entries = profile.get("bridge_entries")
@@ -925,6 +925,24 @@ def validate_profile_shape(profile: dict[str, Any], anchors: dict[str, Any]) -> 
     for index, value in constructor_rvas.items():
         parse_rva(value, f"constructor {index} anchor")
 
+    if type(profile.get("host_allocator_bridges_supported", True)) is not bool:
+        raise AnalyzerError("host allocator bridge support must be boolean")
+    indices = anchors.get("constructor_indices", {str(i): i for i in (2, 3, 4, 5)})
+    if (not isinstance(indices, dict) or set(indices) != {"2", "3", "4", "5"}
+            or any(type(i) is not int or not 2 <= i < init_count for i in indices.values())
+            or len(set(indices.values())) != 4 or thread_index != indices["2"]):
+        raise AnalyzerError("reference constructor roles are inconsistent")
+    if (profile.get("host_allocator_bridges_supported", True)
+            and "constructor_indices" in anchors
+            and indices != {str(i): thread_index + i - 2 for i in (2, 3, 4, 5)}):
+        raise AnalyzerError("host bridges require the original constructor order")
+    if not profile.get("host_allocator_bridges_supported", True):
+        full_range = [{"begin": 2, "end_exclusive": init_count}]
+        if (profile["constructor_run_ranges"] != full_range
+                or profile["native_mimalloc_constructor_run_ranges"] != full_range
+                or "constructor_indices" not in anchors):
+            raise AnalyzerError("native-only profile must replay all non-reserved constructors")
+
 
 def validated_payload_metadata(
     path: Path, candidate_path: Path, candidate: ElfImage
@@ -970,8 +988,8 @@ def disassemble(image: ElfImage, rva: int, instruction_count: int) -> tuple[Any,
     decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     decoder.detail = True
     instructions = tuple(
-        decoder.disasm(image.bytes_at(offset, available, "code signature"), rva)
-    )[:instruction_count]
+        decoder.disasm(image.bytes_at(offset, available, "code signature"), rva, instruction_count)
+    )
     if len(instructions) != instruction_count or instructions[0].address != rva:
         raise AnalyzerError(
             f"cannot decode {instruction_count} instructions at 0x{rva:x}"
@@ -1166,10 +1184,6 @@ def find_signature_matches(
         raise AnalyzerError(
             f"signature {spec.name} matched 0 candidate locations"
         )
-    if not allow_multiple_candidates and len(matches) != 1:
-        raise AnalyzerError(
-            f"signature {spec.name} matched {len(matches)} candidate locations"
-        )
     semantic_matches = []
     semantic_errors = []
     for match in matches:
@@ -1193,6 +1207,10 @@ def find_signature_matches(
         )
     if not semantic_matches and len(matches) == 1 and semantic_errors:
         raise semantic_errors[0]
+    if not allow_multiple_candidates and len(semantic_matches) != 1:
+        raise AnalyzerError(
+            f"signature {spec.name} matched {len(semantic_matches)} semantic candidate locations"
+        )
     return tuple(semantic_matches)
 
 
@@ -1613,6 +1631,51 @@ def find_registry_function_entry(
     return entries[0]
 
 
+def normalized_registry_body(instructions: Sequence[Any]) -> tuple[Any, ...]:
+    if len(instructions) != 11:
+        raise AnalyzerError("registry body instruction count changed")
+
+    def register(index: int, operand: int, size: int) -> str:
+        values = instructions[index].operands
+        if (operand >= len(values) or values[operand].type != capstone_x86.X86_OP_REG
+                or values[operand].size != size):
+            return ""
+        return instructions[index].reg_name(values[operand].reg)
+
+    zero = register(3, 0, 4)
+    factor = register(8, 0, 4)
+    begin = register(10, 0, 8)
+    saved32 = {"r12d", "r13d", "r14d", "r15d"}
+    if (instructions[3].mnemonic != "xor" or zero not in saved32
+            or register(3, 1, 4) != zero or instructions[8].mnemonic != "mov"
+            or factor not in saved32 | {"eax"} or instructions[9].mnemonic != "mov"
+            or register(9, 1, 4) != factor or instructions[10].mnemonic != "lea"
+            or begin not in {"rcx", "r12", "r13", "r14", "r15"}
+            or zero == factor or zero == begin + "d" or factor == begin + "d"):
+        raise AnalyzerError("registry register contract changed")
+    sizes = []
+    for index in (0, 4):
+        operands = instructions[index].operands
+        if len(operands) != 2 or operands[1].type != capstone_x86.X86_OP_IMM:
+            raise AnalyzerError("registry object size operands changed")
+        sizes.append(operands[1].imm)
+    if sizes[0] != sizes[1] or not 0x100 <= sizes[0] <= 0x1000 or sizes[0] % 8:
+        raise AnalyzerError("registry object size is inconsistent")
+    shapes = []
+    for index, instruction in enumerate(instructions):
+        mnemonic, operands = semantic_shape(instruction, index in (0, 4))
+        operands = list(operands)
+        for position, label in {
+            3: ((0, "registry-zero"), (1, "registry-zero")),
+            8: ((0, "registry-factor"),),
+            9: ((1, "registry-factor"),),
+            10: ((0, "registry-begin"),),
+        }.get(index, ()):
+            operands[position] = ("reg", label, operands[position][2])
+        shapes.append((mnemonic, tuple(operands)))
+    return tuple(shapes)
+
+
 def find_registry_signature_match(
     reference: ElfImage,
     candidate: ElfImage,
@@ -1633,7 +1696,30 @@ def find_registry_signature_match(
         spec.minimum_anchor_bytes,
         (0, 4),
     )
-    body_match = find_signature_match(reference, candidate, body_spec)
+    try:
+        normalized_reference = normalized_registry_body(reference_full[8:19])
+    except AnalyzerError:
+        body_match = find_signature_match(reference, candidate, body_spec)
+    else:
+        clear_spec = SignatureSpec("registry-size-and-clear", reference_full[12].address,
+                                   4, True, spec.minimum_anchor_bytes, (0, 0))
+        valid = []
+        for clear in find_signature_matches(reference, candidate, clear_spec,
+                                             allow_multiple_candidates=True):
+            if clear.rva < 16:
+                continue
+            try:
+                body = disassemble(candidate, clear.rva - 16, body_instruction_count)
+                if (body[4].address != clear.rva
+                        or normalized_registry_body(body) != normalized_reference):
+                    continue
+                find_registry_function_entry(candidate, clear.rva - 16, reference_full[:8])
+            except AnalyzerError:
+                continue
+            valid.append(SignatureMatch(clear.rva - 16, reference_full[8:19], body))
+        if len(valid) != 1:
+            raise AnalyzerError(f"registry register contract matched {len(valid)} candidate locations")
+        body_match = valid[0]
     candidate_entry = find_registry_function_entry(
         candidate,
         body_match.rva,
@@ -1672,7 +1758,7 @@ def find_constructor_boundary_match(
     candidate: ElfImage,
     spec: SignatureSpec,
     reference_entry: int,
-    candidate_entry: int,
+    candidate_entries: Sequence[int],
 ) -> SignatureMatch:
     if reference_entry != spec.reference_rva:
         raise AnalyzerError(
@@ -1691,15 +1777,18 @@ def find_constructor_boundary_match(
             spec.instruction_count,
         ),
     )
-    candidate_wrapper = disassemble(candidate, candidate_entry, 1)
-    candidate_target = direct_jump_target(
-        candidate_wrapper[0], "candidate constructor boundary"
-    )
-    if candidate_target != target_match.rva:
-        raise AnalyzerError(
-            "constructor index 4 no longer targets its verified boundary"
-        )
-    return SignatureMatch(candidate_entry, reference_wrapper, candidate_wrapper)
+    matches = []
+    for entry in candidate_entries:
+        try:
+            wrapper = disassemble(candidate, entry, 1)
+            target = direct_jump_target(wrapper[0], "constructor boundary")
+        except AnalyzerError:
+            continue
+        if target == target_match.rva:
+            matches.append(SignatureMatch(entry, reference_wrapper, wrapper))
+    if len(matches) != 1:
+        raise AnalyzerError("constructor boundary has no unique init-array entry")
+    return matches[0]
 
 
 def rip_targets(instruction: Any) -> tuple[int, ...]:
@@ -1711,6 +1800,47 @@ def rip_targets(instruction: Any) -> tuple[int, ...]:
         ):
             targets.append(instruction.address + instruction.size + operand.mem.disp)
     return tuple(targets)
+
+
+def singleton_body_rva(image: ElfImage, entry: int) -> int:
+    prefix = disassemble(image, entry, 2)
+    if prefix[0].mnemonic != "push":
+        return entry
+    if (semantic_shape(prefix[0]) != ("push", (("reg", "rbp", 8),))
+            or semantic_shape(prefix[1]) != ("mov", (("reg", "rbp", 8), ("reg", "rsp", 8)))):
+        raise AnalyzerError("JNI singleton has an unsupported prologue")
+    return prefix[1].address + prefix[1].size
+
+
+def has_singleton_links(instructions: Sequence[Any]) -> bool:
+    if len(instructions) != 3 or tuple(i.mnemonic for i in instructions) != ("lea", "xchg", "mov"):
+        return False
+    head, slot, following = (rip_targets(i) for i in instructions)
+    return (len(head) == len(slot) == len(following) == 1 and slot[0] % 8 == 0
+            and head[0] == slot[0] + 8 and following[0] == head[0])
+
+
+def find_singleton_signature_match(reference: ElfImage, candidate: ElfImage,
+                                   spec: SignatureSpec, entries: Sequence[int]) -> SignatureMatch:
+    body = singleton_body_rva(reference, spec.reference_rva)
+    matches = find_signature_matches(reference, candidate,
+        SignatureSpec("jni-singleton-links", body, 3, False, 3), allow_multiple_candidates=True)
+    valid = []
+    for match in matches:
+        if not has_singleton_links(match.reference_instructions) or not has_singleton_links(match.candidate_instructions):
+            continue
+        for entry in entries:
+            if entry not in (match.rva, match.rva - 4):
+                continue
+            try:
+                if singleton_body_rva(candidate, entry) != match.rva:
+                    continue
+            except AnalyzerError:
+                continue
+            valid.append(SignatureMatch(entry, match.reference_instructions, match.candidate_instructions))
+    if len(valid) != 1:
+        raise AnalyzerError("JNI singleton links have no unique init-array entry")
+    return valid[0]
 
 
 def mapped_rip_target(
@@ -1948,14 +2078,11 @@ def derive_profile(
             matches[spec.name] = find_registry_signature_match(
                 reference, candidate, spec
             )
+        elif spec.name == "jni-singleton-initializer":
+            matches[spec.name] = find_singleton_signature_match(reference, candidate, spec, candidate_init)
         elif spec.name == "constructor-4":
             matches[spec.name] = find_constructor_boundary_match(
-                reference,
-                candidate,
-                spec,
-                reference_init[4],
-                candidate_init[4],
-            )
+                reference, candidate, spec, spec.reference_rva, candidate_init)
         else:
             matches[spec.name] = find_signature_match(reference, candidate, spec)
 
@@ -1990,21 +2117,28 @@ def derive_profile(
             "registry allocator call"
         )
     matches["allocate"] = selected_allocate[0]
-    for index in (2, 3, 4):
-        match = matches[f"constructor-{index}"]
-        if (
-            reference_init[index] != match.reference_instructions[0].address
-            or candidate_init[index] != match.rva
-        ):
-            raise AnalyzerError(
-                f"constructor {index} moved outside its verified init-array boundary"
-            )
+    reference_indices = anchors.get("constructor_indices", {str(i): i for i in (2, 3, 4, 5)})
+    candidate_indices = {}
+    constructor_rvas = {}
+    for role in (2, 3, 4, 5):
+        key = str(role)
+        index = reference_indices[key]
+        rva = parse_rva(anchors["constructor_rvas"][key], "constructor role")
+        match = matches["jni-singleton-initializer" if role == 5 else f"constructor-{role}"]
+        expected = (parse_rva(anchors["jni_singleton_initializer_rva"], "singleton") if role == 5
+                    else match.reference_instructions[0].address)
+        if (rva != expected or not 2 <= index < len(reference_init)
+                or reference_init[index] != rva or reference_init.count(rva) != 1
+                or candidate_init.count(match.rva) != 1):
+            raise AnalyzerError("constructor role has no unique verified init-array entry")
+        candidate_index = candidate_init.index(match.rva)
+        if candidate_index < 2:
+            raise AnalyzerError("constructor role moved into reserved startup entries")
+        if role == 2 and reference_profile["native_mimalloc_thread_initializer_after_constructor"] != index:
+            raise AnalyzerError("reference allocator constructor disagrees with its TLS checkpoint")
+        candidate_indices[key] = candidate_index
+        constructor_rvas[key] = format_rva(match.rva)
     singleton_match = matches["jni-singleton-initializer"]
-    if (
-        reference_init[5] != singleton_match.reference_instructions[0].address
-        or candidate_init[5] != singleton_match.rva
-    ):
-        raise AnalyzerError("JNI singleton initializer is not constructor index 5")
 
     candidate_bridge_entries = []
     for entry in reference_profile["bridge_entries"]:
@@ -2075,15 +2209,6 @@ def derive_profile(
     init_section = candidate.sections[".init_array"]
     reference_count = reference_profile["init_array_count"]
     candidate_count = len(candidate_init)
-    constructor_ranges = adjusted_ranges(
-        validated_ranges(
-            reference_profile["constructor_run_ranges"],
-            "reference constructor ranges",
-            reference_count,
-        ),
-        reference_count,
-        candidate_count,
-    )
     native_ranges = adjusted_ranges(
         validated_ranges(
             reference_profile["native_mimalloc_constructor_run_ranges"],
@@ -2093,14 +2218,9 @@ def derive_profile(
         reference_count,
         candidate_count,
     )
-    thread_boundary = reference_profile[
-        "native_mimalloc_thread_initializer_after_constructor"
-    ]
-    if thread_boundary != 2 or not any(
-        item["begin"] <= thread_boundary < item["end_exclusive"]
-        for item in native_ranges
-    ):
-        raise AnalyzerError("native allocator TLS boundary is no longer verified")
+    if native_ranges != [{"begin": 2, "end_exclusive": candidate_count}]:
+        raise AnalyzerError("native constructor replay must cover all non-reserved entries")
+    thread_boundary = candidate_indices["2"]
 
     profile = {
         "elf_build_id": candidate.build_id,
@@ -2124,7 +2244,7 @@ def derive_profile(
         },
         "init_array_offset": format_rva(init_section.address),
         "init_array_count": candidate_count,
-        "constructor_run_ranges": constructor_ranges,
+        "constructor_run_ranges": native_ranges,
         "native_mimalloc_constructor_run_ranges": native_ranges,
         "native_mimalloc_thread_initializer_after_constructor": thread_boundary,
         "native_pre_jni_bootstrap": {
@@ -2132,6 +2252,7 @@ def derive_profile(
             "registry_slot": format_rva(registry_slot),
         },
         "default_allocator_strategy": "native_mimalloc",
+        "host_allocator_bridges_supported": False,
     }
     derived_anchors = {
         "signature_version": 1,
@@ -2142,12 +2263,8 @@ def derive_profile(
             matches["empty-string-initializer"].rva
         ),
         "jni_singleton_initializer_rva": format_rva(singleton_match.rva),
-        "constructor_rvas": {
-            "2": format_rva(candidate_init[2]),
-            "3": format_rva(candidate_init[3]),
-            "4": format_rva(candidate_init[4]),
-            "5": format_rva(candidate_init[5]),
-        },
+        "constructor_rvas": constructor_rvas,
+        "constructor_indices": candidate_indices,
     }
     validate_profile_shape(profile, derived_anchors)
     return profile, derived_anchors

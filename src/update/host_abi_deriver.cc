@@ -1057,11 +1057,6 @@ std::optional<std::vector<SignatureMatch>> FindSignatureMatches(
              "0 candidate locations";
     return std::nullopt;
   }
-  if (!allow_multiple_candidates && matches.size() != 1U) {
-    *error = "signature " + spec.name + " matched " +
-             std::to_string(matches.size()) + " candidate locations";
-    return std::nullopt;
-  }
   std::vector<SignatureMatch> semantic_matches;
   std::string first_semantic_error;
   for (const std::size_t match : matches) {
@@ -1083,6 +1078,12 @@ std::optional<std::vector<SignatureMatch>> FindSignatureMatches(
   if (semantic_matches.empty() && matches.size() == 1U &&
       !first_semantic_error.empty()) {
     *error = std::move(first_semantic_error);
+    return std::nullopt;
+  }
+  if (!allow_multiple_candidates && semantic_matches.size() != 1U) {
+    *error = "signature " + spec.name + " matched " +
+             std::to_string(semantic_matches.size()) +
+             " semantic candidate locations";
     return std::nullopt;
   }
   return semantic_matches;
@@ -1547,6 +1548,41 @@ std::optional<std::uint64_t> FindRegistryFunctionEntry(
   return entries.front();
 }
 
+bool NormalizeRegistryRegisters(std::vector<Instruction>* instructions) {
+  if (instructions->size() != 11) return false;
+  auto& zero = (*instructions)[3];
+  auto& factor = (*instructions)[8];
+  auto& store = (*instructions)[9];
+  auto& begin = (*instructions)[10];
+  const auto reg = [](const Instruction& instruction, std::size_t index,
+                      std::size_t size) -> std::string {
+    if (index >= instruction.operands.size() ||
+        instruction.operands[index].type != Operand::Type::kRegister ||
+        instruction.operands[index].size != size)
+      return {};
+    return instruction.operands[index].register_name;
+  };
+  const std::string zero_reg = reg(zero, 0, 4);
+  const std::string factor_reg = reg(factor, 0, 4);
+  const std::string begin_reg = reg(begin, 0, 8);
+  const std::set<std::string> saved32 = {"r12d", "r13d", "r14d", "r15d"};
+  const std::set<std::string> pointers = {"rcx", "r12", "r13", "r14", "r15"};
+  if (zero.mnemonic != "xor" || saved32.count(zero_reg) != 1 ||
+      reg(zero, 1, 4) != zero_reg || factor.mnemonic != "mov" ||
+      (factor_reg != "eax" && saved32.count(factor_reg) != 1) ||
+      store.mnemonic != "mov" || reg(store, 1, 4) != factor_reg ||
+      begin.mnemonic != "lea" || pointers.count(begin_reg) != 1 ||
+      zero_reg == factor_reg || zero_reg == begin_reg + "d" ||
+      factor_reg == begin_reg + "d")
+    return false;
+  zero.operands[0].register_name = "registry-zero";
+  zero.operands[1].register_name = "registry-zero";
+  factor.operands[0].register_name = "registry-factor";
+  store.operands[1].register_name = "registry-factor";
+  begin.operands[0].register_name = "registry-begin";
+  return true;
+}
+
 std::optional<SignatureMatch> FindRegistrySignatureMatch(
     const ElfImage& reference, const ElfImage& candidate,
     const Disassembler& disassembler, const SignatureSpec& spec,
@@ -1568,12 +1604,51 @@ std::optional<SignatureMatch> FindRegistrySignatureMatch(
       spec.minimum_anchor_bytes,
       {0, 4},
   };
-  const auto body_match =
-      FindSignatureMatch(reference, candidate, disassembler, body_spec, error);
-  if (!body_match.has_value()) return std::nullopt;
   const std::vector<Instruction> reference_prologue(
       reference_full->begin(),
       std::next(reference_full->begin(), kBodyInstructionIndex));
+  std::optional<SignatureMatch> body_match;
+  std::vector<Instruction> normalized_reference(
+      reference_full->begin() + kBodyInstructionIndex,
+      reference_full->begin() + kBodyInstructionIndex + kBodyInstructionCount);
+  if (NormalizeRegistryRegisters(&normalized_reference)) {
+    const SignatureSpec clear_spec{"registry-size-and-clear",
+                                   (*reference_full)[12].address,
+                                   4,
+                                   true,
+                                   spec.minimum_anchor_bytes,
+                                   {0, 0}};
+    const auto clear_matches = FindSignatureMatches(
+        reference, candidate, disassembler, clear_spec, true, error);
+    if (!clear_matches.has_value()) return std::nullopt;
+    std::vector<SignatureMatch> valid;
+    for (const auto& clear : *clear_matches) {
+      if (clear.rva < 16) continue;
+      std::string candidate_error;
+      const auto body =
+          disassembler.Decode(candidate, clear.rva - 16, kBodyInstructionCount,
+                              4096, &candidate_error);
+      if (!body.has_value() || (*body)[4].address != clear.rva) continue;
+      auto normalized = *body;
+      if (!NormalizeRegistryRegisters(&normalized) ||
+          !ValidateSemantics(normalized_reference, normalized, body_spec,
+                             &candidate_error) ||
+          !FindRegistryFunctionEntry(candidate, disassembler, clear.rva - 16,
+                                     reference_prologue, &candidate_error))
+        continue;
+      valid.push_back({clear.rva - 16, normalized_reference, *body});
+    }
+    if (valid.size() != 1) {
+      *error = "registry register contract matched " +
+               std::to_string(valid.size()) + " candidate locations";
+      return std::nullopt;
+    }
+    body_match = std::move(valid.front());
+  } else {
+    body_match = FindSignatureMatch(reference, candidate, disassembler,
+                                    body_spec, error);
+    if (!body_match.has_value()) return std::nullopt;
+  }
   const auto candidate_entry = FindRegistryFunctionEntry(
       candidate, disassembler, body_match->rva, reference_prologue, error);
   if (!candidate_entry.has_value()) return std::nullopt;
@@ -1614,8 +1689,8 @@ std::optional<std::uint64_t> DirectJumpTarget(
 std::optional<SignatureMatch> FindConstructorBoundaryMatch(
     const ElfImage& reference, const ElfImage& candidate,
     const Disassembler& disassembler, const SignatureSpec& spec,
-    std::uint64_t reference_entry, std::uint64_t candidate_entry,
-    std::string* error) {
+    std::uint64_t reference_entry,
+    const std::vector<std::uint64_t>& candidate_entries, std::string* error) {
   if (reference_entry != spec.reference_rva) {
     *error = "reference constructor boundary moved outside init-array index 4";
     return std::nullopt;
@@ -1631,19 +1706,22 @@ std::optional<SignatureMatch> FindConstructorBoundaryMatch(
   const auto target_match = FindSignatureMatch(
       reference, candidate, disassembler, target_spec, error);
   if (!target_match.has_value()) return std::nullopt;
-  const auto candidate_wrapper =
-      disassembler.Decode(candidate, candidate_entry, 1, 16, error);
-  if (!candidate_wrapper.has_value()) return std::nullopt;
-  const auto candidate_target = DirectJumpTarget(
-      candidate_wrapper->front(), "candidate constructor boundary", error);
-  if (!candidate_target.has_value() || *candidate_target != target_match->rva) {
-    if (error->empty()) {
-      *error = "constructor index 4 no longer targets its verified boundary";
+  std::vector<SignatureMatch> matches;
+  for (const auto entry : candidate_entries) {
+    std::string ignored;
+    const auto wrapper = disassembler.Decode(candidate, entry, 1, 16, &ignored);
+    if (!wrapper) continue;
+    const auto target =
+        DirectJumpTarget(wrapper->front(), "constructor boundary", &ignored);
+    if (target && *target == target_match->rva) {
+      matches.push_back({entry, *reference_wrapper, *wrapper});
     }
+  }
+  if (matches.size() != 1) {
+    *error = "constructor boundary has no unique init-array entry";
     return std::nullopt;
   }
-  return SignatureMatch{candidate_entry, *reference_wrapper,
-                        *candidate_wrapper};
+  return std::move(matches.front());
 }
 
 std::vector<std::uint64_t> RipTargets(const Instruction& instruction) {
@@ -1654,6 +1732,70 @@ std::vector<std::uint64_t> RipTargets(const Instruction& instruction) {
     }
   }
   return result;
+}
+
+std::optional<std::uint64_t> SingletonBodyRva(const ElfImage& image,
+                                              const Disassembler& disassembler,
+                                              std::uint64_t entry,
+                                              std::string* error) {
+  const auto prefix = disassembler.Decode(image, entry, 2, 32, error);
+  if (!prefix) return std::nullopt;
+  if ((*prefix)[0].mnemonic != "push") return entry;
+  const auto& push = (*prefix)[0];
+  const auto& move = (*prefix)[1];
+  if (push.operands.size() != 1 || push.operands[0].register_name != "rbp" ||
+      move.mnemonic != "mov" || move.operands.size() != 2 ||
+      move.operands[0].register_name != "rbp" ||
+      move.operands[1].register_name != "rsp") {
+    *error = "JNI singleton has an unsupported prologue";
+    return std::nullopt;
+  }
+  return move.address + move.size;
+}
+
+bool HasSingletonLinks(const std::vector<Instruction>& instructions) {
+  if (instructions.size() != 3 || instructions[0].mnemonic != "lea" ||
+      instructions[1].mnemonic != "xchg" || instructions[2].mnemonic != "mov")
+    return false;
+  const auto head = RipTargets(instructions[0]);
+  const auto slot = RipTargets(instructions[1]);
+  const auto next = RipTargets(instructions[2]);
+  return head.size() == 1 && slot.size() == 1 && next.size() == 1 &&
+         slot[0] % 8 == 0 && head[0] == slot[0] + 8 && next[0] == head[0];
+}
+
+std::optional<SignatureMatch> FindSingletonSignatureMatch(
+    const ElfImage& reference, const ElfImage& candidate,
+    const Disassembler& disassembler, const SignatureSpec& spec,
+    const std::vector<std::uint64_t>& candidate_entries, std::string* error) {
+  const auto body =
+      SingletonBodyRva(reference, disassembler, spec.reference_rva, error);
+  if (!body) return std::nullopt;
+  const auto matches = FindSignatureMatches(
+      reference, candidate, disassembler,
+      {"jni-singleton-links", *body, 3, false, 3}, true, error);
+  if (!matches) return std::nullopt;
+  std::vector<SignatureMatch> valid;
+  for (const auto& match : *matches) {
+    if (!HasSingletonLinks(match.reference) ||
+        !HasSingletonLinks(match.candidate))
+      continue;
+    for (const auto entry : candidate_entries) {
+      if (entry != match.rva && (match.rva < 4 || entry != match.rva - 4))
+        continue;
+      std::string ignored;
+      const auto candidate_body =
+          SingletonBodyRva(candidate, disassembler, entry, &ignored);
+      if (candidate_body && *candidate_body == match.rva) {
+        valid.push_back({entry, match.reference, match.candidate});
+      }
+    }
+  }
+  if (valid.size() != 1) {
+    *error = "JNI singleton links have no unique init-array entry";
+    return std::nullopt;
+  }
+  return std::move(valid.front());
 }
 
 std::optional<std::uint64_t> MappedRipTarget(const SignatureMatch& match,
@@ -1957,10 +2099,14 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
         return FindRegistrySignatureMatch(reference, candidate, disassembler,
                                           spec, error);
       }
+      if (spec.name == "jni-singleton-initializer") {
+        return FindSingletonSignatureMatch(reference, candidate, disassembler,
+                                           spec, *candidate_init, error);
+      }
       if (spec.name == "constructor-4") {
-        return FindConstructorBoundaryMatch(
-            reference, candidate, disassembler, spec, (*reference_init)[4],
-            (*candidate_init)[4], error);
+        return FindConstructorBoundaryMatch(reference, candidate, disassembler,
+                                            spec, spec.reference_rva,
+                                            *candidate_init, error);
       }
       return FindSignatureMatch(reference, candidate, disassembler, spec,
                                 error);
@@ -2006,21 +2152,64 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
     return std::nullopt;
   }
   matches.emplace("allocate", std::move(*selected_allocate));
-  for (const std::size_t index : {2U, 3U, 4U}) {
-    const SignatureMatch& match =
-        matches["constructor-" + std::to_string(index)];
-    if ((*reference_init)[index] != match.reference[0].address ||
-        (*candidate_init)[index] != match.rva) {
-      *error = "constructor moved outside verified init-array boundary";
+  const Json& reference_anchors = sidecar["derivation_anchors"];
+  const Json& role_rvas = reference_anchors["constructor_rvas"];
+  const Json* reference_indices =
+      reference_anchors.contains("constructor_indices")
+          ? &reference_anchors["constructor_indices"]
+          : nullptr;
+  Json candidate_indices = Json::object();
+  Json candidate_constructor_rvas = Json::object();
+  for (const std::size_t role : {2U, 3U, 4U, 5U}) {
+    const std::string key = std::to_string(role);
+    std::size_t reference_index = role;
+    if (reference_indices != nullptr) {
+      if (!reference_indices->is_object() ||
+          !reference_indices->contains(key)) {
+        *error = "reference constructor indices are incomplete";
+        return std::nullopt;
+      }
+      const auto parsed =
+          PositiveSize((*reference_indices)[key], "constructor index", error);
+      if (!parsed) return std::nullopt;
+      reference_index = *parsed;
+    }
+    const auto reference_rva = ProfileRva(role_rvas, key, error);
+    const auto& match = matches.at(role == 5 ? "jni-singleton-initializer"
+                                             : "constructor-" + key);
+    const auto expected_rva =
+        role == 5
+            ? ProfileRva(reference_anchors, "jni_singleton_initializer_rva",
+                         error)
+            : std::optional<std::uint64_t>(match.reference.front().address);
+    if (!reference_rva || !expected_rva || *reference_rva != *expected_rva ||
+        reference_index < 2 || reference_index >= reference_init->size() ||
+        (*reference_init)[reference_index] != *reference_rva ||
+        std::count(reference_init->begin(), reference_init->end(),
+                   *reference_rva) != 1 ||
+        std::count(candidate_init->begin(), candidate_init->end(), match.rva) !=
+            1) {
+      *error = "constructor role has no unique verified init-array entry";
       return std::nullopt;
     }
+    const auto index = static_cast<std::size_t>(
+        std::find(candidate_init->begin(), candidate_init->end(), match.rva) -
+        candidate_init->begin());
+    if (index < 2) {
+      *error = "constructor role moved into reserved startup entries";
+      return std::nullopt;
+    }
+    if (role == 2 && reference_profile.value(
+                         "native_mimalloc_thread_initializer_after_constructor",
+                         SIZE_MAX) != reference_index) {
+      *error =
+          "reference allocator constructor disagrees with its TLS checkpoint";
+      return std::nullopt;
+    }
+    candidate_indices[key] = index;
+    candidate_constructor_rvas[key] = FormatRva(match.rva);
   }
-  const SignatureMatch& singleton = matches["jni-singleton-initializer"];
-  if ((*reference_init)[5] != singleton.reference[0].address ||
-      (*candidate_init)[5] != singleton.rva) {
-    *error = "JNI singleton initializer is not constructor index 5";
-    return std::nullopt;
-  }
+  const SignatureMatch& singleton = matches.at("jni-singleton-initializer");
 
   Json candidate_bridges = Json::array();
   std::map<std::string, std::uint64_t> bridge_rvas;
@@ -2090,21 +2279,17 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
     return std::nullopt;
   }
 
-  const auto constructor_ranges =
-      AdjustRanges(reference_profile["constructor_run_ranges"],
-                   *reference_count, candidate_init->size(), error);
   const auto native_ranges =
       AdjustRanges(reference_profile["native_mimalloc_constructor_run_ranges"],
                    *reference_count, candidate_init->size(), error);
-  if (!constructor_ranges.has_value() || !native_ranges.has_value()) {
+  if (!native_ranges.has_value() || native_ranges->size() != 1 ||
+      (*native_ranges)[0].value("begin", SIZE_MAX) != 2 ||
+      (*native_ranges)[0].value("end_exclusive", SIZE_MAX) !=
+          candidate_init->size()) {
+    *error = "native constructor replay must cover all non-reserved entries";
     return std::nullopt;
   }
-  const std::size_t thread_boundary = reference_profile.value(
-      "native_mimalloc_thread_initializer_after_constructor", SIZE_MAX);
-  if (thread_boundary != 2) {
-    *error = "native allocator TLS boundary is no longer verified";
-    return std::nullopt;
-  }
+  const std::size_t thread_boundary = candidate_indices["2"].get<std::size_t>();
   const auto singleton_bytes =
       PositiveSize(seeds["jni_singleton_bytes"], "JNI singleton size", error);
   const auto arena_slots = PositiveSize(seeds["arena_table_slot_count"],
@@ -2137,13 +2322,14 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
         {"deallocate", FormatRva(bridge_rvas["free"])}}},
       {"init_array_offset", FormatRva(init_section->address)},
       {"init_array_count", candidate_init->size()},
-      {"constructor_run_ranges", *constructor_ranges},
+      {"constructor_run_ranges", *native_ranges},
       {"native_mimalloc_constructor_run_ranges", *native_ranges},
       {"native_mimalloc_thread_initializer_after_constructor", thread_boundary},
       {"native_pre_jni_bootstrap",
        {{"registry_initializer", FormatRva(registry_initializer)},
         {"registry_slot", FormatRva(*registry_slot)}}},
       {"default_allocator_strategy", "native_mimalloc"},
+      {"host_allocator_bridges_supported", false},
   };
   Json anchors = {
       {"signature_version", 1},
@@ -2152,11 +2338,8 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
       {"empty_string_initializer_rva",
        FormatRva(matches["empty-string-initializer"].rva)},
       {"jni_singleton_initializer_rva", FormatRva(singleton.rva)},
-      {"constructor_rvas",
-       {{"2", FormatRva((*candidate_init)[2])},
-        {"3", FormatRva((*candidate_init)[3])},
-        {"4", FormatRva((*candidate_init)[4])},
-        {"5", FormatRva((*candidate_init)[5])}}},
+      {"constructor_rvas", candidate_constructor_rvas},
+      {"constructor_indices", candidate_indices},
   };
   const std::uint64_t version_code =
       metadata["version_code"].get<std::uint64_t>();

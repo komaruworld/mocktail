@@ -2,11 +2,13 @@
 
 #include <curl/curl.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -16,6 +18,7 @@
 #include <string>
 
 #include "update/payload_integrity.h"
+#include "update/state_file.h"
 
 namespace mocktail::update {
 namespace {
@@ -178,6 +181,110 @@ std::size_t WriteBytes(char* data, std::size_t size, std::size_t count,
   return bytes;
 }
 
+struct DownloadHeaders {
+  long status = 0;
+  std::string etag;
+  std::string encoding;
+  std::string range;
+  std::string expected_etag;
+  std::string url;
+  std::filesystem::path state_path;
+  std::size_t offset = 0;
+  std::size_t maximum = 0;
+  std::size_t total = 0;
+  bool restart = false;
+  bool failed = false;
+  bool complete = false;
+};
+
+bool StrongEtag(std::string_view value) {
+  if (value.size() < 2 || value.front() != '"' || value.back() != '"')
+    return false;
+  for (const unsigned char character : value) {
+    if (character < 0x21 || character == 0x7f) return false;
+  }
+  return true;
+}
+
+bool ReadRange(DownloadHeaders* headers) {
+  std::string_view range = headers->range;
+  if (range.substr(0, 6) != "bytes ") return false;
+  range.remove_prefix(6);
+  std::size_t values[3] = {};
+  for (int index = 0; index < 3; ++index) {
+    const auto parsed = std::from_chars(
+        range.data(), range.data() + range.size(), values[index]);
+    if (parsed.ec != std::errc()) return false;
+    range.remove_prefix(parsed.ptr - range.data());
+    if (index < 2) {
+      if (range.empty() || range.front() != (index == 0 ? '-' : '/'))
+        return false;
+      range.remove_prefix(1);
+    }
+  }
+  headers->total = values[2];
+  return range.empty() && values[0] == headers->offset &&
+         values[1] >= values[0] && values[1] < values[2] &&
+         values[1] == values[2] - 1 && values[2] <= headers->maximum;
+}
+
+std::size_t ReadDownloadHeaders(char* data, std::size_t size, std::size_t count,
+                                void* opaque) {
+  if (count != 0 && size > std::numeric_limits<std::size_t>::max() / count)
+    return 0;
+  const std::size_t bytes = size * count;
+  auto* headers = static_cast<DownloadHeaders*>(opaque);
+  std::string_view line(data, bytes);
+  if (line.substr(0, 5) == "HTTP/") {
+    headers->complete = false;
+    headers->etag.clear();
+    headers->encoding.clear();
+    headers->range.clear();
+    headers->status = 0;
+    const auto space = line.find(' ');
+    if (space != std::string_view::npos) {
+      std::from_chars(line.data() + space + 1, line.data() + line.size(),
+                      headers->status);
+    }
+  } else if (line == "\r\n" || line == "\n") {
+    headers->complete = true;
+    if (headers->offset > 0 &&
+        (headers->status == 200 || headers->status == 416)) {
+      headers->restart = true;
+      return 0;
+    }
+    if (headers->status != 200 && headers->status != 206) return bytes;
+    if ((!headers->encoding.empty() && headers->encoding != "identity") ||
+        (headers->status == 206 &&
+         (!ReadRange(headers) ||
+          (!headers->expected_etag.empty() && !headers->etag.empty() &&
+           headers->expected_etag != headers->etag)))) {
+      headers->restart = true;
+      return 0;
+    }
+    if (headers->offset == 0 && StrongEtag(headers->etag) &&
+        !WriteStateFile(headers->state_path,
+                        {{"url", headers->url}, {"etag", headers->etag}})) {
+      headers->failed = true;
+      return 0;
+    }
+  } else if (!headers->complete) {
+    const auto colon = line.find(':');
+    if (colon == std::string_view::npos) return bytes;
+    const std::string key = Lower(std::string(line.substr(0, colon)));
+    line.remove_prefix(colon + 1);
+    while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+      line.remove_prefix(1);
+    while (!line.empty() &&
+           (line.back() == '\r' || line.back() == '\n' || line.back() == ' '))
+      line.remove_suffix(1);
+    if (key == "etag") headers->etag = line;
+    if (key == "content-encoding") headers->encoding = Lower(std::string(line));
+    if (key == "content-range") headers->range = line;
+  }
+  return bytes;
+}
+
 struct FileWriter {
   int descriptor = -1;
   std::size_t maximum = 0;
@@ -188,6 +295,7 @@ struct FileWriter {
   bool exceeded = false;
   bool write_failed = false;
   bool hash_failed = false;
+  const DownloadHeaders* headers = nullptr;
 };
 
 std::size_t WriteFileBytes(char* data, std::size_t size, std::size_t count,
@@ -198,6 +306,9 @@ std::size_t WriteFileBytes(char* data, std::size_t size, std::size_t count,
     return 0;
   }
   const std::size_t bytes = size * count;
+  if (writer->headers != nullptr && writer->headers->status != 200 &&
+      writer->headers->status != 206)
+    return bytes;
   if (bytes > writer->maximum || writer->written > writer->maximum - bytes) {
     writer->exceeded = true;
     return 0;
@@ -206,8 +317,8 @@ std::size_t WriteFileBytes(char* data, std::size_t size, std::size_t count,
   while (offset < bytes) {
     const ssize_t result =
         write(writer->descriptor, data + offset, bytes - offset);
-    if (result < 0) {
-      if (errno == EINTR) continue;
+    if (result <= 0) {
+      if (result < 0 && errno == EINTR) continue;
       writer->write_failed = true;
       return 0;
     }
@@ -247,6 +358,9 @@ bool Configure(CURL* handle, const HttpTransferRequest& request,
                           "Mocktail-native-updater/1") == CURLE_OK &&
          curl_easy_setopt(handle, CURLOPT_ERRORBUFFER, error_buffer->data()) ==
              CURLE_OK &&
+         (request.ca_bundle.empty() ||
+          curl_easy_setopt(handle, CURLOPT_CAINFO, request.ca_bundle.c_str()) ==
+              CURLE_OK) &&
          (headers == nullptr ||
           curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers) == CURLE_OK);
 }
@@ -365,13 +479,23 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
                                        int progress_fd, bool* retryable) {
   HttpDownloadResult result;
   std::error_code filesystem_error;
-  std::uintmax_t existing = std::filesystem::file_size(temporary,
-                                                       filesystem_error);
-  if (filesystem_error || existing > request.maximum_bytes) {
-    std::filesystem::remove(temporary, filesystem_error);
-    existing = 0;
+  const std::filesystem::path state_path = temporary.string() + ".json";
+  const auto state = ReadStateFile(state_path);
+  std::string etag;
+  if (state.is_object() && state.contains("url") &&
+      state["url"] == request.url && state.contains("etag") &&
+      state["etag"].is_string()) {
+    etag = state["etag"].get<std::string>();
   }
-  // Outlives the redirect hops, or the count restarts at zero on each one.
+  std::uintmax_t existing =
+      std::filesystem::file_size(temporary, filesystem_error);
+  if (filesystem_error || existing > request.maximum_bytes ||
+      !StrongEtag(etag)) {
+    std::filesystem::remove(temporary, filesystem_error);
+    std::filesystem::remove(state_path, filesystem_error);
+    existing = 0;
+    etag.clear();
+  }
   TransferProgress progress;
   progress.descriptor = progress_fd;
   progress.resumed_bytes = static_cast<curl_off_t>(existing);
@@ -396,8 +520,10 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
       return result;
     }
     std::unique_ptr<CURL, CurlHandleDeleter> handle(curl_easy_init());
-    auto headers = BuildHeaders(request.headers, &result.error);
-    if (!handle || (!request.headers.empty() && !headers)) {
+    std::vector<std::string> header_values = request.headers;
+    if (resuming) header_values.push_back("If-Range: " + etag);
+    auto headers = BuildHeaders(header_values, &result.error);
+    if (!handle || (!header_values.empty() && !headers)) {
       close(descriptor);
       std::filesystem::remove(temporary, filesystem_error);
       if (result.error.empty()) result.error = "curl_easy_init failed";
@@ -418,9 +544,24 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
       result.error = "cannot initialize sha256 digest";
       return result;
     }
-    FileWriter writer{descriptor, request.maximum_bytes,
+    DownloadHeaders response;
+    response.expected_etag = etag;
+    response.url = request.url;
+    response.state_path = state_path;
+    response.offset = existing;
+    response.maximum = request.maximum_bytes;
+    FileWriter writer{descriptor,
+                      request.maximum_bytes,
                       static_cast<std::size_t>(existing),
-                      resuming ? nullptr : &sha256, false, false};
+                      resuming ? nullptr : &sha256,
+                      false,
+                      false,
+                      false,
+                      &response};
+    curl_easy_setopt(handle.get(), CURLOPT_ACCEPT_ENCODING, "identity");
+    curl_easy_setopt(handle.get(), CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
+    curl_easy_setopt(handle.get(), CURLOPT_HEADERFUNCTION, ReadDownloadHeaders);
+    curl_easy_setopt(handle.get(), CURLOPT_HEADERDATA, &response);
     curl_easy_setopt(handle.get(), CURLOPT_WRITEFUNCTION, WriteFileBytes);
     curl_easy_setopt(handle.get(), CURLOPT_WRITEDATA, &writer);
     curl_easy_setopt(handle.get(), CURLOPT_NOPROGRESS,
@@ -429,34 +570,20 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
                      ReportTransferProgress);
     curl_easy_setopt(handle.get(), CURLOPT_XFERINFODATA, &progress);
     if (resuming) {
-      curl_easy_setopt(handle.get(), CURLOPT_RESUME_FROM_LARGE,
-                       static_cast<curl_off_t>(existing));
+      curl_easy_setopt(handle.get(), CURLOPT_RANGE,
+                       (std::to_string(existing) + "-").c_str());
     }
     const CURLcode status = curl_easy_perform(handle.get());
     long http_status = 0;
     curl_easy_getinfo(handle.get(), CURLINFO_RESPONSE_CODE, &http_status);
     const bool synced = fsync(descriptor) == 0;
     close(descriptor);
-    if (status != CURLE_OK || writer.write_failed || writer.hash_failed || !synced) {
-      if (writer.hash_failed) {
-        result.error = "cannot compute SHA-256 digest during download";
-      } else if (writer.exceeded) {
-        result.error = "HTTPS download exceeds its size limit";
-      } else if (writer.write_failed || !synced) {
-        result.error = "cannot persist HTTPS download";
-      } else {
-        result.error = CurlFailure(status, error_buffer);
-        *retryable = RetryableTransport(status);
-      }
-      if (!*retryable) std::filesystem::remove(temporary, filesystem_error);
+    if (synced && RetryableStatus(http_status)) {
+      result.error = StatusFailure("download", current, http_status);
+      *retryable = true;
       return result;
     }
     if (RedirectStatus(http_status)) {
-      // The redirect body was appended to the file; drop it, keep the prefix.
-      if (truncate(temporary.c_str(), static_cast<off_t>(existing)) != 0) {
-        std::filesystem::remove(temporary, filesystem_error);
-        existing = 0;
-      }
       const std::string next = RedirectUrl(handle.get());
       if (next.empty() || redirect == request.maximum_redirects ||
           !IsTrustedHttpsUrl(next, request.allowed_hosts, &result.error)) {
@@ -467,22 +594,37 @@ HttpDownloadResult DownloadFileAttempt(const HttpTransferRequest& request,
       current = next;
       continue;
     }
-    // The range was ignored or the offset refused; either way the partial
-    // file is unusable now.
-    if (resuming && (http_status == 200 || http_status == 416)) {
+    if (response.restart || (resuming && status == CURLE_RANGE_ERROR)) {
       std::filesystem::remove(temporary, filesystem_error);
-      result.error = http_status == 416
-                         ? "HTTPS server rejected the resume offset"
-                         : "HTTPS server ignored the resume request";
+      std::filesystem::remove(state_path, filesystem_error);
+      result.error = "HTTPS download must restart with a complete archive";
       *retryable = true;
       return result;
     }
-    if (http_status < 200 || http_status >= 300 || writer.written == 0) {
-      result.error = writer.written == 0
-                         ? "HTTPS download is empty"
-                         : StatusFailure("download", current, http_status);
+    if (status != CURLE_OK || writer.write_failed || writer.hash_failed ||
+        response.failed || !synced) {
+      if (writer.hash_failed) {
+        result.error = "cannot compute SHA-256 digest during download";
+      } else if (writer.exceeded) {
+        result.error = "HTTPS download exceeds its size limit";
+      } else if (writer.write_failed || response.failed || !synced) {
+        result.error = "cannot persist HTTPS download";
+      } else {
+        result.error = CurlFailure(status, error_buffer);
+        *retryable = RetryableTransport(status);
+      }
+      if (!*retryable) std::filesystem::remove(temporary, filesystem_error);
+      return result;
+    }
+    if ((http_status != 200 && http_status != 206) || writer.written == 0) {
+      result.error = StatusFailure("download", current, http_status);
       *retryable = RetryableStatus(http_status);
       if (!*retryable) std::filesystem::remove(temporary, filesystem_error);
+      return result;
+    }
+    if (http_status == 206 && writer.written != response.total) {
+      result.error = "HTTPS download has an incomplete content range";
+      *retryable = true;
       return result;
     }
     result.bytes_written = writer.written;
@@ -593,10 +735,19 @@ HttpDownloadResult DownloadFile(const HttpTransferRequest& request,
     result.error = "cannot create download directory";
     return result;
   }
-  const std::filesystem::path temporary =
-      destination.parent_path() / ("." + destination.filename().string() +
-                                   ".part-" + std::to_string(getpid()));
-  std::filesystem::remove(temporary, filesystem_error);
+  const std::filesystem::path temporary = destination.string() + ".part";
+  const std::filesystem::path state_path = temporary.string() + ".json";
+  struct DownloadLock {
+    int descriptor;
+    ~DownloadLock() {
+      if (descriptor >= 0) close(descriptor);
+    }
+  } lock{open((destination.string() + ".lock").c_str(),
+              O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600)};
+  if (lock.descriptor < 0 || flock(lock.descriptor, LOCK_EX) != 0) {
+    result.error = "cannot lock HTTPS download";
+    return result;
+  }
   const int attempts =
       request.maximum_attempts > 0 ? request.maximum_attempts : 1;
   for (int attempt = 1;; ++attempt) {
@@ -604,7 +755,10 @@ HttpDownloadResult DownloadFile(const HttpTransferRequest& request,
     result = DownloadFileAttempt(request, temporary, progress_fd, &retryable);
     if (result) break;
     if (!retryable || attempt >= attempts) {
-      std::filesystem::remove(temporary, filesystem_error);
+      if (!retryable) {
+        std::filesystem::remove(temporary, filesystem_error);
+        std::filesystem::remove(state_path, filesystem_error);
+      }
       return result;
     }
     PublishMessage(progress_fd, "Retrying Roblox download...");
@@ -612,8 +766,9 @@ HttpDownloadResult DownloadFile(const HttpTransferRequest& request,
   }
   std::filesystem::rename(temporary, destination, filesystem_error);
   if (filesystem_error) {
-    std::filesystem::remove(temporary, filesystem_error);
     result.error = "cannot publish completed download";
+  } else {
+    std::filesystem::remove(state_path, filesystem_error);
   }
   return result;
 }

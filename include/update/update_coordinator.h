@@ -34,6 +34,7 @@ struct UpdateRequest {
   bool startup_preflight = false;
   bool check_latest = true;
   bool run_canary = true;
+  bool download_only = false;
   // Explicit manual escape hatch. It launches the provider latest once with a
   // derived candidate profile and never promotes it into current.json.
   bool force_run_latest = false;
@@ -85,7 +86,8 @@ std::vector<UpdateCandidatePlan> PlanUpdateCandidates(
     const SupportedPayloadProfile& preferred, const ProviderVersion* latest,
     const PayloadStoreResult& current, const PayloadStoreResult& installed);
 
-UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request);
+UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
+                       const ApkProvider* source = nullptr);
 
 }  // namespace mocktail::update
 

@@ -433,6 +433,30 @@ std::unique_ptr<OwnedHostAbiProfile> ParseProfile(const Json& root,
     }
     owned->derivation_code_rvas.push_back(rva);
   }
+  if (profile_json->contains("host_allocator_bridges_supported")) {
+    const auto& supported = (*profile_json)["host_allocator_bridges_supported"];
+    if (!supported.is_boolean()) {
+      *error = "host allocator bridge support must be boolean";
+      return nullptr;
+    }
+    owned->profile.host_allocator_bridges_supported = supported.get<bool>();
+  }
+  std::array<std::size_t, 4> constructor_indices = {2, 3, 4, 5};
+  const Json* indices = RequiredField(*derivation, "constructor_indices");
+  if (indices != nullptr || !owned->profile.host_allocator_bridges_supported) {
+    if (indices == nullptr || !indices->is_object() || indices->size() != 4) {
+      *error = "external host ABI profile has invalid constructor indices";
+      return nullptr;
+    }
+    for (std::size_t role = 0; role < constructor_indices.size(); ++role) {
+      if (!ReadRequiredSize(*indices, std::to_string(role + 2).c_str(),
+                            kMaximumInitArrayEntries - 1,
+                            &constructor_indices[role])) {
+        *error = "external host ABI profile has invalid constructor indices";
+        return nullptr;
+      }
+    }
+  }
   const Json* constructor_anchors =
       RequiredField(*derivation, "constructor_rvas");
   if (constructor_anchors == nullptr || !constructor_anchors->is_object()) {
@@ -612,29 +636,49 @@ std::unique_ptr<OwnedHostAbiProfile> ParseProfile(const Json& root,
     *error = "external host ABI profile has inconsistent constructor policy";
     return nullptr;
   }
-  // The verified constructor layout is the same on both guest ABIs: a single
-  // process-load constructor at the thread-initializer checkpoint, two wiring
-  // entries excluded under host bridges, and one contiguous native-mimalloc
-  // replay from the checkpoint to the end of .init_array. Only the checkpoint
-  // index itself differs between payloads.
   const std::size_t checkpoint =
       owned->profile.native_mimalloc_thread_initializer_after_constructor;
-  if (owned->profile.init_array_count <= checkpoint + 3 ||
-      owned->profile.constructor_run_range_count != 2 ||
-      owned->profile.constructor_run_ranges[0].begin != checkpoint ||
-      owned->profile.constructor_run_ranges[0].end_exclusive != checkpoint + 1 ||
-      owned->profile.constructor_run_ranges[1].begin != checkpoint + 3 ||
-      owned->profile.constructor_run_ranges[1].end_exclusive !=
-          owned->profile.init_array_count ||
-      owned->profile.native_mimalloc_constructor_run_range_count != 1 ||
-      owned->profile.native_mimalloc_constructor_run_ranges[0].begin !=
-          checkpoint ||
-      owned->profile.native_mimalloc_constructor_run_ranges[0].end_exclusive !=
-          owned->profile.init_array_count ||
-      (kGuestElfMachine == EM_X86_64 && checkpoint != 2)) {
+  if (owned->profile.host_allocator_bridges_supported &&
+      (owned->profile.init_array_count <= checkpoint + 3 ||
+       owned->profile.constructor_run_range_count != 2 ||
+       owned->profile.constructor_run_ranges[0].begin != checkpoint ||
+       owned->profile.constructor_run_ranges[0].end_exclusive !=
+           checkpoint + 1 ||
+       owned->profile.constructor_run_ranges[1].begin != checkpoint + 3 ||
+       owned->profile.constructor_run_ranges[1].end_exclusive !=
+           owned->profile.init_array_count ||
+       owned->profile.native_mimalloc_constructor_run_range_count != 1 ||
+       owned->profile.native_mimalloc_constructor_run_ranges[0].begin !=
+           checkpoint ||
+       owned->profile.native_mimalloc_constructor_run_ranges[0].end_exclusive !=
+           owned->profile.init_array_count ||
+       (kGuestElfMachine == EM_X86_64 && checkpoint != 2) ||
+       (indices != nullptr &&
+        constructor_indices !=
+            std::array<std::size_t, 4>{checkpoint, checkpoint + 1,
+                                       checkpoint + 2, checkpoint + 3}))) {
     *error =
         "external host ABI profile changed the verified constructor policy";
     return nullptr;
+  }
+  if (!owned->profile.host_allocator_bridges_supported) {
+    auto sorted = constructor_indices;
+    std::sort(sorted.begin(), sorted.end());
+    const auto count = owned->profile.init_array_count;
+    if (sorted.front() < 2 || sorted.back() >= count ||
+        std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end() ||
+        checkpoint != constructor_indices[0] ||
+        owned->profile.native_mimalloc_constructor_run_range_count != 1 ||
+        owned->profile.native_mimalloc_constructor_run_ranges[0].begin != 2 ||
+        owned->profile.native_mimalloc_constructor_run_ranges[0]
+                .end_exclusive != count ||
+        owned->profile.constructor_run_range_count != 1 ||
+        owned->profile.constructor_run_ranges[0].begin != 2 ||
+        owned->profile.constructor_run_ranges[0].end_exclusive != count) {
+      *error =
+          "external native-only profile has inconsistent constructor roles";
+      return nullptr;
+    }
   }
   return owned;
 }

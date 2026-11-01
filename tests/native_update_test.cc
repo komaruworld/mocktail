@@ -24,6 +24,7 @@
 #include "update/payload_integrity.h"
 #include "update/payload_store.h"
 #include "update/readiness_canary.h"
+#include "update/state_file.h"
 #include "update/unsafe_latest_runner.h"
 #include "update/update_config.h"
 #include "update/update_coordinator.h"
@@ -169,6 +170,53 @@ TEST(ApkPureProviderTest, ParsesExactVersionIdentityAndTrustedUrl) {
   ASSERT_TRUE(error.empty()) << error;
   ASSERT_EQ(urls.size(), 1);
   EXPECT_EQ(urls.front(), "https://download.pureapk.com/b/XAPK/roblox");
+}
+
+TEST(ApkPureProviderTest, SelectsNewestDownloadableVersionRegardlessOfOrder) {
+  const std::string metadata =
+      MetadataRecord("2.727.1199", 2628, "XAPKJ",
+                     "https://download.pureapk.com/old.xapk") +
+      MetadataRecord("2.736.1408", 2998, "APKJ",
+                     "https://download.pureapk.com/new.apk") +
+      MetadataRecord("2.734.917", 2908, "APKJ",
+                     "https://download.pureapk.com/middle.apk") +
+      MetadataRecord("2.999.9999", 9999, "APKJ",
+                     "https://untrusted.example/bad.apk");
+  const auto latest = ParseApkPureLatestMetadata(metadata);
+  ASSERT_TRUE(latest) << latest.error;
+  EXPECT_EQ(latest.version_code, 2998);
+  EXPECT_EQ(latest.version_name, "2.736.1408");
+}
+
+TEST(ApkPureProviderTest, ExactDownloadDistinguishesVersionCodes) {
+  const std::string metadata =
+      MetadataRecord("2.736.1408", 2997, "APKJ",
+                     "https://download.pureapk.com/wrong.apk") +
+      MetadataRecord("2.736.1408", 2998, "APKJ",
+                     "https://download.pureapk.com/right.apk");
+  std::string error;
+  const auto urls =
+      ParseApkPureExactDownloadUrls(metadata, "2.736.1408", &error, 2998);
+  ASSERT_TRUE(error.empty()) << error;
+  ASSERT_EQ(urls.size(), 1U);
+  EXPECT_EQ(urls.front(), "https://download.pureapk.com/right.apk");
+}
+
+TEST(UpdateStateFileTest, ReplacesStateAndRejectsMalformedOrIndirectFiles) {
+  TemporaryDirectory temporary;
+  const auto state = temporary.root() / "update.json";
+  EXPECT_TRUE(ReadStateFile(state).is_null());
+  ASSERT_TRUE(WriteStateFile(state, {{"phase", "downloading"}}));
+  ASSERT_TRUE(
+      WriteStateFile(state, {{"phase", "ready"}, {"version_code", 2998}}));
+  EXPECT_EQ(ReadStateFile(state)["phase"], "ready");
+  Write(state, "{broken");
+  EXPECT_TRUE(ReadStateFile(state).is_null());
+  std::filesystem::remove(state);
+  const auto target = temporary.root() / "target";
+  Write(target, "{}");
+  std::filesystem::create_symlink(target, state);
+  EXPECT_TRUE(ReadStateFile(state).is_null());
 }
 
 TEST(UnsafeLatestRunnerTest, LaunchesCandidateWithUnapprovedEnvironment) {
@@ -540,6 +588,152 @@ PayloadStoreResult InstalledFixture(std::string_view version_name,
   installed.version_name = version_name;
   installed.version_code = version_code;
   return installed;
+}
+
+class CoordinatorProvider final : public ApkProvider {
+ public:
+  ProviderVersion latest{"2.200.0", 200, {}};
+  mutable int downloads = 0;
+  std::string_view name() const override { return "fixture"; }
+  ProviderVersion CheckLatest() const override { return latest; }
+  ProviderDownloadResult DownloadExact(const ProviderVersion&,
+                                       const std::filesystem::path&,
+                                       int) const override {
+    ++downloads;
+    return {{}, "fixture", "network unavailable"};
+  }
+};
+
+class UpdateCoordinatorTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    paths.data_root = temporary.root() / "store";
+    paths.cache_root = temporary.root() / "cache";
+    paths.state_root = temporary.root() / "state";
+    paths.config_file = temporary.root() / "config.yaml";
+    paths.compatibility_manifest = temporary.root() / "compatibility.json";
+    nlohmann::json profiles = nlohmann::json::array();
+    for (const unsigned code : {100U, 200U}) {
+      const std::string build_id(40, code == 100 ? 'a' : 'b');
+      profiles.push_back({{"version_name", "2." + std::to_string(code) + ".0"},
+                          {"version_code", code},
+                          {"abi", compat::kGuestAbi},
+                          {"elf_build_id", build_id},
+                          {"status", "supported"},
+                          {"default_allowed", true},
+                          {"allow_legacy_binary_patches", false}});
+      const auto prepared = temporary.root() / std::to_string(code);
+      Write(prepared / "libroblox.so", "library-" + std::to_string(code));
+      Write(prepared / "sober_apk/base.apk", "base");
+      Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "split");
+      Write(prepared / "assets/content/fixture", "asset");
+      std::size_t asset_count = 0;
+      const auto asset_hash = HashAssetTree(prepared / "assets", &asset_count);
+      const nlohmann::json metadata = {
+          {"schema_version", 1},
+          {"package", "com.roblox.client"},
+          {"version_name", "2." + std::to_string(code) + ".0"},
+          {"version_code", code},
+          {"elf_build_id", build_id},
+          {"sha256",
+           {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
+            {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
+            {std::string(compat::kGuestSplitApkHashKey),
+             HashRegularFile(prepared / "sober_apk" /
+                             compat::kGuestSplitApkFile)}}},
+          {"assets",
+           {{"file_count", asset_count}, {"sha256_tree", asset_hash}}}};
+      Write(prepared / "roblox_payload.json", metadata.dump());
+      PayloadStore store(paths.data_root, paths.compatibility_manifest);
+      const auto staged = store.Stage(prepared);
+      ASSERT_TRUE(staged) << staged.error;
+    }
+    Write(paths.compatibility_manifest,
+          nlohmann::json{{"schema_version", 1}, {"profiles", profiles}}.dump());
+    PayloadStore store(paths.data_root, paths.compatibility_manifest);
+    ASSERT_TRUE(store.Promote("100-" + std::string(40, 'a')));
+  }
+
+  TemporaryDirectory temporary;
+  UpdatePaths paths;
+  CoordinatorProvider provider;
+};
+
+TEST_F(UpdateCoordinatorTest, BackgroundDownloadNeverPromotesOrRunsCanaries) {
+  const auto original = ReadFile(paths.data_root / "current.json");
+  UpdateRequest request;
+  request.download_only = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_FALSE(result.changed);
+  EXPECT_TRUE(result.stale);
+  EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  EXPECT_EQ(provider.downloads, 0);
+  const auto state = ReadStateFile(paths.data_root / "update.json");
+  EXPECT_EQ(state["phase"], "ready");
+  EXPECT_EQ(state["latest_downloaded"]["version_code"], 200);
+  EXPECT_EQ(state["active"]["version_code"], 100);
+}
+
+TEST_F(UpdateCoordinatorTest,
+       ActivatesDownloadedReleaseWhenMetadataIsUnavailable) {
+  UpdateRequest request;
+  request.download_only = true;
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  provider.latest.error = "offline";
+  request.download_only = false;
+  request.run_canary = false;
+  const auto result = RunUpdate(paths, request, &provider);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_TRUE(result.changed);
+  EXPECT_FALSE(result.stale);
+  EXPECT_EQ(provider.downloads, 0);
+  const auto state = ReadStateFile(paths.data_root / "update.json");
+  EXPECT_EQ(state["metadata_status"], "unavailable");
+  EXPECT_EQ(state["active"]["version_code"], 200);
+  EXPECT_TRUE(std::filesystem::exists(paths.data_root / "previous_good.json"));
+}
+
+TEST_F(UpdateCoordinatorTest, DisabledAutomaticUpdatesDoNotDownloadOrActivate) {
+  Write(paths.config_file, "updates:\n  automatic: false\n");
+  const auto original = ReadFile(paths.data_root / "current.json");
+  UpdateRequest request;
+  request.download_only = true;
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  EXPECT_EQ(provider.downloads, 0);
+  EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["phase"],
+            "disabled");
+}
+
+TEST_F(UpdateCoordinatorTest, RedownloadsACorruptedStagedCandidate) {
+  const auto original = ReadFile(paths.data_root / "current.json");
+  const auto library = paths.data_root / "payloads" /
+                       ("200-" + std::string(40, 'b')) / "libroblox.so";
+  std::filesystem::permissions(library, std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::add);
+  Write(library, "corrupt");
+  UpdateRequest request;
+  request.download_only = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  EXPECT_TRUE(result);
+  EXPECT_TRUE(result.stale);
+  EXPECT_EQ(provider.downloads, 1);
+  EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["phase"], "blocked");
+}
+
+TEST_F(UpdateCoordinatorTest, PreservesObservedVersionWhenProviderRegresses) {
+  UpdateRequest request;
+  request.download_only = true;
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  provider.latest = {"2.100.0", 100, {}};
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  const auto state = ReadStateFile(paths.data_root / "update.json");
+  EXPECT_EQ(state["latest_seen"]["version_code"], 200);
+  EXPECT_EQ(state["latest_downloaded"]["version_code"], 200);
+  EXPECT_EQ(state["active"]["version_code"], 100);
+  EXPECT_EQ(state["phase"], "ready");
 }
 
 // A rejected candidate used to end the update, leaving the user on whatever

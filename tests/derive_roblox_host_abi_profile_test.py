@@ -164,6 +164,22 @@ class ReferenceProfileTest(unittest.TestCase):
                     self.write_document(Path(temporary), duplicate)
                 )
 
+    def test_accepts_native_only_constructor_roles_and_rejects_conflicts(self):
+        document = copy.deepcopy(self.document)
+        profile = document["profile"]
+        profile["host_allocator_bridges_supported"] = False
+        profile["constructor_run_ranges"] = profile["native_mimalloc_constructor_run_ranges"]
+        profile["native_mimalloc_thread_initializer_after_constructor"] = 5
+        anchors = document["derivation_anchors"]
+        anchors["constructor_indices"] = {"2": 5, "3": 2, "4": 4, "5": 3}
+        ANALYZER.validate_profile_shape(profile, anchors)
+        for key, value in (("2", 2), ("5", 2), ("3", True), ("4", profile["init_array_count"])):
+            invalid = copy.deepcopy(anchors)
+            invalid["constructor_indices"][key] = value
+            with self.subTest(key=key, value=value):
+                with self.assertRaises(ANALYZER.AnalyzerError):
+                    ANALYZER.validate_profile_shape(profile, invalid)
+
 
 class PayloadMetadataTest(unittest.TestCase):
     def valid_metadata(self, build_id: str, digest: str) -> dict:
@@ -295,6 +311,116 @@ class FailClosedUtilityTest(unittest.TestCase):
         self.assertEqual(
             profile["fmod_output_device_bridge"], {"vtable_rva": "0x5678"}
         )
+
+
+class SignatureImage:
+    def __init__(self, data: bytes, address: int = 0x1000):
+        self.data = data
+        self.file_size = len(data)
+        self.address = address
+        self.sections = {".text": types.SimpleNamespace(offset=0, address=address, size=len(data))}
+
+    def require_code_rva(self, rva: int, size: int = 1):
+        if rva < self.address or rva - self.address + size > self.file_size:
+            raise ANALYZER.AnalyzerError("code range exceeds fixture")
+
+    def rva_to_offset(self, rva: int, size: int = 1):
+        self.require_code_rva(rva, size)
+        return rva - self.address
+
+    def bytes_at(self, offset: int, size: int, _description: str):
+        return self.data[offset:offset + size]
+
+    def segment_for_rva(self, rva: int, size: int = 1):
+        self.require_code_rva(rva, size)
+        return types.SimpleNamespace(flags=ANALYZER.PF_READ | ANALYZER.PF_EXECUTE)
+
+
+@unittest.skipIf(ANALYZER.capstone is None, "Python capstone is unavailable")
+class RegistryRegisterAllocationTest(unittest.TestCase):
+    PROLOGUE = bytes.fromhex("55 4889e5 4157 4156 4155 4154 53 4883ec68")
+    OLD_BODY = bytes.fromhex(
+        "bf38030000 e800000000 4889c3 4531f6 ba38030000 4889c7 31f6 "
+        "e800000000 b80000803f 894320 488d4b28"
+    )
+    NEW_BODY = bytes.fromhex(
+        "bff8020000 e800000000 4889c3 4531ff baf8020000 4889c7 31f6 "
+        "e800000000 41bd0000803f 44896b20 4c8d6328"
+    )
+
+    def match(self, *bodies):
+        reference = SignatureImage(self.PROLOGUE + self.OLD_BODY + b"\xc3")
+        candidate = SignatureImage(b"\xcc" * 64 + b"\xcc".join(
+            self.PROLOGUE + body + b"\xc3" for body in bodies), 0x2000)
+        return ANALYZER.find_registry_signature_match(
+            reference, candidate, ANALYZER.SignatureSpec("registry", 0x1000, 20, True))
+
+    def test_accepts_register_reallocation_with_the_same_data_flow(self):
+        self.assertEqual(self.match(self.NEW_BODY).rva, 0x2040)
+
+    def test_accepts_original_register_allocation(self):
+        self.assertEqual(self.match(self.OLD_BODY).rva, 0x2040)
+
+    def test_rejects_two_valid_initializers(self):
+        for first in (self.OLD_BODY, self.NEW_BODY):
+            with self.subTest(first=first.hex()):
+                with self.assertRaisesRegex(ANALYZER.AnalyzerError, "matched 2"):
+                    self.match(first, self.NEW_BODY)
+
+    def test_rejects_inconsistent_sizes_and_broken_register_dependencies(self):
+        variants = (
+            self.NEW_BODY.replace(bytes.fromhex("baf8020000"), bytes.fromhex("ba00030000")),
+            self.NEW_BODY.replace(bytes.fromhex("44896b20"), bytes.fromhex("44897320")),
+            self.NEW_BODY.replace(bytes.fromhex("4c8d6328"), bytes.fromhex("4c8d7b28")),
+            self.NEW_BODY.replace(bytes.fromhex("0000803f"), bytes.fromhex("00000040")),
+        )
+        for body in variants:
+            with self.subTest(body=body.hex()):
+                with self.assertRaises(ANALYZER.AnalyzerError):
+                    self.match(body)
+
+    def test_filters_false_byte_matches_before_requiring_uniqueness(self):
+        valid = bytes.fromhex("55 4889e5 53 50 b801000000 c3")
+        invalid = valid.replace(bytes.fromhex("b801000000"), bytes.fromhex("b802000000"))
+        reference = SignatureImage(valid)
+        candidate = SignatureImage(invalid + b"\xcc" + valid, 0x2000)
+        match = ANALYZER.find_signature_match(
+            reference, candidate, ANALYZER.SignatureSpec("constant", 0x1000, 6))
+        self.assertEqual(match.rva, 0x2000 + len(invalid) + 1)
+        with self.assertRaisesRegex(ANALYZER.AnalyzerError, "matched 2"):
+            ANALYZER.find_signature_match(reference, SignatureImage(valid + valid),
+                                          ANALYZER.SignatureSpec("constant", 0x1000, 6))
+
+
+@unittest.skipIf(ANALYZER.capstone is None, "Python capstone is unavailable")
+class SingletonConstructorTest(unittest.TestCase):
+    @staticmethod
+    def code(address, slot, prologue=False):
+        data = bytes.fromhex("554889e5") if prologue else b""
+        for opcode, target in (("488d05", slot + 8), ("488705", slot), ("488905", slot + 8)):
+            data += bytes.fromhex(opcode) + struct.pack("<i", target - (address + len(data) + 7))
+        return data + b"\xc3"
+
+    def test_maps_singleton_links_after_a_new_prologue(self):
+        reference = SignatureImage(self.code(0x1000, 0x4000))
+        candidate = SignatureImage(self.code(0x2000, 0x5000, True), 0x2000)
+        spec = ANALYZER.SignatureSpec("singleton", 0x1000, 11)
+        match = ANALYZER.find_singleton_signature_match(reference, candidate, spec, [0x2000])
+        self.assertEqual(match.rva, 0x2000)
+        self.assertEqual(ANALYZER.mapped_rip_target(match, 0x4000, "singleton"), 0x5000)
+        for entries in ([], [0x2000, 0x2000], [0x2001]):
+            with self.subTest(entries=entries):
+                with self.assertRaises(ANALYZER.AnalyzerError):
+                    ANALYZER.find_singleton_signature_match(reference, candidate, spec, entries)
+
+    def test_rejects_a_broken_singleton_link(self):
+        reference = SignatureImage(self.code(0x1000, 0x4000))
+        broken = bytearray(self.code(0x2000, 0x5000, True))
+        struct.pack_into("<i", broken, 21, 0x5010 - 0x2019)
+        candidate = SignatureImage(bytes(broken), 0x2000)
+        with self.assertRaises(ANALYZER.AnalyzerError):
+            ANALYZER.find_singleton_signature_match(reference, candidate,
+                ANALYZER.SignatureSpec("singleton", 0x1000, 11), [0x2000])
 
 
 @unittest.skipIf(ANALYZER.capstone is None, "Python capstone is unavailable")
@@ -632,6 +758,37 @@ class DeviceListsRuntimeCompatibilityAcceptanceTest(unittest.TestCase):
                 derived = ANALYZER.derive_runtime_compatibility(
                     reference, candidate, (manifest,))
             self.assertEqual(derived["fmod_output_device_bridge"], self.EXPECTED_BRIDGE)
+
+
+LATEST_REGISTRY_LIBRARY = PAYLOAD_ROOT / "3222-a67a91ef96c700c0730acd36a250c2f93cfafbc1" / "libroblox.so"
+
+
+@unittest.skipUnless(ANALYZER.capstone is not None and CANDIDATE_LIBRARY.is_file()
+                     and LATEST_REGISTRY_LIBRARY.is_file(),
+                     "local exact 2998 and 3222 payloads are unavailable")
+class LatestRegistryAcceptanceTest(unittest.TestCase):
+    def test_2998_to_3222_registry_and_allocator_binding(self):
+        with ANALYZER.ElfImage(CANDIDATE_LIBRARY) as reference, ANALYZER.ElfImage(
+                LATEST_REGISTRY_LIBRARY) as candidate:
+            match = ANALYZER.find_registry_signature_match(reference, candidate,
+                ANALYZER.SignatureSpec("registry", 0x21e8e09, 20, True))
+            self.assertEqual(match.rva, 0x2245a0c)
+            self.assertEqual(ANALYZER.derive_registry_slot(candidate, match.rva), 0x79a9478)
+            allocator = ANALYZER.direct_call_target(match.candidate_instructions[9], "allocator")
+            matches = ANALYZER.find_signature_matches(reference, candidate,
+                ANALYZER.SignatureSpec("allocate", 0x1d2bf82, 24), allow_multiple_candidates=True)
+            self.assertEqual([item.rva for item in matches if item.rva == allocator], [0x1e15256])
+
+    def test_2998_to_3222_full_native_profile(self):
+        sidecar = ANALYZER.validated_sidecar(PROJECT_ROOT / "config/roblox_host_abi_reference.json")
+        with ANALYZER.ElfImage(CANDIDATE_LIBRARY) as reference, ANALYZER.ElfImage(
+                LATEST_REGISTRY_LIBRARY) as candidate:
+            profile, anchors = ANALYZER.derive_profile(reference, candidate, sidecar)
+        self.assertEqual(anchors["constructor_indices"], {"2": 5, "3": 2, "4": 4, "5": 3})
+        self.assertEqual(profile["native_mimalloc_thread_initializer_after_constructor"], 5)
+        self.assertFalse(profile["host_allocator_bridges_supported"])
+        self.assertEqual(profile["data_seeds"]["jni_singleton_slot"], "0x7a66658")
+        ANALYZER.validate_profile_shape(profile, anchors)
 
 
 if __name__ == "__main__":

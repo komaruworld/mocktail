@@ -622,6 +622,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  [runtime] explicit Roblox library uses adjacent assets: "
               << adjacent_assets << '\n';
   }
+  mocktail::runtime::BackgroundPayloadUpdate background_update;
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       uses_managed_payload) {
     failure_dialog.SetMessage(
@@ -646,6 +647,7 @@ int main(int argc, char* argv[]) {
     failure_dialog.SetMessage(
         "Mocktail could not finish starting Roblox because of an internal "
         "error.");
+    background_update.Start(environment, paths);
   }
   if (!mocktail::runtime::ExportRuntimePathEnvironment(paths,
                                                        &command_line_error)) {
@@ -1106,6 +1108,7 @@ int main(int argc, char* argv[]) {
   }
   int runtime_status =
       mocktail::legacy::Run(command_line.options, std::move(dependencies));
+  background_update.Stop();
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     mocktail::runtime::LogProcessDiagnostics(
         mocktail::runtime::ProcessDiagnosticStage::kShutdown);

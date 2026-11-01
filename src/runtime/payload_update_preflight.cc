@@ -1,8 +1,7 @@
 #include "runtime/payload_update_preflight.h"
 
-#include "runtime/helper_environment.h"
-
 #include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -17,6 +16,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "runtime/helper_environment.h"
 
 extern char** environ;
 
@@ -465,6 +466,61 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     result.details = stderr_relay.failure();
   }
   return result;
+}
+
+BackgroundPayloadUpdate::~BackgroundPayloadUpdate() { Stop(); }
+
+void BackgroundPayloadUpdate::Start(const Environment& environment,
+                                    const RuntimePaths& paths,
+                                    std::chrono::milliseconds interval) {
+  if (worker_.joinable() || interval.count() <= 0 ||
+      Enabled(environment, "MOCKTAIL_SKIP_UPDATE_CHECK") ||
+      Enabled(environment, "MOCKTAIL_ISOLATED_CANARY") ||
+      environment.HasNonEmpty("ROBLOX_LIB_PATH"))
+    return;
+  const auto helper = UpdateHelper(environment);
+  if (helper.empty()) return;
+  auto child_environment = ChildEnvironment(paths, false);
+  stopped_ = false;
+  worker_ =
+      std::thread([this, helper, interval,
+                   child_environment = std::move(child_environment)]() mutable {
+        std::vector<char*> environment_pointers;
+        for (auto& entry : child_environment)
+          environment_pointers.push_back(entry.data());
+        environment_pointers.push_back(nullptr);
+        std::string executable = helper.string();
+        char update[] = "update";
+        char download_only[] = "--download-only";
+        char* arguments[] = {executable.data(), update, download_only, nullptr};
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!wake_.wait_for(lock, interval, [this] { return stopped_; })) {
+          pid_t process = -1;
+          const int status =
+              posix_spawn(&process, executable.c_str(), nullptr, nullptr,
+                          arguments, environment_pointers.data());
+          if (status != 0) continue;
+          child_ = process;
+          while (child_ > 0) {
+            const pid_t exited = waitpid(child_, nullptr, WNOHANG);
+            if (exited == child_ || (exited < 0 && errno == ECHILD)) {
+              child_ = -1;
+            } else {
+              wake_.wait_for(lock, std::chrono::milliseconds(50));
+            }
+          }
+        }
+      });
+}
+
+void BackgroundPayloadUpdate::Stop() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopped_ = true;
+    if (child_ > 0) kill(child_, SIGTERM);
+  }
+  wake_.notify_all();
+  if (worker_.joinable()) worker_.join();
 }
 
 }  // namespace runtime

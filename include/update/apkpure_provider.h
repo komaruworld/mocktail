@@ -14,7 +14,7 @@ ProviderVersion ParseApkPureLatestMetadata(std::string_view metadata);
 
 std::vector<std::string> ParseApkPureExactDownloadUrls(
     std::string_view metadata, std::string_view version,
-    std::string* error = nullptr);
+    std::string* error = nullptr, std::uint64_t version_code = 0);
 
 class ApkPureProvider final : public ApkProvider {
  public:
@@ -23,7 +23,8 @@ class ApkPureProvider final : public ApkProvider {
   ProviderVersion CheckLatest() const override;
 
   ProviderDownloadResult DownloadExact(
-      std::string_view version, const std::filesystem::path& output_directory,
+      const ProviderVersion& version,
+      const std::filesystem::path& output_directory,
       int progress_fd = -1) const override;
 };
 

@@ -220,6 +220,7 @@ add_library(mocktail_update STATIC
   src/update/payload_integrity.cc
   src/update/payload_store.cc
   src/update/readiness_canary.cc
+  src/update/state_file.cc
   src/update/unsafe_latest_runner.cc
   src/update/update_config.cc
   src/update/update_coordinator.cc

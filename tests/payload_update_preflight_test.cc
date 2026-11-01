@@ -92,6 +92,54 @@ MapEnvironment NativeEnvironment(
   return MapEnvironment(std::move(additions));
 }
 
+TEST(BackgroundPayloadUpdateTest, DownloadsWithoutActivatingAndStopsItsChild) {
+  TemporaryDirectory temporary;
+  const auto capture = temporary.root() / "argument";
+  ScopedVariable captured("MOCKTAIL_TEST_UPDATE_ARGUMENT_CAPTURE",
+                          capture.string());
+  ScopedVariable delay("MOCKTAIL_TEST_UPDATE_SLEEP_MS", "5000");
+  const auto environment = NativeEnvironment();
+  BackgroundPayloadUpdate update;
+  update.Start(environment, RuntimePaths::FromEnvironment(environment),
+               std::chrono::milliseconds(10));
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (ReadLines(capture).empty() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(ReadLines(capture), std::vector<std::string>{"--download-only"});
+  const auto before = std::chrono::steady_clock::now();
+  update.Stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::seconds(1));
+}
+
+TEST(BackgroundPayloadUpdateTest, CancelsTheScheduledCheckImmediately) {
+  const auto environment = NativeEnvironment();
+  BackgroundPayloadUpdate update;
+  const auto before = std::chrono::steady_clock::now();
+  update.Start(environment, RuntimePaths::FromEnvironment(environment));
+  update.Stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::seconds(1));
+}
+
+TEST(BackgroundPayloadUpdateTest, SkipsExplicitPayloadsAndIsolatedCanaries) {
+  TemporaryDirectory temporary;
+  const auto capture = temporary.root() / "argument";
+  ScopedVariable captured("MOCKTAIL_TEST_UPDATE_ARGUMENT_CAPTURE",
+                          capture.string());
+  for (const char* name : {"ROBLOX_LIB_PATH", "MOCKTAIL_SKIP_UPDATE_CHECK",
+                           "MOCKTAIL_ISOLATED_CANARY"}) {
+    const auto environment = NativeEnvironment({{name, "1"}});
+    BackgroundPayloadUpdate update;
+    update.Start(environment, RuntimePaths::FromEnvironment(environment),
+                 std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    update.Stop();
+  }
+  EXPECT_FALSE(std::filesystem::exists(capture));
+}
+
 TEST(PayloadUpdatePreflightTest, RunsNativeUpdater) {
   TemporaryDirectory temporary;
   const MapEnvironment environment = NativeEnvironment();
