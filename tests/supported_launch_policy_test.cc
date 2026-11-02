@@ -83,6 +83,31 @@ TEST(SupportedLaunchPolicyTest, LeavesResearchModesUnchanged) {
   ExpectPolicyProbe(false, false);
 }
 
+TEST(SupportedLaunchPolicyTest, StripsHostMimallocVariablesInAllModes) {
+  for (const bool interactive : {false, true}) {
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+      if (setenv("MIMALLOC_ARENA_RESERVE", "0", 1) != 0 ||
+          setenv("MIMALLOC_PURGE_DELAY", "0", 1) != 0) {
+        std::_Exit(10);
+      }
+      std::string error;
+      if (!ApplySupportedLaunchPolicy(interactive, &error)) {
+        std::_Exit(11);
+      }
+      std::_Exit(getenv("MIMALLOC_ARENA_RESERVE") == nullptr &&
+                         getenv("MIMALLOC_PURGE_DELAY") == nullptr
+                     ? 0
+                     : 12);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+  }
+}
+
 void ExpectPackagedManifestProbe(bool candidate_override) {
   const pid_t child = fork();
   ASSERT_GE(child, 0);

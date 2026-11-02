@@ -123,5 +123,34 @@ TEST(ProcessLaunchPolicyTest, DemotesRealtimeSchedulingBeforeCreatingWorkers) {
   EXPECT_EQ(WEXITSTATUS(status), 0);
 }
 
+TEST(ProcessLaunchPolicyTest, ClearsInheritedHostMimallocEnvironment) {
+  ASSERT_EXIT(
+      {
+        if (setenv("MIMALLOC_ARENA_RESERVE", "0", 1) != 0 ||
+            setenv("MIMALLOC_PURGE_DELAY", "0", 1) != 0 ||
+            setenv("mimalloc_verbose", "1", 1) != 0 ||
+            setenv("MOCKTAIL_KEEP_ME", "1", 1) != 0) {
+          std::_Exit(10);
+        }
+        const std::string diagnostics = ApplyInteractiveProcessLaunchPolicy();
+        if (std::getenv("MIMALLOC_ARENA_RESERVE") != nullptr ||
+            std::getenv("MIMALLOC_PURGE_DELAY") != nullptr ||
+            std::getenv("mimalloc_verbose") != nullptr) {
+          std::_Exit(11);
+        }
+        const char* kept = std::getenv("MOCKTAIL_KEEP_ME");
+        if (kept == nullptr || std::string(kept) != "1") {
+          std::_Exit(12);
+        }
+        std::_Exit(
+            diagnostics.find(
+                "cleared inherited host mimalloc variable: MIMALLOC_ARENA_RESERVE") !=
+                    std::string::npos
+                ? 0
+                : 13);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
 }  // namespace
 }  // namespace mocktail::runtime
