@@ -69,6 +69,25 @@ sudo dnf install mocktail
 sudo dnf install mocktail-nightly
 ```
 
+## Install on Bazzite (immutable Fedora)
+
+Bazzite's base is read-only (rpm-ostree), so prefer the self-contained Flatpak —
+it bundles its own libraries and already talks to Bazzite's GameMode daemon:
+
+```bash
+flatpak install flathub space.bigrat.mocktail
+flatpak run space.bigrat.mocktail
+```
+
+Ready-made `ujust`/`just` recipes ship in
+[`packaging/bazzite/mocktail.just`](packaging/bazzite/mocktail.just). The RPM
+repo also matches Bazzite 44 and can be layered with `rpm-ostree install
+mocktail` (last resort, needs a reboot), and AppImage/native builds can run
+inside a distrobox container. See the full
+[Bazzite guide](packaging/bazzite/README.md) for these options plus GameMode,
+MangoHud, and Gamescope tuning. Mocktail detects Bazzite at startup and logs
+it (`bazzite=yes immutable=yes`) in every session log and support bundle.
+
 ## Install with APT
 
 Ubuntu 26.04 users can install either the stable `mocktail` package or the
@@ -118,6 +137,35 @@ caused by `Color3` errors in the newer SDUI page. An explicit
   "DFIntExample": "120"
 }
 ```
+
+## Hardware tuning
+
+Mocktail detects the host CPU and GPU at startup and records them in
+`latest.log` (`cpu="..." threads=12 cores=10/12 hybrid=yes p_cores=2 e_cores=8
+... gpu_integrated=yes`) and in support bundles, then adapts:
+
+- **Hybrid Intel CPUs (Alder Lake and newer, e.g. 12th Gen i5-1235U with
+  2 P-cores + 8 E-cores = 10 cores / 12 threads).** P/E cores are read from
+  `/sys/devices/cpu_core/cpus` and `/sys/devices/cpu_atom/cpus`, falling back
+  to per-CPU max-frequency clustering (4.40 GHz P vs 3.30 GHz E). With the
+  default `performance.physics_worker_mode: throughput`, worker pools are
+  sized from the **performance cores only** (4 threads on a 2P+8E chip)
+  instead of all 10 physical cores, keeping the main/render threads on fast
+  P-cores and leaving package power for them. Set `performance.worker_cores:
+  all` in `config.yaml` to restore every-physical-core sizing, or
+  `performance` to force P-cores. The chosen basis is logged as
+  `[performance] worker_cores=auto hybrid=yes p_threads=4 sizing_cores=4`.
+- **Integrated GPUs (Intel Iris Xe / UHD via i915 or xe, virtual GPUs).** They
+  have no dedicated VRAM and share system RAM. If you set
+  `performance.memory_limit_mb`, Mocktail warns when the cap leaves under
+  4 GiB of headroom for the GPU. The texture budget
+  (`FIntRenderForceVideoMemorySize`) is derived from total host RAM, and the
+  default `graphics.backend: direct-vulkan` uses Mesa's ANV driver on Iris Xe;
+  keep `opengl` as the fallback for hosts without a working Vulkan driver.
+- **Frame rate on fixed-refresh panels.** `graphics.frame_rate_limit: display`
+  caps to the detected refresh rate; `unlimited` with `graphics.vsync: off`
+  removes the cap (see `make run-unlimited`).
+
 ## FAQ
 
 To see the most Frequently Asked Question go check [FAQ.md](FAQ.md)

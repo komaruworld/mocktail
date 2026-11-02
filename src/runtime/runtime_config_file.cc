@@ -176,6 +176,7 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "graphics.present_mode",
       "performance.multithreaded_rendering",
       "performance.physics_worker_mode",
+      "performance.worker_cores",
       "performance.memory_limit_mb",
       "performance.gamemode",
       "audio.output_device",
@@ -368,6 +369,16 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_PHYSICS_WORKER_MODE"] =
         std::string(PhysicsWorkerModeName(parsed));
+  }
+  if (const auto worker_cores = value("performance.worker_cores");
+      worker_cores.has_value()) {
+    WorkerCoreMode parsed = WorkerCoreMode::kAuto;
+    if (!ParseWorkerCoreMode(*worker_cores, &parsed)) {
+      *error = "performance.worker_cores must be auto, all, or performance";
+      return false;
+    }
+    (*environment)["MOCKTAIL_WORKER_CORES"] =
+        std::string(WorkerCoreModeName(parsed));
   }
   if (const auto memory_limit = value("performance.memory_limit_mb");
       memory_limit.has_value()) {
@@ -855,6 +866,12 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
     }
     return false;
   }
+  if (!config.performance().worker_core_mode_valid) {
+    if (error != nullptr) {
+      *error = "cannot export an invalid worker core policy";
+    }
+    return false;
+  }
   if (!config.ca_bundle_valid()) {
     if (error != nullptr) {
       *error = "cannot export an invalid CA bundle path";
@@ -925,6 +942,10 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_PHYSICS_WORKER_MODE",
                           std::string(PhysicsWorkerModeName(
                               config.performance().physics_worker_mode)),
+                          error) &&
+      SetEnvironmentValue("MOCKTAIL_WORKER_CORES",
+                          std::string(WorkerCoreModeName(
+                              config.performance().worker_core_mode)),
                           error) &&
       SetEnvironmentValue("MOCKTAIL_MEMORY_LIMIT_MB",
                           std::to_string(config.performance().memory_limit_mb),

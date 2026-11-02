@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "runtime/crash_report_policy.h"
+#include "runtime/host_hardware.h"
 #include "runtime/http_client_policy.h"
 #include "runtime/texture_memory_policy.h"
 
@@ -101,22 +102,82 @@ std::string_view PhysicsWorkerModeName(PhysicsWorkerMode mode) {
   return "auto";
 }
 
+bool ParseWorkerCoreMode(std::string_view value, WorkerCoreMode* mode) {
+  if (mode == nullptr) {
+    return false;
+  }
+  if (value.empty() || value == "auto") {
+    *mode = WorkerCoreMode::kAuto;
+    return true;
+  }
+  if (value == "all") {
+    *mode = WorkerCoreMode::kAll;
+    return true;
+  }
+  if (value == "performance") {
+    *mode = WorkerCoreMode::kPerformance;
+    return true;
+  }
+  return false;
+}
+
+std::string_view WorkerCoreModeName(WorkerCoreMode mode) {
+  switch (mode) {
+    case WorkerCoreMode::kAuto:
+      return "auto";
+    case WorkerCoreMode::kAll:
+      return "all";
+    case WorkerCoreMode::kPerformance:
+      return "performance";
+  }
+  return "auto";
+}
+
+int ResolveWorkerSizingCoreCount(WorkerCoreMode mode, bool hybrid,
+                                 int performance_threads,
+                                 int all_physical_cores) {
+  const int all = std::max(1, all_physical_cores);
+  switch (mode) {
+    case WorkerCoreMode::kAll:
+      return all;
+    case WorkerCoreMode::kAuto:
+    case WorkerCoreMode::kPerformance:
+      // On a detected hybrid Intel CPU, size pools from the performance
+      // cores (their logical thread count) instead of every physical core:
+      // E-cores are ~25% slower per thread and steal package power from the
+      // P-cores that run the main and render threads.
+      if (hybrid && performance_threads > 0) {
+        return std::max(1, performance_threads);
+      }
+      return all;
+  }
+  return all;
+}
+
 int CalculateThroughputWorkerCount(int available_physical_cores) {
   return std::max(1, available_physical_cores);
 }
 
 PerformancePolicy ParsePerformancePolicy(
     std::string_view multithreaded_rendering, std::string_view memory_limit_mb,
-    std::string_view game_mode, std::string_view physics_worker_mode) {
+    std::string_view game_mode, std::string_view physics_worker_mode,
+    std::string_view worker_cores) {
   PerformancePolicy policy;
   policy.multithreaded_rendering = multithreaded_rendering == "1" ||
                                    multithreaded_rendering == "true" ||
                                    multithreaded_rendering == "on";
   policy.physics_worker_mode_valid =
       ParsePhysicsWorkerMode(physics_worker_mode, &policy.physics_worker_mode);
+  policy.worker_core_mode_valid =
+      ParseWorkerCoreMode(worker_cores, &policy.worker_core_mode);
   if (policy.multithreaded_rendering ||
       policy.physics_worker_mode == PhysicsWorkerMode::kThroughput) {
-    policy.physical_core_count = DetectAvailablePhysicalCoreCount();
+    const CpuTopology topology = DetectCpuTopology();
+    policy.hybrid_cpu = topology.hybrid;
+    policy.performance_threads = topology.performance_threads;
+    policy.physical_core_count = ResolveWorkerSizingCoreCount(
+        policy.worker_core_mode, topology.hybrid, topology.performance_threads,
+        DetectAvailablePhysicalCoreCount());
   }
   const char* memory_begin = memory_limit_mb.data();
   const char* memory_end = memory_begin + memory_limit_mb.size();

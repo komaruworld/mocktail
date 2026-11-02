@@ -107,6 +107,14 @@ TEST(SessionLogTest, CapturesBothStreamsAndUpdatesLatest) {
   EXPECT_NE(contents.find("session-stderr-marker"), std::string::npos);
   EXPECT_NE(contents.find(" commit="), std::string::npos);
   EXPECT_NE(contents.find(" target="), std::string::npos);
+  EXPECT_NE(contents.find(" os=\""), std::string::npos);
+  EXPECT_NE(contents.find(" os_id="), std::string::npos);
+  EXPECT_NE(contents.find(" immutable="), std::string::npos);
+  EXPECT_NE(contents.find(" bazzite="), std::string::npos);
+  EXPECT_NE(contents.find(" fedora="), std::string::npos);
+  EXPECT_NE(contents.find(" cores="), std::string::npos);
+  EXPECT_NE(contents.find(" hybrid="), std::string::npos);
+  EXPECT_NE(contents.find(" gpu_integrated="), std::string::npos);
   EXPECT_NE(contents.find("[mocktail] cpu=\""), std::string::npos);
   EXPECT_NE(contents.find(" ram="), std::string::npos);
   EXPECT_NE(contents.find(" gpu=\""), std::string::npos);

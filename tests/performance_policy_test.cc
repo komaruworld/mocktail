@@ -61,6 +61,54 @@ TEST(PerformancePolicyTest, MakesEveryPhysicalCoreAvailableToThroughputMode) {
   EXPECT_EQ(CalculateThroughputWorkerCount(32), 32);
 }
 
+TEST(PerformancePolicyTest, ParsesWorkerCoreMode) {
+  WorkerCoreMode mode = WorkerCoreMode::kAll;
+  EXPECT_TRUE(ParseWorkerCoreMode("auto", &mode));
+  EXPECT_EQ(mode, WorkerCoreMode::kAuto);
+  EXPECT_TRUE(ParseWorkerCoreMode("all", &mode));
+  EXPECT_EQ(mode, WorkerCoreMode::kAll);
+  EXPECT_TRUE(ParseWorkerCoreMode("performance", &mode));
+  EXPECT_EQ(mode, WorkerCoreMode::kPerformance);
+  EXPECT_TRUE(ParseWorkerCoreMode("", &mode));
+  EXPECT_EQ(mode, WorkerCoreMode::kAuto);
+  EXPECT_FALSE(ParseWorkerCoreMode("p-cores", &mode));
+  EXPECT_FALSE(ParseWorkerCoreMode("all", nullptr));
+  EXPECT_EQ(WorkerCoreModeName(WorkerCoreMode::kAuto), "auto");
+  EXPECT_EQ(WorkerCoreModeName(WorkerCoreMode::kAll), "all");
+  EXPECT_EQ(WorkerCoreModeName(WorkerCoreMode::kPerformance), "performance");
+}
+
+TEST(PerformancePolicyTest, ResolveWorkerSizingPrefersPcoresOnHybrid) {
+  // i5-1235U-like topology: 10 physical cores, 4 P-core logical threads.
+  EXPECT_EQ(ResolveWorkerSizingCoreCount(WorkerCoreMode::kAuto, true, 4, 10), 4);
+  EXPECT_EQ(
+      ResolveWorkerSizingCoreCount(WorkerCoreMode::kPerformance, true, 4, 10),
+      4);
+  EXPECT_EQ(ResolveWorkerSizingCoreCount(WorkerCoreMode::kAll, true, 4, 10), 10);
+  // Non-hybrid hosts keep the legacy every-physical-core behavior.
+  EXPECT_EQ(ResolveWorkerSizingCoreCount(WorkerCoreMode::kAuto, false, 0, 10),
+            10);
+  EXPECT_EQ(
+      ResolveWorkerSizingCoreCount(WorkerCoreMode::kPerformance, false, 0, 10),
+      10);
+  EXPECT_EQ(ResolveWorkerSizingCoreCount(WorkerCoreMode::kAll, false, 0, 10),
+            10);
+  // Degenerate inputs still yield at least one worker.
+  EXPECT_EQ(ResolveWorkerSizingCoreCount(WorkerCoreMode::kAuto, true, 0, 0), 1);
+  EXPECT_EQ(ResolveWorkerSizingCoreCount(WorkerCoreMode::kAll, false, 0, 0), 1);
+}
+
+TEST(PerformancePolicyTest, ParsesWorkerCoreModeIntoPolicy) {
+  const PerformancePolicy policy =
+      ParsePerformancePolicy("0", "0", "auto", "throughput", "all");
+  EXPECT_TRUE(policy.worker_core_mode_valid);
+  EXPECT_EQ(policy.worker_core_mode, WorkerCoreMode::kAll);
+  EXPECT_FALSE(ParsePerformancePolicy("0", "0", "auto", "auto", "bogus")
+                   .worker_core_mode_valid);
+  EXPECT_EQ(ParsePerformancePolicy("0").worker_core_mode, WorkerCoreMode::kAuto);
+  EXPECT_TRUE(ParsePerformancePolicy("0").worker_core_mode_valid);
+}
+
 TEST(PerformancePolicyTest, ParsesOptionalMemoryLimitInMebibytes) {
   const PerformancePolicy disabled = ParsePerformancePolicy("0", "0");
   EXPECT_TRUE(disabled.memory_limit_valid);

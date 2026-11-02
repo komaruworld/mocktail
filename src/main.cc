@@ -32,6 +32,8 @@
 #include "runtime/fleasion.h"
 #include "runtime/game_mode.h"
 #include "runtime/graphics_launch_policy.h"
+#include "runtime/host_hardware.h"
+#include "runtime/host_os.h"
 #include "runtime/memory_limit.h"
 #include "runtime/payload_update_preflight.h"
 #include "runtime/performance_policy.h"
@@ -50,6 +52,7 @@
 #include "runtime/support_bundle.h"
 #include "runtime/supported_launch_policy.h"
 #include "runtime/system_proxy.h"
+#include "runtime/texture_memory_policy.h"
 #include "runtime/webview_helper_launcher.h"
 #include "services/auth_service.h"
 #include "services/browser_tracker_service.h"
@@ -540,6 +543,27 @@ int main(int argc, char* argv[]) {
       std::cout << "  [memory] hard process-tree limit active: "
                 << runtime_config.config.performance().memory_limit_mb
                 << " MiB RAM, swap disabled\n";
+      // Integrated GPUs (Iris Xe/UHD via i915, virtual GPUs) have no dedicated
+      // VRAM: they allocate from the same system RAM this cap governs, so a
+      // tight cap can starve the GPU. Leave comfortable headroom.
+      const mocktail::runtime::GpuInfo primary_gpu =
+          mocktail::runtime::DetectPrimaryGpu();
+      if (primary_gpu.integrated && primary_gpu.present) {
+        constexpr std::uint64_t kGpuHeadroomBytes = 4096ULL * 1024ULL * 1024ULL;
+        const std::uint64_t host_bytes =
+            mocktail::runtime::DetectHostMemoryBytes();
+        if (host_bytes > memory_limit_bytes) {
+          const std::uint64_t headroom = host_bytes - memory_limit_bytes;
+          if (headroom < kGpuHeadroomBytes) {
+            std::cerr << "  [memory] warning: "
+                      << (primary_gpu.name.empty() ? primary_gpu.driver
+                                                   : primary_gpu.name)
+                      << " shares system RAM; this cap leaves only "
+                      << (headroom / (1024ULL * 1024ULL))
+                      << " MiB for the GPU (recommend >= 4096 MiB)\n";
+          }
+        }
+      }
     }
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
@@ -550,11 +574,32 @@ int main(int argc, char* argv[]) {
                       ? " (EGL/OpenGL ES)"
                       : "")
               << '\n';
+    const mocktail::runtime::PerformancePolicy& performance =
+        runtime_config.config.performance();
+    if (performance.physical_core_count > 0) {
+      std::cout << "  [performance] worker_cores="
+                << mocktail::runtime::WorkerCoreModeName(
+                       performance.worker_core_mode)
+                << " hybrid=" << (performance.hybrid_cpu ? "yes" : "no");
+      if (performance.hybrid_cpu) {
+        std::cout << " p_threads=" << performance.performance_threads;
+      }
+      std::cout << " sizing_cores=" << performance.physical_core_count
+                << '\n';
+    }
   }
 
   // Register before starting helper processes or loading the Android payload.
   // libgamemode caches its shared
   // D-Bus connection, so the first use must happen in the final game process.
+  const mocktail::runtime::HostOsInfo host_os = mocktail::runtime::DetectHostOs();
+  const bool on_bazzite =
+      host_os.is_bazzite() &&
+      command_line.options.mode == mocktail::runtime::CommandMode::kRun;
+  if (on_bazzite) {
+    std::cout << "  [host] os=\"" << mocktail::runtime::DescribeHostOs(host_os)
+              << "\" gamemode_daemon=shipped-on-bazzite\n";
+  }
   const mocktail::runtime::GameModePolicy game_mode_policy =
       runtime_config.config.performance().game_mode;
   mocktail::runtime::GameModeSession game_mode_session =
@@ -576,6 +621,11 @@ int main(int argc, char* argv[]) {
                   << "; continuing without GameMode\n";
       } else {
         std::cout << "  [gamemode] unavailable; continuing normally\n";
+        if (on_bazzite) {
+          std::cout << "  [gamemode] Bazzite ships gamemoded with D-Bus "
+                       "activation; if this package cannot reach it, prefer "
+                       "the Flatpak build or a distrobox container\n";
+        }
       }
       break;
     case mocktail::runtime::GameModeSessionState::kDisabled:

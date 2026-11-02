@@ -12,6 +12,7 @@ set -f
 
 PROGRAM=${0##*/}
 OS_RELEASE_FILE=${MOCKTAIL_OS_RELEASE_FILE:-/etc/os-release}
+OSTREE_MARKER_FILE=${MOCKTAIL_OSTREE_BOOTED_FILE:-/run/ostree-booted}
 ACTION=
 DISTRO=
 MANAGER=
@@ -46,21 +47,55 @@ StripOsReleaseValue() {
   printf '%s\n' "$value"
 }
 
-ReadDistributionId() {
+ReadOsReleaseField() {
+  key=$1
   [ -f "$OS_RELEASE_FILE" ] && [ -r "$OS_RELEASE_FILE" ] || return 1
-  while IFS='=' read -r key value; do
-    case $key in
-      ID)
-        StripOsReleaseValue "$value"
-        return 0
-        ;;
-    esac
+  while IFS='=' read -r line_key line_value; do
+    [ "$line_key" = "$key" ] || continue
+    StripOsReleaseValue "$line_value"
+    return 0
   done <"$OS_RELEASE_FILE"
   return 1
 }
 
+ReadDistributionId() {
+  ReadOsReleaseField ID
+}
+
+# Image-based (rpm-ostree/bootc) hosts keep /usr read-only, so the thin
+# bundle's host package list cannot be installed with dnf/pacman-style
+# managers. Bazzite sets ID=bazzite and VARIANT_ID/IMAGE_ID=bazzite-*, and
+# every ostree deployment reports OSTREE_VERSION plus /run/ostree-booted.
+HostIsImmutable() {
+  [ -e "$OSTREE_MARKER_FILE" ] && return 0
+  ostree_version=$(ReadOsReleaseField OSTREE_VERSION 2>/dev/null || true)
+  [ -n "$ostree_version" ] && return 0
+  variant_id=$(ReadOsReleaseField VARIANT_ID 2>/dev/null || true)
+  image_id=$(ReadOsReleaseField IMAGE_ID 2>/dev/null || true)
+  case ${variant_id}${image_id} in
+    *bazzite*) return 0 ;;
+  esac
+  return 1
+}
+
+PrintImmutableHostGuidance() {
+  printf '%s: immutable ostree host detected (Bazzite / Fedora Atomic).\n' \
+    "$PROGRAM" >&2
+  printf 'The base system is read-only, so thin host packages cannot be installed here.\n' >&2
+  printf 'Recommended: install the self-contained Flatpak instead:\n' >&2
+  printf '  flatpak install flathub space.bigrat.mocktail\n' >&2
+  printf '  flatpak run space.bigrat.mocktail\n' >&2
+  printf 'Alternatives: run the AppImage or a native build inside a distrobox\n' >&2
+  printf 'container, or layer the RPM with rpm-ostree (requires a reboot).\n' >&2
+  printf 'See packaging/bazzite/README.md for the full Bazzite guide.\n' >&2
+}
+
 DetectDistribution() {
   distro_id=$(ReadDistributionId 2>/dev/null || true)
+  if [ "$distro_id" = bazzite ] || HostIsImmutable; then
+    PrintImmutableHostGuidance
+    Die "immutable ostree hosts cannot receive thin host packages"
+  fi
   case $distro_id in
     arch|archlinux) DISTRO=arch; MANAGER=pacman ;;
     void) DISTRO=void; MANAGER=xbps-install ;;
