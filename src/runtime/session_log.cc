@@ -1,5 +1,8 @@
 #include "runtime/session_log.h"
 
+#include "runtime/host_hardware.h"
+#include "runtime/host_os.h"
+
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -689,16 +692,37 @@ std::string SessionLog::Header(const Environment& environment,
     output << " host=\"" << system.sysname << ' ' << system.release << ' '
            << system.machine << '"';
   }
-  output << " pid=" << getpid() << '\n'
+  const HostOsInfo host_os = DetectHostOs();
+  output << " os=\"" << DescribeHostOs(host_os) << "\""
+         << " os_id=" << (host_os.id.empty() ? "unknown" : host_os.id);
+  if (!host_os.variant_id.empty()) {
+    output << " os_variant_id=" << host_os.variant_id;
+  }
+  output << " immutable=" << (host_os.is_immutable() ? "yes" : "no")
+         << " bazzite=" << (host_os.is_bazzite() ? "yes" : "no")
+         << " fedora=" << (host_os.is_fedora_family() ? "yes" : "no")
+         << " pid=" << getpid() << '\n'
          << "[mocktail] cpu=\"" << CpuModel() << "\" threads=";
   if (threads == 0) {
     output << "unknown";
   } else {
     output << threads;
   }
+  const CpuTopology cpu_topology = DetectCpuTopology();
+  if (cpu_topology.logical_cores > 0) {
+    output << " cores=" << cpu_topology.physical_cores << '/'
+           << cpu_topology.logical_cores
+           << " hybrid=" << (cpu_topology.hybrid ? "yes" : "no");
+    if (cpu_topology.hybrid) {
+      output << " p_cores=" << cpu_topology.performance_cores
+             << " e_cores=" << cpu_topology.efficiency_cores;
+    }
+  }
+  const GpuInfo primary_gpu = DetectPrimaryGpu();
   output << " ram=" << TotalMemory() << " gpu=\"" << graphics.devices
          << "\" gpu_driver=\"" << graphics.drivers
-         << "\" display=" << DisplayServer(environment) << " graphics="
+         << "\" gpu_integrated=" << (primary_gpu.integrated ? "yes" : "no")
+         << " display=" << DisplayServer(environment) << " graphics="
          << (graphics_backend.empty() ? "unknown" : graphics_backend) << '\n'
          << "[mocktail] executable=" << DisplayPath(executable, paths)
          << " config=" << DisplayPath(paths.config_file(), paths) << '\n'

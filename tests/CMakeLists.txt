@@ -237,6 +237,18 @@ target_link_options(game_mode_link_namespace_test PRIVATE
 )
 add_dependencies(game_mode_link_namespace_test game_mode_namespace_fixture)
 
+add_executable(host_os_test host_os_test.cc)
+target_link_libraries(host_os_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
+add_executable(host_hardware_test host_hardware_test.cc)
+target_link_libraries(host_hardware_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+
 add_executable(memory_limit_test memory_limit_test.cc)
 target_link_libraries(memory_limit_test PRIVATE
   Mocktail::Runtime
@@ -983,6 +995,8 @@ gtest_discover_tests(game_mode_link_namespace_test PROPERTIES
   ENVIRONMENT
     "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/game_mode_namespace_fixture"
 )
+gtest_discover_tests(host_os_test)
+gtest_discover_tests(host_hardware_test)
 gtest_discover_tests(memory_limit_test)
 gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(single_instance_lock_test)

@@ -713,6 +713,28 @@ performance:
   unsetenv("MOCKTAIL_GAMEMODE");
 }
 
+TEST(RuntimeConfigFileTest, ValidatesAndLoadsWorkerCores) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path invalid = temporary.Write(R"yaml(
+version: 1
+performance:
+  worker_cores: p-cores
+)yaml");
+  RuntimeConfigLoadResult loaded = LoadRuntimeConfig(MapEnvironment(), invalid);
+  EXPECT_FALSE(loaded);
+  EXPECT_NE(loaded.error.find("performance.worker_cores"), std::string::npos);
+
+  const std::filesystem::path valid = temporary.Write(R"yaml(
+version: 1
+performance:
+  worker_cores: all
+)yaml");
+  loaded = LoadRuntimeConfig(MapEnvironment(), valid);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_EQ(loaded.config.performance().worker_core_mode, WorkerCoreMode::kAll);
+  EXPECT_TRUE(loaded.config.performance().worker_core_mode_valid);
+}
+
 TEST(RuntimeConfigFileTest, ExportsAudioOutputDevice) {
   unsetenv("MOCKTAIL_AUDIO_OUTPUT_DEVICE");
   std::string error;

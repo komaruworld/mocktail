@@ -312,7 +312,8 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
       environment.GetOr("MOCKTAIL_MULTITHREADED_RENDERING", "0"),
       environment.GetOr("MOCKTAIL_MEMORY_LIMIT_MB", "0"),
       environment.GetOr("MOCKTAIL_GAMEMODE", "auto"),
-      environment.GetOr("MOCKTAIL_PHYSICS_WORKER_MODE", "throughput"));
+      environment.GetOr("MOCKTAIL_PHYSICS_WORKER_MODE", "throughput"),
+      environment.GetOr("MOCKTAIL_WORKER_CORES", "auto"));
   config.audio_output_device_ = environment.GetOr(
       "MOCKTAIL_AUDIO_OUTPUT_DEVICE", config.audio_output_device_);
   config.audio_output_device_valid_ =

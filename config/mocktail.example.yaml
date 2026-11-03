@@ -60,12 +60,22 @@ performance:
   # available to Roblox worker pools; `latency` preserves Roblox-managed pool
   # sizes and coalesces midphase work. Supported: auto, latency, throughput.
   physics_worker_mode: throughput
+  # String (default: auto): which cores size Roblox worker pools on hybrid
+  # Intel CPUs (Alder Lake and newer, e.g. a 12th Gen i5-1235U with 2 P-cores
+  # + 8 E-cores). `auto` uses only the performance cores when a hybrid
+  # topology is detected and every physical core otherwise; `all` always
+  # uses every physical core; `performance` forces performance cores when
+  # detectable. Supported: auto, all, performance.
+  # worker_cores: auto
   # Integer MiB (default: 0): hard RAM cap for the Mocktail process tree.
   # 0 disables the cap. cgroup v2 also disables swap; other Linux systems use
   # an RSS+swap watchdog. 6144 is a conservative starting point for 32 GiB RAM.
   memory_limit_mb: 0
   # String (default: auto): request Feral GameMode when its host daemon and
   # client library are available. Supported values: auto, on, off.
+  # Bazzite (immutable Fedora) ships the gamemoded daemon enabled, so the
+  # default `auto` activates it there; the Flatpak build already talks to
+  # com.feralinteractive.GameMode. See packaging/bazzite/README.md.
   gamemode: auto
 
 audio:

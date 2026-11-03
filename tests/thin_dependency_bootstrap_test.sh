@@ -259,4 +259,61 @@ grep -Fxq -- '--version' "${TEMP_DIR}/host-bash.log"
 ! grep -Eq '/usr/bin/env|(^|[^[:alnum:]_])dirname([^[:alnum:]_]|$)' \
   "${BOOTSTRAP}"
 
+# Immutable ostree hosts (Bazzite, Fedora Atomic) must be refused with
+# Flatpak/distrobox guidance instead of a package-manager probe.
+MakeOsRelease bazzite "${TEMP_DIR}/bazzite-os-release"
+printf 'VARIANT_ID=bazzite-nvidia-open\nOSTREE_VERSION=44.20260820.0\n' \
+  >>"${TEMP_DIR}/bazzite-os-release"
+: >"${TEMP_DIR}/ostree-booted"
+set +e
+PATH="${fake_bin}:/usr/bin:/bin" \
+  MOCKTAIL_OS_RELEASE_FILE="${TEMP_DIR}/bazzite-os-release" \
+  MOCKTAIL_OSTREE_BOOTED_FILE="${TEMP_DIR}/ostree-booted" \
+  "${INSTALLER}" --check \
+  >"${TEMP_DIR}/bazzite.stdout" 2>"${TEMP_DIR}/bazzite.stderr"
+bazzite_status=$?
+set -e
+[[ "${bazzite_status}" -eq 2 ]]
+grep -Fq 'immutable ostree host detected' "${TEMP_DIR}/bazzite.stderr"
+grep -Fq 'flatpak install flathub space.bigrat.mocktail' \
+  "${TEMP_DIR}/bazzite.stderr"
+grep -Fq 'distrobox' "${TEMP_DIR}/bazzite.stderr"
+grep -Fq 'rpm-ostree' "${TEMP_DIR}/bazzite.stderr"
+grep -Fq 'packaging/bazzite/README.md' "${TEMP_DIR}/bazzite.stderr"
+
+# An ostree deployment is detected from OSTREE_VERSION even without the
+# /run/ostree-booted marker (e.g. inside sandboxes that hide /run).
+MakeOsRelease fedora "${TEMP_DIR}/silverblue-os-release"
+printf 'OSTREE_VERSION=44.20260820.0\nVARIANT_ID=silverblue\n' \
+  >>"${TEMP_DIR}/silverblue-os-release"
+set +e
+PATH="${fake_bin}:/usr/bin:/bin" \
+  MOCKTAIL_OS_RELEASE_FILE="${TEMP_DIR}/silverblue-os-release" \
+  MOCKTAIL_OSTREE_BOOTED_FILE="${TEMP_DIR}/absent-marker" \
+  "${INSTALLER}" --print \
+  >"${TEMP_DIR}/silverblue.stdout" 2>"${TEMP_DIR}/silverblue.stderr"
+silverblue_status=$?
+set -e
+[[ "${silverblue_status}" -eq 2 ]]
+grep -Fq 'immutable ostree host detected' "${TEMP_DIR}/silverblue.stderr"
+
+# Plain Fedora Workstation has no ostree markers and keeps the legacy
+# unsupported-distribution error (no pacman/xbps/apk on this PATH).
+MakeOsRelease fedora "${TEMP_DIR}/fedora-os-release"
+fedora_bin="${TEMP_DIR}/fedora-bin"
+mkdir -p "${fedora_bin}"
+MakeFakeId "${fedora_bin}"
+set +e
+PATH="${fedora_bin}" \
+  MOCKTAIL_OS_RELEASE_FILE="${TEMP_DIR}/fedora-os-release" \
+  MOCKTAIL_OSTREE_BOOTED_FILE="${TEMP_DIR}/absent-marker" \
+  "${INSTALLER}" --check \
+  >"${TEMP_DIR}/fedora.stdout" 2>"${TEMP_DIR}/fedora.stderr"
+fedora_status=$?
+set -e
+[[ "${fedora_status}" -eq 2 ]]
+grep -Fq 'unsupported or ambiguous Linux distribution: fedora' \
+  "${TEMP_DIR}/fedora.stderr"
+! grep -Fq 'immutable ostree host detected' "${TEMP_DIR}/fedora.stderr"
+
 printf 'thin dependency bootstrap test passed\n'

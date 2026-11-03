@@ -1,5 +1,8 @@
 #include "runtime/support_bundle.h"
 
+#include "runtime/host_hardware.h"
+#include "runtime/host_os.h"
+
 #define JSON_NOEXCEPTION 1
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -242,12 +245,49 @@ SupportBundleCollectionResult CollectFailureSupportBundle(
                                std::filesystem::perm_options::replace, error);
   struct utsname system = {};
   (void)uname(&system);
+  const HostOsInfo host_os = DetectHostOs();
+  const CpuTopology cpu_topology = DetectCpuTopology();
+  const GpuInfo primary_gpu = DetectPrimaryGpu();
+  // Keep every value on one printable line; os-release is host-provided.
+  const auto field = [](std::string value) {
+    for (char& character : value) {
+      const unsigned char byte = static_cast<unsigned char>(character);
+      if (std::iscntrl(byte) != 0) character = ' ';
+    }
+    return value;
+  };
   const std::string runtime =
       "schema=2\nformat=native-directory\ncontext=" + std::string(context) +
       "\nreason=" + std::string(reason) +
       "\nexit_code=" + std::to_string(exit_code) +
       "\nkernel_name=" + system.sysname + "\nkernel_release=" + system.release +
-      "\narchitecture=" + system.machine + "\n";
+      "\narchitecture=" + system.machine +
+      "\nos_release_id=" + field(host_os.id) +
+      "\nos_name=" + field(host_os.name) +
+      "\nos_pretty_name=" + field(host_os.pretty_name) +
+      "\nos_version_id=" + field(host_os.version_id) +
+      "\nos_variant=" + field(host_os.variant) +
+      "\nos_variant_id=" + field(host_os.variant_id) +
+      "\nos_image_id=" + field(host_os.image_id) +
+      "\nostree_version=" + field(host_os.ostree_version) +
+      "\nostree_booted=" + std::string(host_os.ostree_booted ? "yes" : "no") +
+      "\nimmutable=" + std::string(host_os.is_immutable() ? "yes" : "no") +
+      "\nbazzite=" + std::string(host_os.is_bazzite() ? "yes" : "no") +
+      "\nfedora_family=" + std::string(host_os.is_fedora_family() ? "yes" : "no") +
+      "\ncpu_model=" + field(cpu_topology.model) +
+      "\ncpu_logical_cores=" + std::to_string(cpu_topology.logical_cores) +
+      "\ncpu_physical_cores=" + std::to_string(cpu_topology.physical_cores) +
+      "\ncpu_hybrid=" + std::string(cpu_topology.hybrid ? "yes" : "no") +
+      "\ncpu_p_cores=" + std::to_string(cpu_topology.performance_cores) +
+      "\ncpu_e_cores=" + std::to_string(cpu_topology.efficiency_cores) +
+      "\ncpu_max_freq_mhz=" + std::to_string(cpu_topology.max_freq_mhz) +
+      "\ngpu_present=" + std::string(primary_gpu.present ? "yes" : "no") +
+      "\ngpu_vendor_id=" + field(primary_gpu.vendor_id) +
+      "\ngpu_device_id=" + field(primary_gpu.device_id) +
+      "\ngpu_driver=" + field(primary_gpu.driver) +
+      "\ngpu_name=" + field(primary_gpu.name) +
+      "\ngpu_integrated=" + std::string(primary_gpu.integrated ? "yes" : "no") +
+      "\n";
   const std::string recent =
       SanitizeLog(ReadTail(source_log, MaximumLogBytes(environment)));
   if (!WritePrivate(bundle / "runtime.txt", runtime, &result.error) ||

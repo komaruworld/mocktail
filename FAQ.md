@@ -1,5 +1,17 @@
 # FAQ
 
+## Does Mocktail work on Bazzite?
+
+Yes. Bazzite is an immutable Fedora Atomic image, so use the Flatpak
+(`flatpak install flathub space.bigrat.mocktail`) — it is self-contained and
+GameMode works out of the box because Bazzite ships `gamemoded` and the Flatpak
+already has the `com.feralinteractive.GameMode` D-Bus permission. The RPM repo
+targets Fedora 44 and can be layered with `rpm-ostree install mocktail` as a
+last resort; AppImage/native builds belong in a distrobox container. See
+[packaging/bazzite/README.md](packaging/bazzite/README.md) for the full guide,
+including MangoHud and Gamescope. Mocktail detects Bazzite at startup and
+records it in `latest.log` and support bundles.
+
 ## How do I enable Discord RPC?
 
 RPC is disabled by default. Launch Mocktail once to create the config, then

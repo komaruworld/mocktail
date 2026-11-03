@@ -20,6 +20,26 @@ enum class PhysicsWorkerMode {
 bool ParsePhysicsWorkerMode(std::string_view value, PhysicsWorkerMode* mode);
 std::string_view PhysicsWorkerModeName(PhysicsWorkerMode mode);
 
+// Selects which cores size Roblox's worker pools. On hybrid Intel CPUs
+// (Alder Lake+, e.g. i5-1235U with 2 P-cores + 8 E-cores) `auto` sizes pools
+// from the performance cores only; `all` keeps the legacy every-physical-core
+// behavior; `performance` forces performance cores when the topology is
+// known.
+enum class WorkerCoreMode {
+  kAuto,
+  kAll,
+  kPerformance,
+};
+
+bool ParseWorkerCoreMode(std::string_view value, WorkerCoreMode* mode);
+std::string_view WorkerCoreModeName(WorkerCoreMode mode);
+
+// Pure resolution for tests: the worker-sizing core count for a given mode
+// and detected topology. Always at least one.
+int ResolveWorkerSizingCoreCount(WorkerCoreMode mode, bool hybrid,
+                                 int performance_threads,
+                                 int all_physical_cores);
+
 // Malformed topology still yields one worker.
 int CalculateThroughputWorkerCount(int available_physical_cores);
 
@@ -32,6 +52,12 @@ struct PerformancePolicy {
   bool game_mode_valid = true;
   PhysicsWorkerMode physics_worker_mode = PhysicsWorkerMode::kAuto;
   bool physics_worker_mode_valid = true;
+  WorkerCoreMode worker_core_mode = WorkerCoreMode::kAuto;
+  bool worker_core_mode_valid = true;
+  // Detected when worker pools are sized (multithreaded rendering or
+  // throughput mode); zero/unknown otherwise.
+  bool hybrid_cpu = false;
+  int performance_threads = 0;
 
   bool memory_limit_enabled() const {
     return memory_limit_valid && memory_limit_mb != 0;
@@ -44,7 +70,8 @@ struct PerformancePolicy {
 PerformancePolicy ParsePerformancePolicy(
     std::string_view multithreaded_rendering,
     std::string_view memory_limit_mb = "0", std::string_view game_mode = "auto",
-    std::string_view physics_worker_mode = "auto");
+    std::string_view physics_worker_mode = "auto",
+    std::string_view worker_cores = "auto");
 
 // Respects CPU affinity and falls back to the available logical count.
 int DetectAvailablePhysicalCoreCount();
