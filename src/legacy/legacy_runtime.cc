@@ -2342,13 +2342,11 @@ void SetRobloxServiceUrlFields(JNIEnv* env, jobject object) {
       "application/AndroidApp.zst";
   constexpr const char* kClientSettingsBaseUrl =
       "https://clientsettingscdn.roblox.com";
-  constexpr const char* kEcsv2ClientUrl =
-      "https://ecsv2.roblox.com/client/pbe";
-  constexpr const char* kEcsv2TimespentUrl =
-      "https://ecsv2.roblox.com/timespent/pbe";
-  constexpr const char* kTelemetryUrl =
-      "https://apis.roblox.com/experience-signals-ingest/public/v1/"
-      "events/single";
+  // Telemetry and event-reporting endpoints are intentionally left empty:
+  // Mocktail ships with all Roblox telemetry (experience signals, client
+  // event stream, time-spent pings) disabled. An empty URL leaves the APK
+  // with no endpoint to report to.
+  constexpr const char* kNoTelemetry = "";
 
   SetStringField(env, object, "baseUrl", kBaseUrl);
   SetStringField(env, object, "baseURL", kBaseUrl);
@@ -2359,12 +2357,12 @@ void SetRobloxServiceUrlFields(JNIEnv* env, jobject object) {
   SetStringField(env, object, "settingsUrl", kClientSettingsUrl);
   SetStringField(env, object, "clientSettingsBaseUrl", kClientSettingsBaseUrl);
   SetStringField(env, object, "clientSettingsHost", kClientSettingsBaseUrl);
-  SetStringField(env, object, "ecsv2Url", kEcsv2ClientUrl);
-  SetStringField(env, object, "ecsUrl", kEcsv2ClientUrl);
-  SetStringField(env, object, "eventStreamUrl", kEcsv2ClientUrl);
-  SetStringField(env, object, "telemetryUrl", kTelemetryUrl);
-  SetStringField(env, object, "telemetryEndpoint", kTelemetryUrl);
-  SetStringField(env, object, "timeSpentUrl", kEcsv2TimespentUrl);
+  SetStringField(env, object, "ecsv2Url", kNoTelemetry);
+  SetStringField(env, object, "ecsUrl", kNoTelemetry);
+  SetStringField(env, object, "eventStreamUrl", kNoTelemetry);
+  SetStringField(env, object, "telemetryUrl", kNoTelemetry);
+  SetStringField(env, object, "telemetryEndpoint", kNoTelemetry);
+  SetStringField(env, object, "timeSpentUrl", kNoTelemetry);
 }
 
 jobject NewObject(JNIEnv* env, const char* class_name) {

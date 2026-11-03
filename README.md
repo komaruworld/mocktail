@@ -166,6 +166,23 @@ Mocktail detects the host CPU and GPU at startup and records them in
   caps to the detected refresh rate; `unlimited` with `graphics.vsync: off`
   removes the cap (see `make run-unlimited`).
 
+## Privacy: telemetry is disabled
+
+Mocktail ships with all Roblox telemetry and crash reporting turned off:
+
+- The JNI service-URL fields `telemetryUrl` / `telemetryEndpoint`
+  (experience-signals ingest), `ecsv2Url` / `ecsUrl` / `eventStreamUrl`
+  (client event stream), and `timeSpentUrl` are set to empty strings, so the
+  client has no tracking endpoint to report to.
+- All crash/backtrace upload flags (Backtrace, MetricKit, crash-reason
+  telemetry) are forced off via the crash-report policy
+  (`src/runtime/crash_report_policy.cc`), and the startup log confirms:
+  `[runtime] Roblox crash-report uploads disabled by policy`.
+- Support bundles are built locally (`scripts/collect_support_bundle.sh`) and
+  never uploaded anywhere; secrets and tokens are redacted before archiving.
+- `tests/no_telemetry_endpoints_test.sh` is a regression guard that fails CI
+  if any tracking endpoint reappears in first-party sources.
+
 ## FAQ
 
 To see the most Frequently Asked Question go check [FAQ.md](FAQ.md)

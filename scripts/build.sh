@@ -176,7 +176,7 @@ if [[ "${EXTRACT_APK}" == true && -n "${APK_URL}" ]]; then
   info "URL: ${APK_URL}"
   info "Destination: ${APK_PATH}"
   if command -v curl &>/dev/null; then
-    curl -L --progress-bar -o "${APK_PATH}" "${APK_URL}"
+    curl -L --fail --progress-bar -o "${APK_PATH}" "${APK_URL}"
   else
     wget -q --show-progress -O "${APK_PATH}" "${APK_URL}"
   fi
