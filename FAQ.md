@@ -44,6 +44,14 @@ attach `latest.log`:
 
 For native installs, a custom `$XDG_STATE_HOME` replaces `~/.local/state`.
 
+## Does Mocktail send telemetry or crash reports?
+
+No. Mocktail disables all Roblox telemetry endpoints (experience signals,
+client event stream, time-spent pings) and forces every crash/backtrace upload
+flag off at startup. Logs and support bundles stay on your machine unless you
+share them yourself. See the "Privacy: telemetry is disabled" section in the
+README.
+
 ## Can I run multiple Roblox instances?
 
 No. Mocktail won't add multi-instance launching. It would mean working around

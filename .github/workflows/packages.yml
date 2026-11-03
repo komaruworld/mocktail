@@ -480,8 +480,14 @@ jobs:
           set -Eeuo pipefail
           git config user.name komaruworld
           git config user.email rtysus228@gmail.com
-          git tag --force continuous "$GITHUB_SHA"
-          git push origin refs/tags/continuous --force
+          # The published "continuous" tag must stay immutable: never
+          # force-push it, so consumers pinning the tag get a fixed commit.
+          if git ls-remote --exit-code origin refs/tags/continuous >/dev/null 2>&1; then
+            echo "continuous tag already published; keeping it immutable (no force-push)"
+          else
+            git tag continuous "$GITHUB_SHA"
+            git push origin refs/tags/continuous
+          fi
           if ! gh release view continuous >/dev/null 2>&1; then
             gh release create continuous \
               --prerelease \
