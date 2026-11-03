@@ -155,6 +155,12 @@ Mocktail detects the host CPU and GPU at startup and records them in
   all` in `config.yaml` to restore every-physical-core sizing, or
   `performance` to force P-cores. The chosen basis is logged as
   `[performance] worker_cores=auto hybrid=yes p_threads=4 sizing_cores=4`.
+  Steady-state worker pools always size from that basis (P-core threads on a
+  2P+8E chip), but the scheduler's hard ceiling (`FIntTaskSchedulerAutoThreadLimit`)
+  and the mesh-cluster queue follow the **logical** thread count (12 on the
+  i5-1235U), so a sudden burst — camera whip, teleport, new area streaming in —
+  can spill onto the E-cores instead of dropping frames. Logged as
+  `burst limit=12` in the `[runtime] physics worker mode=throughput` line.
 - **Integrated GPUs (Intel Iris Xe / UHD via i915 or xe, virtual GPUs).** They
   have no dedicated VRAM and share system RAM. If you set
   `performance.memory_limit_mb`, Mocktail warns when the cap leaves under

@@ -43,9 +43,17 @@ int ResolveWorkerSizingCoreCount(WorkerCoreMode mode, bool hybrid,
 // Malformed topology still yields one worker.
 int CalculateThroughputWorkerCount(int available_physical_cores);
 
+// Burst ceiling for scheduler/render queues: the worker-sizing count unless
+// the detected logical thread count is higher (e.g. SMT or hybrid E-cores), in
+// which case sudden load spikes can spill onto those extra hardware threads.
+// Always at least one.
+int ResolveBurstWorkerCount(int sizing_cores, int logical_cores);
+
 struct PerformancePolicy {
   bool multithreaded_rendering = false;
   int physical_core_count = 0;
+  // Detected logical CPUs (hardware threads) alongside physical_core_count.
+  int logical_core_count = 0;
   std::uint64_t memory_limit_mb = 0;
   bool memory_limit_valid = true;
   GameModePolicy game_mode = GameModePolicy::kAuto;

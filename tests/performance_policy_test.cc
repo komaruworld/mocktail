@@ -284,6 +284,41 @@ TEST(PerformancePolicyTest, ThroughputModeUsesEveryPhysicalCore) {
   EXPECT_EQ(parsed.at("FIntOcclusionWorkerThreadCount"), "7");
 }
 
+TEST(PerformancePolicyTest, ResolveBurstWorkerCountFollowsLogicalThreads) {
+  // i5-1235U-like: 4 P-core sizing threads, 12 logical threads.
+  EXPECT_EQ(ResolveBurstWorkerCount(4, 12), 12);
+  // Non-hybrid SMT: 8 physical sizing cores, 16 logical threads.
+  EXPECT_EQ(ResolveBurstWorkerCount(8, 16), 16);
+  // Unknown logical count falls back to the sizing count.
+  EXPECT_EQ(ResolveBurstWorkerCount(14, 0), 14);
+  // Malformed counts still yield one worker.
+  EXPECT_EQ(ResolveBurstWorkerCount(0, 0), 1);
+  EXPECT_EQ(ResolveBurstWorkerCount(-3, -1), 1);
+}
+
+TEST(PerformancePolicyTest, ThroughputModeBurstsToLogicalThreadLimit) {
+  // Hybrid i5-1235U: steady-state pools size from the 4 P-core threads, but
+  // the scheduler ceiling and mesh-cluster queue follow the 12 logical
+  // threads so a camera-whip burst can use the E-cores instead of dropping.
+  PerformancePolicy policy =
+      ParsePerformancePolicy("false", "0", "auto", "throughput");
+  policy.physical_core_count = 4;
+  policy.logical_core_count = 12;
+  std::string merged;
+  std::string error;
+  ASSERT_TRUE(
+      MergePerformanceClientSettingsOverrides(policy, "{}", &merged, &error))
+      << error;
+
+  const nlohmann::json parsed =
+      nlohmann::json::parse(merged, nullptr, false, true);
+  EXPECT_EQ(parsed.at("FIntTaskSchedulerThreadMin"), "0");
+  EXPECT_EQ(parsed.at("FIntTaskSchedulerAsyncTasksMinimumThreadCount"), "3");
+  EXPECT_EQ(parsed.at("FIntTaskSchedulerAutoThreadLimit"), "12");
+  EXPECT_EQ(parsed.at("FIntSmoothClusterTaskQueueMaxParallelTasks"), "12");
+  EXPECT_EQ(parsed.at("FIntOcclusionWorkerThreadCount"), "2");
+}
+
 TEST(PerformancePolicyTest, ComposesFrameRateBeforePerformanceMode) {
   std::string merged;
   std::string error;
