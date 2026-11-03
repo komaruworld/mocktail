@@ -27,6 +27,11 @@ on:
       - 'stubs/**'
       - 'third_party/**'
   workflow_dispatch:
+  # Test publishing on the arena working branch only: builds the bundles and
+  # attaches the x86_64 one to the flatpak-x64-test prerelease for download.
+  push:
+    branches:
+      - arena/4eaa2977-mocktail
 
 permissions:
   actions: read
@@ -44,6 +49,8 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event != 'pull_request' &&
       github.event.workflow_run.head_branch == 'main')
+    permissions:
+      contents: write
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -125,6 +132,23 @@ jobs:
           path: Mocktail-${{ matrix.arch }}.flatpak
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish x86_64 bundle to the test release
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/arena/4eaa2977-mocktail' &&
+          matrix.arch == 'x86_64'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          tag="flatpak-x64-test"
+          if ! gh release view "${tag}" >/dev/null 2>&1; then
+            gh release create "${tag}" --target "${GITHUB_SHA}" --prerelease \
+              --title "Mocktail x86_64 Flatpak (test build)" \
+              --notes "Test build of the x86_64 Flatpak bundle from commit ${GITHUB_SHA} (branch arena/4eaa2977-mocktail). Install with: flatpak install --user Mocktail-x86_64.flatpak && flatpak run space.bigrat.mocktail"
+          fi
+          gh release upload "${tag}" "Mocktail-x86_64.flatpak" --clobber
 
   publish:
     name: Assemble multi-architecture Flatpak repository
