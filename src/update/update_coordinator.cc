@@ -247,23 +247,6 @@ std::filesystem::path RejectionMarker(
           std::string(CanaryGraphicsBackendName(graphics_backend)) + ".txt");
 }
 
-bool RejectedForRuntime(const UpdatePaths& paths, const Candidate& candidate,
-                        CanaryGraphicsBackend graphics_backend) {
-  const std::filesystem::path marker =
-      RejectionMarker(paths, candidate, graphics_backend);
-  if (marker.empty()) return false;
-  std::error_code filesystem_error;
-  const auto status = std::filesystem::symlink_status(marker, filesystem_error);
-  if (filesystem_error || !std::filesystem::is_regular_file(status) ||
-      std::filesystem::is_symlink(status))
-    return false;
-  const auto modified =
-      std::filesystem::last_write_time(marker, filesystem_error);
-  return !filesystem_error &&
-         std::filesystem::file_time_type::clock::now() - modified <
-             std::chrono::hours(6);
-}
-
 void RecordRejection(const UpdatePaths& paths, const Candidate& candidate,
                      CanaryGraphicsBackend graphics_backend,
                      std::string_view reason) {
@@ -951,13 +934,6 @@ UpdateResult RunUpdate(const UpdatePaths& paths, const UpdateRequest& request,
       cleanup();
       return finish();
     }
-    if (request.startup_preflight && current &&
-        RejectedForRuntime(paths, candidate,
-                           request.canary_graphics_backend)) {
-      blocked = description + " already failed probation with this runtime";
-      continue;
-    }
-
     save_phase("verifying");
     std::string candidate_error;
     bool candidate_rejected = false;

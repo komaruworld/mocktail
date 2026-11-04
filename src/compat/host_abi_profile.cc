@@ -6,6 +6,28 @@ namespace mocktail::compat {
 namespace {
 
 constexpr HostAbiProfile kProfiles[] = {
+    {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+     {{{0x1e154a2, HostBridgeKind::kAllocate, "small-allocate"},
+       {0x1e18647, HostBridgeKind::kUsableSize, "usable-size"},
+       {0x22446da, HostBridgeKind::kReallocate, "reallocate"},
+       {0x1e15256, HostBridgeKind::kAllocate, "allocate"},
+       {0x1e2eae7, HostBridgeKind::kAlignedAllocate,
+        "aligned-allocate-direct"},
+       {0x1e18c83, HostBridgeKind::kFree, "free"}}},
+     6,
+     {0x732dec8, 0x79a6130, 0x7a66658, 0x400, 0x1e15827, 0x1e95df7,
+      0x7a75430, 0x7a754c0, 0x400000},
+     {0x1e15256, 0x1e18c83},
+     0x72a74f0,
+     3678,
+     {{{2, 3678}}},
+     1,
+     {{{2, 3678}}},
+     1,
+     5,
+     {0x2245a0c, 0x79a9478},
+     HostAllocatorStrategy::kNativeMimalloc,
+     false},
     // Roblox 2.736.1408 arm64-v8a. Every RVA was derived from the AArch64
     // payload of the same release as the x86-64 reference above, matched by
     // allocator internals, init_array call graphs, and static state layout.

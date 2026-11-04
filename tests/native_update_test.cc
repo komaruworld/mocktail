@@ -593,9 +593,13 @@ PayloadStoreResult InstalledFixture(std::string_view version_name,
 class CoordinatorProvider final : public ApkProvider {
  public:
   ProviderVersion latest{"2.200.0", 200, {}};
+  mutable int checks = 0;
   mutable int downloads = 0;
   std::string_view name() const override { return "fixture"; }
-  ProviderVersion CheckLatest() const override { return latest; }
+  ProviderVersion CheckLatest() const override {
+    ++checks;
+    return latest;
+  }
   ProviderDownloadResult DownloadExact(const ProviderVersion&,
                                        const std::filesystem::path&,
                                        int) const override {
@@ -673,6 +677,27 @@ TEST_F(UpdateCoordinatorTest, BackgroundDownloadNeverPromotesOrRunsCanaries) {
   EXPECT_EQ(state["phase"], "ready");
   EXPECT_EQ(state["latest_downloaded"]["version_code"], 200);
   EXPECT_EQ(state["active"]["version_code"], 100);
+}
+
+TEST_F(UpdateCoordinatorTest, StartupChecksLatestAndRetriesFailedUpdate) {
+  const auto original = ReadFile(paths.data_root / "current.json");
+  const auto attempts = temporary.root() / "attempts";
+  paths.runtime_binary = std::filesystem::read_symlink("/proc/self/exe");
+  paths.runtime_launcher = temporary.root() / "canary.sh";
+  Write(paths.runtime_launcher,
+        "#!/bin/sh\nprintf x >> '" + attempts.string() + "'\nexit 1\n");
+  ASSERT_EQ(chmod(paths.runtime_launcher.c_str(), 0700), 0);
+  UpdateRequest request;
+  request.startup_preflight = true;
+  for (int launch = 1; launch <= 2; ++launch) {
+    const auto result = RunUpdate(paths, request, &provider);
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_TRUE(result.stale);
+    EXPECT_EQ(provider.checks, launch);
+    EXPECT_EQ(ReadFile(attempts), std::string(launch, 'x'));
+    EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  }
+  EXPECT_FALSE(std::filesystem::is_empty(paths.data_root / "rejections"));
 }
 
 TEST_F(UpdateCoordinatorTest,
@@ -956,9 +981,6 @@ TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) 
   ASSERT_TRUE(catalog) << catalog.error;
   const auto preferred = PreferredSupportedProfile(catalog.profiles);
   ASSERT_TRUE(preferred.has_value());
-  EXPECT_EQ(preferred->version_name, "2.736.1408");
-  EXPECT_EQ(preferred->version_code, 2998U);
-
   const auto payload = nlohmann::json::parse(
       ReadFile(root / "config/roblox_payload.json"));
   if (payload.at("abi").get_ref<const std::string&>() != compat::kGuestAbi) {
@@ -1003,6 +1025,10 @@ TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) 
             builtin->init_array_count);
   EXPECT_EQ(builtin->default_allocator_strategy,
             compat::HostAllocatorStrategy::kNativeMimalloc);
+  EXPECT_EQ(builtin->host_allocator_bridges_supported,
+            profile.value("host_allocator_bridges_supported", true));
+  EXPECT_EQ(builtin->native_mimalloc_thread_initializer_after_constructor,
+            profile.at("native_mimalloc_thread_initializer_after_constructor"));
 }
 
 std::string ActivationManifestFixture(const std::string& payload_id) {
