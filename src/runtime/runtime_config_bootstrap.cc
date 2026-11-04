@@ -71,8 +71,12 @@ graphics:
   # vsync: off
 
 performance:
-  # Boolean (default: false): size Roblox scheduler/render queues from every
-  # physical CPU core. A place's Lua/main thread can still remain serial.
+  # Boolean (default: false): pin Roblox's minimum scheduler thread count to
+  # the worker-core count (full multithreaded engine queues). Off by default
+  # because a permanently hot thread pool steals P-cores from the render
+  # thread on hybrid/laptop CPUs; the default `throughput` mode already
+  # enables the parallel render queues with a zero minimum and lets sudden
+  # bursts scale up to every logical thread (see worker_cores).
   multithreaded_rendering: false
   # String (default: throughput): `throughput` makes every physical core
   # available to Roblox worker pools; `latency` preserves Roblox-managed pool

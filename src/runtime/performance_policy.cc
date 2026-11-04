@@ -158,6 +158,12 @@ int CalculateThroughputWorkerCount(int available_physical_cores) {
   return std::max(1, available_physical_cores);
 }
 
+int ResolveBurstWorkerCount(int sizing_cores, int logical_cores) {
+  const int sizing = std::max(1, sizing_cores);
+  const int logical = logical_cores > 0 ? logical_cores : sizing;
+  return std::max(sizing, logical);
+}
+
 PerformancePolicy ParsePerformancePolicy(
     std::string_view multithreaded_rendering, std::string_view memory_limit_mb,
     std::string_view game_mode, std::string_view physics_worker_mode,
@@ -175,6 +181,7 @@ PerformancePolicy ParsePerformancePolicy(
     const CpuTopology topology = DetectCpuTopology();
     policy.hybrid_cpu = topology.hybrid;
     policy.performance_threads = topology.performance_threads;
+    policy.logical_core_count = topology.logical_cores;
     policy.physical_core_count = ResolveWorkerSizingCoreCount(
         policy.worker_core_mode, topology.hybrid, topology.performance_threads,
         DetectAvailablePhysicalCoreCount());
@@ -272,16 +279,22 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
                                       : DetectAvailablePhysicalCoreCount();
     render_worker_count = std::max(1, available_workers);
   }
+  // Steady-state pools are sized from the sizing cores (P-cores on hybrid
+  // CPUs), but the scheduler's hard ceiling follows the logical thread count
+  // so a sudden burst (camera whip: occlusion + mesh-cluster rebuild) can
+  // spill onto SMT siblings / E-cores instead of dropping frames.
+  const int burst_worker_count =
+      ResolveBurstWorkerCount(render_worker_count, policy.logical_core_count);
   if (throughput_mode) {
     constexpr int kMaximumAsyncMinimum = 3;
     render_worker_count = CalculateThroughputWorkerCount(render_worker_count);
-    const std::string workers = std::to_string(render_worker_count);
+    const std::string burst_workers = std::to_string(burst_worker_count);
     const std::string async_minimum =
         std::to_string(std::min(render_worker_count, kMaximumAsyncMinimum));
     const std::array<ClientSetting, 4> physics_settings = {{
         {"FIntTaskSchedulerThreadMin", "0"},
         {"FIntTaskSchedulerAsyncTasksMinimumThreadCount", async_minimum},
-        {"FIntTaskSchedulerAutoThreadLimit", workers},
+        {"FIntTaskSchedulerAutoThreadLimit", burst_workers},
         {"DFIntSimMidPhaseContactPipelineBatchSize", "128"},
     }};
     if (!apply_settings(physics_settings)) {
@@ -301,6 +314,7 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
   if ((policy.multithreaded_rendering || throughput_mode) &&
       policy.physics_worker_mode != PhysicsWorkerMode::kLatency) {
     const std::string workers = std::to_string(render_worker_count);
+    const std::string burst_workers = std::to_string(burst_worker_count);
     const std::string occlusion_workers =
         std::to_string(std::max(1, render_worker_count / 2));
     const char* custom_quality = std::getenv("MOCKTAIL_GRAPHICS_QUALITY");
@@ -314,7 +328,7 @@ bool MergePerformanceClientSettingsOverrides(const PerformancePolicy& policy,
     // Leave MSAA selection to Roblox or explicit client-settings overrides.
     // Forcing one sample disables anti-aliasing even at maximum quality.
     const std::array<ClientSetting, 61> rendering_settings = {{
-        {"FIntSmoothClusterTaskQueueMaxParallelTasks", workers},
+        {"FIntSmoothClusterTaskQueueMaxParallelTasks", burst_workers},
         {"FIntOcclusionWorkerThreadCount", occlusion_workers},
         {"FFlagMovePrerenderV2", "True"},
         {"FFlagGcInParallelWithRenderPrepare3", "True"},

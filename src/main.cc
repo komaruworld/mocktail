@@ -893,6 +893,9 @@ int main(int argc, char* argv[]) {
             ? mocktail::runtime::CalculateThroughputWorkerCount(
                   physical_core_count)
             : physical_core_count;
+    const int burst_worker_count = mocktail::runtime::ResolveBurstWorkerCount(
+        engine_worker_count,
+        runtime_config.config.performance().logical_core_count);
     if (physics_worker_mode == mocktail::runtime::PhysicsWorkerMode::kLatency) {
       std::cout << "  [runtime] physics worker mode=latency: Roblox-managed "
                    "worker pools, midphase batch=128\n";
@@ -900,7 +903,8 @@ int main(int argc, char* argv[]) {
                mocktail::runtime::PhysicsWorkerMode::kThroughput) {
       std::cout << "  [runtime] physics worker mode=throughput: "
                 << engine_worker_count << " scheduler workers, async minimum="
-                << std::min(engine_worker_count, 3) << ", midphase batch=128\n";
+                << std::min(engine_worker_count, 3) << ", burst limit="
+                << burst_worker_count << ", midphase batch=128\n";
     }
     if ((runtime_config.config.performance().multithreaded_rendering ||
          physics_worker_mode ==
