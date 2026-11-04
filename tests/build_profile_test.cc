@@ -5,6 +5,7 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -160,7 +161,14 @@ TEST(BuildProfileTest, RejectsPartialInputProfilesAndUpgradesCachedLayouts) {
     std::ifstream input(kManifestPath);
     input >> document;
   }
-  auto &entry = document["profiles"].back();
+  auto &profiles = document["profiles"];
+  const auto found = std::find_if(
+      profiles.begin(), profiles.end(), [](const auto &profile) {
+        return profile.value("elf_build_id", "") ==
+               "ade08266c67aee88ec9c1d00902150e1684dad3a";
+      });
+  ASSERT_NE(found, profiles.end());
+  auto &entry = *found;
   auto &bridge = entry["fmod_output_device_bridge"];
   char path[] = "/tmp/mocktail-input-profile-XXXXXX";
   int fd = mkstemp(path);
