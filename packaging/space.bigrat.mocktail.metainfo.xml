@@ -55,6 +55,18 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="1.0.5" date="2026-11-05">
+      <description>
+        <ul>
+          <li>Updated the default Roblox version to 2.742.1059.</li>
+          <li>Fixed texture issues and reduced blurring.</li>
+          <li>Fixed chat, text cursor positioning, mouse input, and other issues.</li>
+          <li>Improved voice chat and fixed related bugs.</li>
+          <li>Added authentication storage via libsecret.</li>
+          <li>Added experimental ARM64 support.</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.4" date="2026-09-11">
       <description>
         <ul>
