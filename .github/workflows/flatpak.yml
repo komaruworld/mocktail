@@ -27,11 +27,12 @@ on:
       - 'stubs/**'
       - 'third_party/**'
   workflow_dispatch:
-  # Test publishing on the arena working branch only: builds the bundles and
-  # attaches the x86_64 one to the flatpak-x64-test prerelease for download.
+  # Test publishing on arena working branches only: builds the bundles and
+  # attaches the x86_64 one to a per-build prerelease for download.
   push:
     branches:
       - arena/4eaa2977-mocktail
+      - arena/daf335bb-mocktail
 
 permissions:
   actions: read
@@ -133,22 +134,32 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish x86_64 bundle to the test release
+      - name: Publish x86_64 bundle to a new test release
         if: >-
           github.event_name == 'push' &&
-          github.ref == 'refs/heads/arena/4eaa2977-mocktail' &&
+          (github.ref == 'refs/heads/arena/4eaa2977-mocktail' ||
+           github.ref == 'refs/heads/arena/daf335bb-mocktail') &&
           matrix.arch == 'x86_64'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          tag="flatpak-x64-test"
+          short_sha="${GITHUB_SHA:0:7}"
+          tag="flatpak-x64-${short_sha}"
+          notes="Test build of the x86_64 Flatpak bundle from commit ${GITHUB_SHA} (branch ${GITHUB_REF_NAME}). Install with: flatpak install --user Mocktail-x86_64.flatpak && flatpak run space.bigrat.mocktail"
           if ! gh release view "${tag}" >/dev/null 2>&1; then
             gh release create "${tag}" --target "${GITHUB_SHA}" --prerelease \
-              --title "Mocktail x86_64 Flatpak (test build)" \
-              --notes "Test build of the x86_64 Flatpak bundle from commit ${GITHUB_SHA} (branch arena/4eaa2977-mocktail). Install with: flatpak install --user Mocktail-x86_64.flatpak && flatpak run space.bigrat.mocktail"
+              --title "Mocktail x86_64 Flatpak (test build ${short_sha})" \
+              --notes "${notes}"
           fi
           gh release upload "${tag}" "Mocktail-x86_64.flatpak" --clobber
+          # Keep the rolling flatpak-x64-test prerelease pointing at the latest build.
+          if ! gh release view flatpak-x64-test >/dev/null 2>&1; then
+            gh release create flatpak-x64-test --target "${GITHUB_SHA}" --prerelease \
+              --title "Mocktail x86_64 Flatpak (test build)" --notes "${notes}"
+          fi
+          gh release upload flatpak-x64-test "Mocktail-x86_64.flatpak" --clobber
+          echo "published ${tag} and updated flatpak-x64-test"
 
   publish:
     name: Assemble multi-architecture Flatpak repository
