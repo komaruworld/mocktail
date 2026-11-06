@@ -16,6 +16,7 @@ namespace mocktail {
 namespace window {
 
 using PreTextInputPumpCallback = bool (*)(void* context);
+using HapticsPumpCallback = bool (*)(void* context);
 using FullscreenStateSyncCallback = bool (*)(void* context, bool fullscreen);
 
 // Configures persistent geometry and fullscreen state before Init().
@@ -87,6 +88,8 @@ void ClearMouseLockQueryCallback();
 bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,
                                  void* context);
 void ClearPreTextInputPumpCallback();
+bool SetHapticsPumpCallback(HapticsPumpCallback callback, void* context);
+void ClearHapticsPumpCallback();
 
 // Guest callbacks enqueue state; PumpEvents applies it on SDL's main thread.
 void SetWindowTextInputOwnerEnabled(bool enabled);

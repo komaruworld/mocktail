@@ -1,8 +1,11 @@
 #include "mocktail/platform/sdl_gamepad_manager.h"
 
 #include <SDL3/SDL_init.h>
+#include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_timer.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <utility>
@@ -126,6 +129,15 @@ void SdlGamepadManager::Remove(SDL_JoystickID id) {
   if (found == gamepads_.end()) {
     return;
   }
+  if (RumbleTarget() == id) {
+    StopRumble();
+  }
+  if (active_ == id) {
+    active_ = 0;
+  }
+  if (rumble_failed_ == id) {
+    rumble_failed_ = 0;
+  }
   Emit(GamepadConnectionEvent{id, false, {}, false});
   SDL_CloseGamepad(found->second);
   gamepads_.erase(found);
@@ -154,6 +166,46 @@ void SdlGamepadManager::EmitState(SDL_JoystickID id, SDL_Gamepad* gamepad) {
 void SdlGamepadManager::ResendState() {
   for (const auto& entry : gamepads_) {
     EmitState(entry.first, entry.second);
+  }
+}
+
+SDL_JoystickID SdlGamepadManager::RumbleTarget() const {
+  auto capable = [](SDL_Gamepad* gamepad) {
+    return SDL_GamepadConnected(gamepad) &&
+           SDL_GetBooleanProperty(SDL_GetGamepadProperties(gamepad),
+                                  SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+  };
+  const auto found = gamepads_.find(active_);
+  if (found != gamepads_.end() && capable(found->second)) {
+    return active_;
+  }
+  for (const auto& entry : gamepads_) {
+    if (capable(entry.second)) {
+      return entry.first;
+    }
+  }
+  return 0;
+}
+
+void SdlGamepadManager::Rumble(float intensity, std::uint32_t duration_ms) {
+  const auto target = RumbleTarget();
+  if (target == 0) {
+    return;
+  }
+  const auto strength = static_cast<Uint16>(
+      std::lround(std::clamp(intensity, 0.0f, 1.0f) * 65535.0f));
+  if (!SDL_RumbleGamepad(gamepads_.at(target), strength, strength,
+                       duration_ms) &&
+      rumble_failed_ != target) {
+    rumble_failed_ = target;
+    std::fprintf(stderr, "  [haptics] SDL rumble failed: %s\n",
+                 SDL_GetError());
+  }
+}
+
+void SdlGamepadManager::StopRumble() {
+  for (const auto& entry : gamepads_) {
+    SDL_RumbleGamepad(entry.second, 0, 0, 0);
   }
 }
 
@@ -187,6 +239,22 @@ bool SdlGamepadManager::HandleEvent(const PlatformEvent& event) {
     return false;
   }
   if (ValidId(id) && Open(static_cast<SDL_JoystickID>(id)) != nullptr) {
+    bool activity = false;
+    if (const auto* button = std::get_if<GamepadButtonEvent>(&event.payload)) {
+      activity = button->pressed;
+    }
+    if (const auto* axis = std::get_if<GamepadAxisEvent>(&event.payload)) {
+      activity = axis->value > 8000 || axis->value < -8000;
+    }
+    if (activity && active_ != static_cast<SDL_JoystickID>(id)) {
+      const auto candidate = gamepads_.find(static_cast<SDL_JoystickID>(id));
+      if (candidate != gamepads_.end() &&
+          SDL_GetBooleanProperty(SDL_GetGamepadProperties(candidate->second),
+                                 SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) {
+        StopRumble();
+        active_ = static_cast<SDL_JoystickID>(id);
+      }
+    }
     emit_(context_, event);
   }
   return true;

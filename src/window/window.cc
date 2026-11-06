@@ -162,6 +162,7 @@ static VulkanSurfaceRecoveryGate g_vulkan_surface_recovery_gate;
 static WindowSurfaceLifecycle g_window_surface_lifecycle;
 static PlatformEventObserverGate g_platform_event_observer;
 static MainThreadCommandGate g_pre_text_input_pump_gate;
+static MainThreadCommandGate g_haptics_pump_gate;
 static WindowFullscreenRequestGate g_fullscreen_request_gate;
 static RobloxFullscreenMenuRequestGate g_fullscreen_menu_request_gate;
 static WindowFullscreenStateSync g_fullscreen_state_sync;
@@ -946,6 +947,7 @@ bool ActivateWindowEventLifecycles() {
   g_state.width = pixel_width;
   g_state.height = pixel_height;
   g_pre_text_input_pump_gate.Activate();
+  g_haptics_pump_gate.Activate();
   g_text_input_backend =
       std::make_unique<SdlTextInputBackend>(g_state.sdl_window);
   g_text_input_owner =
@@ -1643,6 +1645,10 @@ bool SetPreTextInputPumpCallback(PreTextInputPumpCallback callback,
   return g_pre_text_input_pump_gate.Register(callback, context);
 }
 void ClearPreTextInputPumpCallback() { g_pre_text_input_pump_gate.Clear(); }
+bool SetHapticsPumpCallback(HapticsPumpCallback callback, void* context) {
+  return g_haptics_pump_gate.Register(callback, context);
+}
+void ClearHapticsPumpCallback() { g_haptics_pump_gate.Clear(); }
 void SetWindowTextInputOwnerEnabled(bool enabled) {
   if (g_text_input_owner != nullptr) {
     g_text_input_owner->SetEnabled(enabled);
@@ -2262,6 +2268,9 @@ bool PumpEvents() {
   MaybeRequestResizeReadiness();
   MaybeRequestFullscreenReadiness();
   MaybeQueueInputReadinessSequence();
+  if (!g_haptics_pump_gate.Invoke()) {
+    fprintf(stderr, "  [haptics] main-thread rumble drain failed\n");
+  }
   if (!g_pre_text_input_pump_gate.Invoke()) {
     fprintf(stderr, "  [input] main-thread text command drain failed\n");
   }
@@ -2513,6 +2522,7 @@ uint64_t PaceInputPump() {
 
 void Shutdown() {
   g_input_pump_pacer.Reset();
+  g_haptics_pump_gate.Deactivate();
   g_pre_text_input_pump_gate.Deactivate();
   g_platform_event_observer.Deactivate();
   g_vulkan_present_progress_gate.Deactivate();
