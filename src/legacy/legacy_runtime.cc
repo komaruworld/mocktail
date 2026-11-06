@@ -4832,6 +4832,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       std::getenv("MOCKTAIL_APP_STORAGE_FILE_INTERNAL");
   bool dark_theme = runtime_config.theme_mode() != "light";
   bool roblox_theme_found = false;
+  bool roblox_system_theme = false;
   if (runtime_config.theme_mode() == "system") {
     dark_theme = system_dark_theme;
   } else if (runtime_config.theme_mode() == "roblox" &&
@@ -4843,7 +4844,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       std::cerr << "  [theme] Cannot read Roblox theme cache; using default: "
                 << saved_theme.error << '\n';
     }
-    if (saved_theme.dark_theme.has_value()) {
+    if (saved_theme.system_theme) {
+      dark_theme = system_dark_theme;
+      roblox_system_theme = true;
+    } else if (saved_theme.dark_theme.has_value()) {
       dark_theme = *saved_theme.dark_theme;
       roblox_theme_found = true;
     }
@@ -4851,8 +4855,9 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   setenv("MOCKTAIL_RESOLVED_THEME_INTERNAL", dark_theme ? "Dark" : "Light", 1);
   if (runtime_config.theme_mode() == "roblox") {
     std::cout << "  [theme] "
-              << (roblox_theme_found ? "Roblox saved theme="
-                                     : "Roblox theme unavailable; default=")
+              << (roblox_system_theme  ? "Roblox saved theme=system; host="
+                  : roblox_theme_found ? "Roblox saved theme="
+                                       : "Roblox theme unavailable; default=")
               << (dark_theme ? "dark" : "light") << '\n'
               << std::flush;
   } else if (app_storage_file != nullptr) {
