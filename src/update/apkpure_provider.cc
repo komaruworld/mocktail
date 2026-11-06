@@ -202,9 +202,14 @@ std::vector<std::string> ParseApkPureExactDownloadUrls(
   return result;
 }
 
+ApkPureProvider::ApkPureProvider(MetadataFetcher metadata, Downloader download)
+    : metadata_(std::move(metadata)), download_(std::move(download)) {
+  if (!metadata_) metadata_ = FetchMetadata;
+}
+
 ProviderVersion ApkPureProvider::CheckLatest() const {
   const HttpBytesResult metadata =
-      FetchMetadata(std::string(compat::kGuestAbi));
+      metadata_(compat::kGuestAbi);
   if (!metadata) return ProviderVersion{{}, 0, metadata.error};
   return ParseApkPureLatestMetadata(metadata.bytes);
 }
@@ -212,6 +217,13 @@ ProviderVersion ApkPureProvider::CheckLatest() const {
 ProviderDownloadResult ApkPureProvider::DownloadExact(
     const ProviderVersion& version,
     const std::filesystem::path& output_directory, int progress_fd) const {
+  return DownloadVerified(version, output_directory, progress_fd, {});
+}
+
+ProviderDownloadResult ApkPureProvider::DownloadVerified(
+    const ProviderVersion& version,
+    const std::filesystem::path& output_directory, int progress_fd,
+    const ArchiveValidator& validate) const {
   ProviderDownloadResult result;
   result.source = std::string(name());
   if (!version || version.version_name.size() > 128 ||
@@ -229,7 +241,7 @@ ProviderDownloadResult ApkPureProvider::DownloadExact(
     result.error = "cannot create APKPure download directory";
     return result;
   }
-  HttpBytesResult metadata = FetchMetadata(std::string(compat::kGuestAbi));
+  HttpBytesResult metadata = metadata_(compat::kGuestAbi);
   if (!metadata) {
     result.error = metadata.error;
     return result;
@@ -238,7 +250,7 @@ ProviderDownloadResult ApkPureProvider::DownloadExact(
   std::vector<std::string> urls = ParseApkPureExactDownloadUrls(
       metadata.bytes, version.version_name, &parse_error, version.version_code);
   if (urls.empty()) {
-    metadata = FetchMetadata("arm64-v8a,armeabi-v7a,armeabi,x86,x86_64");
+    metadata = metadata_("arm64-v8a,armeabi-v7a,armeabi,x86,x86_64");
     if (!metadata) {
       result.error = metadata.error;
       return result;
@@ -259,24 +271,28 @@ ProviderDownloadResult ApkPureProvider::DownloadExact(
     request.url = urls[index];
     request.allowed_hosts = kDownloadHosts;
     request.maximum_bytes = kMaximumArchiveBytes;
-    // Several hundred MiB over a slow link is not a failed transfer; the
-    // quarter-hour cap failed those users outright. Stalls are caught by the
-    // low-speed guard instead.
     request.transfer_timeout_ms = 0;
-    if (ZipMagic(destination)) {
-      result.archives.push_back(destination);
-      continue;
-    }
-    const HttpDownloadResult downloaded =
-        DownloadFile(request, destination, progress_fd);
+    const auto accept = [&]() {
+      result.archives = {destination};
+      result.error.clear();
+      if (validate) result.error = validate(result);
+      if (result) return true;
+      result.archives.clear();
+      std::filesystem::remove(destination, filesystem_error);
+      return false;
+    };
+    if (ZipMagic(destination) && accept()) return result;
+    const auto downloaded = download_(request, destination, progress_fd);
     if (!downloaded || !ZipMagic(destination)) {
       std::filesystem::remove(destination, filesystem_error);
       result.error = downloaded ? "APKPure response is not a ZIP archive"
                                 : downloaded.error;
-      return result;
+      continue;
     }
-    result.archives.push_back(destination);
+    if (accept()) return result;
+    std::filesystem::remove(destination, filesystem_error);
   }
+  if (result.error.empty()) result.error = "APKPure returned no usable APK";
   return result;
 }
 

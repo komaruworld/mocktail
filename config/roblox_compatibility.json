@@ -125,6 +125,18 @@
         "vtable_layout_version": 2
       },
       "reason": "Verified with isolated Vulkan canaries and real game sessions; exact Build-ID native allocator, constructor replay, fullscreen, and FMOD output-device profile."
+    },
+    {
+      "version_name": "2.742.1059",
+      "version_code": 3222,
+      "abi": "arm64-v8a",
+      "elf_build_id": "25aa7fd31008a744c3c99f717e7d16d81d371d12",
+      "status": "supported",
+      "default_allowed": true,
+      "allow_legacy_binary_patches": false,
+      "allow_host_abi_bridges": true,
+      "allow_host_constructor_replay": true,
+      "reason": "Exact ARM64 Build-ID native allocator and pre-JNI registry profile; constructor replay includes the relocated process-load checkpoint at index 7. Validated with AArch64-emulated OpenGL ES presentation and lifecycle shutdown; activation still requires the selected graphics backend's readiness canary."
     }
   ]
 }

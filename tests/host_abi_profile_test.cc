@@ -154,6 +154,27 @@ TEST(HostAbiProfileTest, ResearchedBaselineKeepsHostBridgeDefault) {
             HostAllocatorStrategy::kNativeMimalloc);
 }
 
+TEST(HostAbiProfileTest, Arm64UpdateInitializesThreadAtRelocatedProcessLoad) {
+  const auto* profile =
+      FindHostAbiProfile("25aa7fd31008a744c3c99f717e7d16d81d371d12");
+  ASSERT_NE(profile, nullptr);
+  EXPECT_EQ(profile->ResolveAllocatorStrategy(false, false),
+            HostAllocatorStrategy::kNativeMimalloc);
+  EXPECT_FALSE(profile->host_allocator_bridges_supported);
+  ASSERT_TRUE(profile->HasValidNativeMimallocConstructorRanges());
+  EXPECT_FALSE(profile->AllowsNativeMimallocConstructor(0));
+  EXPECT_FALSE(profile->AllowsNativeMimallocConstructor(1));
+  for (std::size_t index = 2; index < profile->init_array_count; ++index) {
+    EXPECT_TRUE(profile->AllowsNativeMimallocConstructor(index)) << index;
+    EXPECT_EQ(
+        profile->ShouldInitializeNativeMimallocThreadAfterConstructor(index),
+        index == 7) << index;
+  }
+  EXPECT_FALSE(
+      profile->AllowsNativeMimallocConstructor(profile->init_array_count));
+  EXPECT_TRUE(profile->HasValidNativePreJniBootstrap());
+}
+
 TEST(HostAbiProfileTest, UnknownBuildHasNoNativeOffsets) {
   EXPECT_EQ(FindHostAbiProfile("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
             nullptr);

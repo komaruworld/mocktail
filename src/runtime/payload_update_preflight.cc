@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "runtime/helper_environment.h"
@@ -29,7 +31,6 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
-constexpr int kUpdaterProgressDescriptor = 10;
 constexpr char kProgressFinishedPacket = 'S';
 
 bool Enabled(const Environment& environment, std::string_view name) {
@@ -149,6 +150,16 @@ class UpdateProgressMonitor final {
     int sockets[2] = {-1, -1};
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) != 0) {
       return {};
+    }
+    if (sockets[0] <= STDERR_FILENO) {
+      const int descriptor =
+          fcntl(sockets[0], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+      close(sockets[0]);
+      if (descriptor < 0) {
+        close(sockets[1]);
+        return {};
+      }
+      sockets[0] = descriptor;
     }
     posix_spawn_file_actions_t actions;
     if (posix_spawn_file_actions_init(&actions) != 0) {
@@ -346,7 +357,7 @@ class UpdaterStderrRelay final {
 };
 
 std::vector<std::string> ChildEnvironment(const RuntimePaths& paths,
-                                          bool progress_enabled) {
+                                          int progress_descriptor = -1) {
   const std::vector<std::pair<std::string_view, std::filesystem::path>>
       overrides = {
           {"MOCKTAIL_CONFIG_FILE", paths.config_file()},
@@ -365,9 +376,9 @@ std::vector<std::string> ChildEnvironment(const RuntimePaths& paths,
   for (const auto& [name, value] : overrides) {
     child_environment.emplace_back(std::string(name) + "=" + value.string());
   }
-  if (progress_enabled) {
+  if (progress_descriptor >= 0) {
     child_environment.emplace_back("MOCKTAIL_UPDATE_PROGRESS_FD=" +
-                                   std::to_string(kUpdaterProgressDescriptor));
+                                   std::to_string(progress_descriptor));
   }
   return child_environment;
 }
@@ -403,7 +414,7 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
                        nullptr};
   UpdateProgressMonitor progress = UpdateProgressMonitor::Start(environment);
   std::vector<std::string> child_environment =
-      ChildEnvironment(paths, progress.active());
+      ChildEnvironment(paths, progress.socket());
   std::vector<char*> child_environment_pointers;
   child_environment_pointers.reserve(child_environment.size() + 1);
   for (std::string& entry : child_environment) {
@@ -419,8 +430,9 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     actions_initialized = action_status == 0;
   }
   if (action_status == 0 && progress.active()) {
+    // Same-descriptor spawn dup2 clears FD_CLOEXEC in the child.
     action_status = posix_spawn_file_actions_adddup2(
-        &actions, progress.socket(), kUpdaterProgressDescriptor);
+        &actions, progress.socket(), progress.socket());
   }
   if (action_status == 0 && stderr_relay.active()) {
     action_status = posix_spawn_file_actions_adddup2(
@@ -464,6 +476,24 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
     result.error = force_run_latest ? "forced latest Roblox run failed"
                                      : "Roblox update preflight failed";
     result.details = stderr_relay.failure();
+    if (WIFSIGNALED(child_status)) {
+      const int signal = WTERMSIG(child_status);
+      std::string termination =
+          "Roblox updater terminated by signal " + std::to_string(signal);
+      if (const char* description = strsignal(signal)) {
+        termination += " (" + std::string(description) + ")";
+      }
+      termination += ".";
+      if (!result.details.empty()) termination += "\n" + result.details;
+      result.details = std::move(termination);
+    } else if (WIFEXITED(child_status) && result.details.empty()) {
+      result.details = "Roblox updater exited with code " +
+                       std::to_string(WEXITSTATUS(child_status)) +
+                       " without an error message.";
+    } else if (result.details.empty()) {
+      result.details = "Roblox updater returned unexpected process status " +
+                       std::to_string(child_status) + ".";
+    }
   }
   return result;
 }
@@ -480,7 +510,7 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
     return;
   const auto helper = UpdateHelper(environment);
   if (helper.empty()) return;
-  auto child_environment = ChildEnvironment(paths, false);
+  auto child_environment = ChildEnvironment(paths);
   stopped_ = false;
   worker_ =
       std::thread([this, helper, interval,
@@ -494,7 +524,9 @@ void BackgroundPayloadUpdate::Start(const Environment& environment,
         char download_only[] = "--download-only";
         char* arguments[] = {executable.data(), update, download_only, nullptr};
         std::unique_lock<std::mutex> lock(mutex_);
-        while (!wake_.wait_for(lock, interval, [this] { return stopped_; })) {
+        auto delay = std::min(interval, std::chrono::milliseconds(5000));
+        while (!wake_.wait_for(lock, delay, [this] { return stopped_; })) {
+          delay = interval;
           pid_t process = -1;
           const int status =
               posix_spawn(&process, executable.c_str(), nullptr, nullptr,

@@ -68,6 +68,13 @@ add_dependencies(payload_update_preflight_test
   native_update_helper_fixture
   native_progress_helper_fixture
 )
+if(MOCKTAIL_TEST_PYTHON)
+  add_test(NAME UpdateLaunchEnvironmentTest.ConfiguredBackend
+    COMMAND ${MOCKTAIL_TEST_PYTHON}
+      ${CMAKE_CURRENT_SOURCE_DIR}/updater_launch_environment_test.py
+      $<TARGET_FILE:mocktail> $<TARGET_FILE:native_update_helper_fixture>)
+  set_tests_properties(UpdateLaunchEnvironmentTest.ConfiguredBackend PROPERTIES TIMEOUT 60)
+endif()
 
 add_executable(native_update_test native_update_test.cc)
 target_link_libraries(native_update_test PRIVATE
@@ -99,6 +106,9 @@ target_link_libraries(apk_provider_test PRIVATE
   Mocktail::Update
   GTest::gtest_main
 )
+
+add_executable(pinned_apk_provider_test pinned_apk_provider_test.cc)
+target_link_libraries(pinned_apk_provider_test PRIVATE Mocktail::Update GTest::gtest_main)
 
 add_executable(support_bundle_runtime_test support_bundle_runtime_test.cc)
 target_link_libraries(support_bundle_runtime_test PRIVATE
@@ -962,6 +972,7 @@ gtest_discover_tests(runtime_config_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)
 gtest_discover_tests(apk_provider_test)
+gtest_discover_tests(pinned_apk_provider_test)
 gtest_discover_tests(native_update_test)
 gtest_discover_tests(compatibility_catalog_test)
 gtest_discover_tests(support_bundle_runtime_test)

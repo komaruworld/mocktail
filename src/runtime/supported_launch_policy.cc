@@ -85,6 +85,8 @@ bool ApplyInstalledResourceDefaults(std::string* error) {
        metadata_directory / "roblox_compatibility.json"},
       {"MOCKTAIL_UPDATE_SIGNING_TRUST_PATH",
        metadata_directory / "roblox_signing_certificates.json"},
+      {"MOCKTAIL_UPDATE_DOWNLOAD_SOURCES_PATH",
+       metadata_directory / "roblox_download_sources.json"},
       {"MOCKTAIL_BOOTSTRAP_SOURCES_PATH",
        metadata_directory / "roblox_bootstrap_sources.json"},
       {"MOCKTAIL_UPDATE_CANARY_BIN", executable},

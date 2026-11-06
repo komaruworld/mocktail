@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -27,8 +28,11 @@ struct ProviderDownloadResult {
   std::string source;
   std::string error;
 
-  explicit operator bool() const { return error.empty(); }
+  explicit operator bool() const { return error.empty() && !archives.empty(); }
 };
+
+using ArchiveValidator =
+    std::function<std::string(const ProviderDownloadResult&)>;
 
 class ApkProvider {
  public:
@@ -40,10 +44,16 @@ class ApkProvider {
   // Latest published version. A provider that only serves pinned versions
   // reports an error here and stays usable through DownloadExact.
   virtual ProviderVersion CheckLatest() const = 0;
+  virtual bool HasVersionDiscovery() const { return true; }
 
   virtual ProviderDownloadResult DownloadExact(
       const ProviderVersion& version,
       const std::filesystem::path& output_directory, int progress_fd) const = 0;
+
+  virtual ProviderDownloadResult DownloadVerified(
+      const ProviderVersion& version,
+      const std::filesystem::path& output_directory, int progress_fd,
+      const ArchiveValidator& validate) const;
 };
 
 // Tries every provider in order. One unreachable provider is the most common
@@ -59,6 +69,10 @@ class ProviderChain final : public ApkProvider {
       const ProviderVersion& version,
       const std::filesystem::path& output_directory,
       int progress_fd) const override;
+  ProviderDownloadResult DownloadVerified(
+      const ProviderVersion& version,
+      const std::filesystem::path& output_directory, int progress_fd,
+      const ArchiveValidator& validate) const override;
 
  private:
   std::vector<std::unique_ptr<ApkProvider>> providers_;

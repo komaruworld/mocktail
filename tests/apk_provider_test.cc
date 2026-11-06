@@ -107,5 +107,34 @@ TEST(ProviderChainTest, ReportsAnEmptyChain) {
   EXPECT_EQ(chain.CheckLatest().error, "no APK provider is configured");
 }
 
+TEST(ProviderChainTest, FallsBackAfterArchiveVerificationFails) {
+  ProviderChain chain;
+  chain.Add(std::make_unique<StubProvider>("bad-archive", ""));
+  chain.Add(std::make_unique<StubProvider>("working", ""));
+  const auto downloaded = chain.DownloadVerified(
+      {"2.727.1199", 2628, {}}, "/tmp/mocktail-chain", -1,
+      [](const ProviderDownloadResult& result) {
+        return result.source == "bad-archive" ? "APK signature rejected" : "";
+      });
+  ASSERT_TRUE(downloaded) << downloaded.error;
+  EXPECT_EQ(downloaded.source, "working");
+}
+
+TEST(ProviderChainTest, ReportsVerificationFailuresFromEverySource) {
+  ProviderChain chain;
+  chain.Add(std::make_unique<StubProvider>("first", ""));
+  chain.Add(std::make_unique<StubProvider>("second", ""));
+  const auto downloaded = chain.DownloadVerified(
+      {"2.727.1199", 2628, {}}, "/tmp/mocktail-chain", -1,
+      [](const ProviderDownloadResult&) { return "wrong Build ID"; });
+  EXPECT_FALSE(downloaded);
+  EXPECT_EQ(downloaded.error,
+            "first: wrong Build ID; second: wrong Build ID");
+}
+
+TEST(ProviderChainTest, EmptyDownloadIsNotSuccessful) {
+  EXPECT_FALSE(ProviderDownloadResult{});
+}
+
 }  // namespace
 }  // namespace mocktail::update
