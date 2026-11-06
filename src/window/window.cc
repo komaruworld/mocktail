@@ -2306,6 +2306,10 @@ bool PumpEvents() {
     }
     const bool is_window_event = event.type >= SDL_EVENT_WINDOW_FIRST &&
                                  event.type <= SDL_EVENT_WINDOW_LAST;
+    if (is_window_event &&
+        event.window.windowID != SDL_GetWindowID(g_state.sdl_window)) {
+      continue;
+    }
     if (event.type == SDL_EVENT_QUIT) {
       if (!ShouldIgnoreCloseRequest()) {
         g_state.quit_requested = true;
@@ -2454,10 +2458,12 @@ bool PumpEvents() {
     if ((event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
          event.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
         event.button.button == SDL_BUTTON_RIGHT &&
+        event.button.windowID == SDL_GetWindowID(g_state.sdl_window) &&
         g_pointer_capture_owner != nullptr &&
         !g_pointer_capture_owner->OnRightButton(
             event.button.down,
-            g_text_input_owner != nullptr && g_text_input_owner->active())) {
+            g_text_input_owner != nullptr && g_text_input_owner->active(),
+            PointerPosition{event.button.x, event.button.y})) {
       fprintf(stderr,
               "  [input] SDL right-button pointer capture update failed\n");
     }

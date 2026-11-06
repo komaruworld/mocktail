@@ -4,16 +4,29 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <optional>
 
 namespace mocktail {
 namespace window {
 
 using MouseLockQueryCallback = bool (*)(void* context, bool* locked_center);
 
+struct PointerPosition {
+  float x = 0.0f;
+  float y = 0.0f;
+};
+
+struct PointerCaptureRequest {
+  bool relative_mode = false;
+  bool cursor_visible = true;
+  std::optional<PointerPosition> anchor;
+  bool restore_position = true;
+};
+
 class PointerCaptureBackend {
  public:
   virtual ~PointerCaptureBackend() = default;
-  virtual bool Apply(bool relative_mode, bool cursor_visible) = 0;
+  virtual bool Apply(const PointerCaptureRequest& request) = 0;
 };
 
 class WindowPointerCaptureOwner final {
@@ -30,7 +43,8 @@ class WindowPointerCaptureOwner final {
   bool Pump(bool text_input_active);
   // Android's lock-center query does not represent desktop RMB camera drag,
   // so the SDL owner tracks that transient capture source independently.
-  bool OnRightButton(bool pressed, bool text_input_active);
+  bool OnRightButton(bool pressed, bool text_input_active,
+                     std::optional<PointerPosition> position = std::nullopt);
   // Shift can enable Roblox's persistent mouse lock while a transient RMB
   // camera drag is active. Refresh the native state after dispatching that
   // key so the subsequent RMB release preserves the intentional lock.
@@ -51,7 +65,7 @@ class WindowPointerCaptureOwner final {
   bool cursor_visible() const { return cursor_visible_; }
 
  private:
-  bool Apply(bool capture, bool cursor_visible);
+  bool Apply(bool capture, bool cursor_visible, bool restore_position = true);
 
   PointerCaptureBackend* backend_ = nullptr;
   std::mutex mutex_;
@@ -62,6 +76,7 @@ class WindowPointerCaptureOwner final {
   bool clearing_ = false;
   bool focused_ = true;
   bool right_button_held_ = false;
+  std::optional<PointerPosition> right_drag_anchor_;
   bool native_lock_observed_ = false;
   bool native_lock_was_active_before_right_drag_ = false;
   bool shift_key_pressed_during_right_drag_ = false;
@@ -69,13 +84,14 @@ class WindowPointerCaptureOwner final {
   bool discard_next_motion_after_right_drag_ = false;
   bool captured_ = false;
   bool cursor_visible_ = true;
+  bool state_valid_ = true;
 };
 
 class SdlPointerCaptureBackend final : public PointerCaptureBackend {
  public:
   explicit SdlPointerCaptureBackend(void* window) : window_(window) {}
 
-  bool Apply(bool relative_mode, bool cursor_visible) override;
+  bool Apply(const PointerCaptureRequest& request) override;
 
  private:
   void* window_ = nullptr;

@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -145,6 +146,88 @@ TEST(BuildProfileTest, RejectsInvalidBuildId) {
 
   EXPECT_FALSE(result);
   EXPECT_FALSE(result.error.empty());
+}
+
+TEST(BuildProfileTest, Payload3222PublishesInputRoutesInItsManifest) {
+  constexpr const char* build_id = "a67a91ef96c700c0730acd36a250c2f93cfafbc1";
+  nlohmann::json document;
+  std::ifstream(kManifestPath) >> document;
+  const auto& profiles = document.at("profiles");
+  const auto entry = std::find_if(profiles.begin(), profiles.end(),
+      [&](const auto& profile) { return profile.at("elf_build_id") == build_id; });
+  ASSERT_NE(entry, profiles.end());
+  const auto& bridge = entry->at("fmod_output_device_bridge");
+  for (const auto* field : {"input_count_method_rva", "input_info_method_rva",
+                            "input_current_method_rva", "input_select_method_rva"}) {
+    EXPECT_TRUE(bridge.contains(field)) << field;
+  }
+
+  const auto result = FindBuildProfile(kManifestPath, build_id);
+  ASSERT_TRUE(result && result.profile) << result.error;
+  ASSERT_TRUE(result.profile->fmod_output_device_bridge);
+  const auto& parsed = *result.profile->fmod_output_device_bridge;
+  EXPECT_TRUE(parsed.has_input_devices());
+  EXPECT_EQ(parsed.input_method_rvas,
+            (std::array<std::uintptr_t, 4>{0x2ee4f10, 0x2ee4f1e,
+                                          0x2ee536c, 0x2ee3f32}));
+}
+
+TEST(BuildProfileTest, RestoresCached3222InputOnlyForTheExactVtableLayout) {
+  constexpr const char* build_id = "a67a91ef96c700c0730acd36a250c2f93cfafbc1";
+  nlohmann::json document;
+  std::ifstream(kManifestPath) >> document;
+  const auto& profiles = document.at("profiles");
+  const auto found = std::find_if(profiles.begin(), profiles.end(),
+      [&](const auto& profile) { return profile.at("elf_build_id") == build_id; });
+  ASSERT_NE(found, profiles.end());
+  auto cached = *found;
+  for (const auto* field : {"input_count_method_rva", "input_info_method_rva",
+                            "input_current_method_rva", "input_select_method_rva"}) {
+    cached["fmod_output_device_bridge"].erase(field);
+  }
+  cached["status"] = "experimental";
+  cached["default_allowed"] = false;
+  char path[] = "/tmp/mocktail-input-3222-XXXXXX";
+  const int descriptor = mkstemp(path);
+  ASSERT_GE(descriptor, 0);
+  close(descriptor);
+  struct Cleanup {
+    const char* path;
+    ~Cleanup() { unlink(path); }
+  } cleanup{path};
+  const auto read = [&](const nlohmann::json& profile) {
+    {
+      std::ofstream output(path);
+      output << nlohmann::json{{"schema_version", 1}, {"profiles", {profile}}};
+    }
+    return FindBuildProfile(path, profile.at("elf_build_id").get<std::string>());
+  };
+
+  const auto restored = read(cached);
+  ASSERT_TRUE(restored && restored.profile) << restored.error;
+  ASSERT_TRUE(restored.profile->fmod_output_device_bridge);
+  EXPECT_TRUE(restored.profile->fmod_output_device_bridge->has_input_devices());
+  EXPECT_EQ(restored.profile->fmod_output_device_bridge->input_method_rvas,
+            (std::array<std::uintptr_t, 4>{0x2ee4f10, 0x2ee4f1e,
+                                          0x2ee536c, 0x2ee3f32}));
+  EXPECT_EQ(restored.profile->status, BuildStatus::kExperimental);
+  EXPECT_FALSE(restored.profile->default_allowed);
+
+  for (int changed = 0; changed < 3; ++changed) {
+    SCOPED_TRACE(changed);
+    auto other = cached;
+    if (changed == 0) other["elf_build_id"] = std::string(40, 'a');
+    if (changed == 1) other["fmod_output_device_bridge"]["vtable_rva"] = "0x1000";
+    if (changed == 2) other["fmod_output_device_bridge"]["vtable_layout_version"] = 1;
+    const auto result = read(other);
+    ASSERT_TRUE(result && result.profile) << result.error;
+    ASSERT_TRUE(result.profile->fmod_output_device_bridge);
+    EXPECT_FALSE(result.profile->fmod_output_device_bridge->has_input_devices());
+  }
+
+  auto partial = cached;
+  partial["fmod_output_device_bridge"]["input_count_method_rva"] = "0x2ee4f10";
+  EXPECT_FALSE(read(partial));
 }
 
 TEST(BuildProfileTest, RejectsInvalidManifest) {

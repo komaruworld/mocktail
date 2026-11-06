@@ -122,7 +122,11 @@
         "info_method_rva": "0x2ee4930",
         "current_method_rva": "0x2ee48e0",
         "select_method_rva": "0x2ee4192",
-        "vtable_layout_version": 2
+        "vtable_layout_version": 2,
+        "input_count_method_rva": "0x2ee4f10",
+        "input_info_method_rva": "0x2ee4f1e",
+        "input_current_method_rva": "0x2ee536c",
+        "input_select_method_rva": "0x2ee3f32"
       },
       "reason": "Verified with isolated Vulkan canaries and real game sessions; exact Build-ID native allocator, constructor replay, fullscreen, and FMOD output-device profile."
     },

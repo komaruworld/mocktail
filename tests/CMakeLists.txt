@@ -673,6 +673,22 @@ target_link_libraries(window_pointer_capture_owner_test PRIVATE
 )
 mocktail_apply_compile_options(window_pointer_capture_owner_test)
 
+find_package(X11 QUIET)
+find_program(MOCKTAIL_TEST_XVFB Xvfb)
+if(X11_FOUND AND X11_Xtst_FOUND AND MOCKTAIL_TEST_XVFB AND
+   MOCKTAIL_TEST_PYTHON AND NOT CMAKE_CROSSCOMPILING)
+  add_executable(window_pointer_capture_sdl_test window_pointer_capture_sdl_test.cc)
+  target_link_libraries(window_pointer_capture_sdl_test PRIVATE
+    mocktail_window SDL3::SDL3 GTest::gtest_main Threads::Threads
+    X11::X11 X11::Xtst)
+  mocktail_apply_compile_options(window_pointer_capture_sdl_test)
+  add_test(NAME WindowPointerCaptureSdlTest.X11
+    COMMAND ${MOCKTAIL_TEST_PYTHON} -B
+      ${CMAKE_CURRENT_SOURCE_DIR}/run_xvfb_pointer_test.py
+      ${MOCKTAIL_TEST_XVFB} $<TARGET_FILE:window_pointer_capture_sdl_test>)
+  set_tests_properties(WindowPointerCaptureSdlTest.X11 PROPERTIES TIMEOUT 60)
+endif()
+
 add_executable(roblox_text_input_jni_bridge_test
   roblox_text_input_jni_bridge_test.cc
 )

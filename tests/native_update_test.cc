@@ -1063,7 +1063,8 @@ TEST(ShippedMetadataTest, ReferenceSidecarDescribesASupportedProfile) {
   ASSERT_TRUE(runtime.profile.has_value());
   EXPECT_TRUE(
       runtime.profile->user_game_settings_fullscreen_setter_rva.has_value());
-  EXPECT_TRUE(runtime.profile->fmod_output_device_bridge.has_value());
+  ASSERT_TRUE(runtime.profile->fmod_output_device_bridge.has_value());
+  EXPECT_TRUE(runtime.profile->fmod_output_device_bridge->has_input_devices());
 }
 
 TEST(ShippedMetadataTest, EveryArchitectureCanUpgradeToThePinnedRelease) {
