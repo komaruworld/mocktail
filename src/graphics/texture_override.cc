@@ -152,11 +152,26 @@ std::string EnvironmentString(const char* name) {
   return value != nullptr ? value : "";
 }
 
+bool HasPng(const std::string& dir) {
+  std::error_code error;
+  for (std::filesystem::directory_iterator it(dir, error), end;
+       !error && it != end; it.increment(error)) {
+    if (it->path().extension() == ".png") {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 TextureOverrides::TextureOverrides(std::string override_dir,
                                    std::string dump_dir)
-    : override_dir_(std::move(override_dir)), dump_dir_(std::move(dump_dir)) {}
+    : override_dir_(std::move(override_dir)), dump_dir_(std::move(dump_dir)) {
+  if (!override_dir_.empty() && !HasPng(override_dir_)) {
+    override_dir_.clear();
+  }
+}
 
 TextureOverrides TextureOverrides::FromEnvironment() {
   return TextureOverrides(EnvironmentString("MOCKTAIL_TEXTURE_OVERRIDE_DIR"),
