@@ -24,6 +24,9 @@ GamepadFamily Family(SDL_Gamepad* gamepad) {
       return GamepadFamily::kPlayStation4;
     case SDL_GAMEPAD_TYPE_PS5:
       return GamepadFamily::kPlayStation5;
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+      return GamepadFamily::kNintendoSwitch;
     default:
       return GamepadFamily::kUnknown;
   }

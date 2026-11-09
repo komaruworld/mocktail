@@ -139,6 +139,84 @@ TEST_F(RobloxGamepadInputTest, FamilyTypesAndButtonsUseTheAndroidAbi) {
   EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_BACK), 109);
   EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_GUIDE), -1);
   EXPECT_EQ(MapSdlGamepadButtonToAndroid(255), -1);
+  EXPECT_EQ(RobloxGamepadType(platform::GamepadFamily::kNintendoSwitch), 0);
+}
+
+TEST(RobloxGamepadMapping, NintendoFamilySwapsFaceButtonsByLabel) {
+  using platform::GamepadFamily;
+  constexpr auto kNintendo = GamepadFamily::kNintendoSwitch;
+  // SDL EAST is the physical right button, printed "A" on Nintendo pads.
+  EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_EAST, kNintendo),
+            96);
+  EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_SOUTH, kNintendo),
+            97);
+  EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_NORTH, kNintendo),
+            99);
+  EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_WEST, kNintendo),
+            100);
+  // Non-face buttons are unaffected.
+  EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_START, kNintendo),
+            108);
+  // Other families keep the positional mapping.
+  for (const auto family : {GamepadFamily::kUnknown, GamepadFamily::kXbox,
+                            GamepadFamily::kPlayStation4,
+                            GamepadFamily::kPlayStation5}) {
+    EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_SOUTH, family),
+              96);
+    EXPECT_EQ(MapSdlGamepadButtonToAndroid(SDL_GAMEPAD_BUTTON_EAST, family),
+              97);
+  }
+}
+
+TEST_F(RobloxGamepadInputTest, NintendoPadSendsLabelMatchedFaceButtons) {
+  constexpr int64_t kId = 11;
+  ASSERT_TRUE(Send(platform::GamepadConnectionEvent{
+                       kId, true,
+                       Descriptor(platform::GamepadFamily::kNintendoSwitch)})
+                  .status.ok());
+  // Physical "A" (SDL EAST) must reach Roblox as Android BUTTON_A (96) ...
+  ASSERT_TRUE(Send(platform::GamepadButtonEvent{kId, SDL_GAMEPAD_BUTTON_EAST,
+                                                true})
+                  .dispatched());
+  EXPECT_EQ(probe.calls.back().kind, "button");
+  EXPECT_EQ(probe.calls.back().code, 96);
+  // ... and its release must use the same key, or Roblox sees a stuck button.
+  ASSERT_TRUE(Send(platform::GamepadButtonEvent{kId, SDL_GAMEPAD_BUTTON_EAST,
+                                                false})
+                  .dispatched());
+  EXPECT_EQ(probe.calls.back().code, 96);
+  EXPECT_FALSE(probe.calls.back().enabled);
+  // The remaining face buttons swap the same way: B (SOUTH) -> 97,
+  // X (NORTH) -> 99 and Y (WEST) -> 100.
+  const struct {
+    uint8_t sdl_button;
+    int32_t android_key;
+  } kSwapped[] = {{SDL_GAMEPAD_BUTTON_SOUTH, 97},
+                  {SDL_GAMEPAD_BUTTON_NORTH, 99},
+                  {SDL_GAMEPAD_BUTTON_WEST, 100}};
+  for (const auto& entry : kSwapped) {
+    ASSERT_TRUE(
+        Send(platform::GamepadButtonEvent{kId, entry.sdl_button, true})
+            .dispatched());
+    EXPECT_EQ(probe.calls.back().code, entry.android_key);
+    ASSERT_TRUE(
+        Send(platform::GamepadButtonEvent{kId, entry.sdl_button, false})
+            .dispatched());
+    EXPECT_EQ(probe.calls.back().code, entry.android_key);
+    EXPECT_FALSE(probe.calls.back().enabled);
+  }
+}
+
+TEST_F(RobloxGamepadInputTest, XboxPadKeepsPositionalFaceButtons) {
+  Add(12);
+  ASSERT_TRUE(Send(platform::GamepadButtonEvent{12, SDL_GAMEPAD_BUTTON_SOUTH,
+                                                true})
+                  .dispatched());
+  EXPECT_EQ(probe.calls.back().code, 96);
+  ASSERT_TRUE(Send(platform::GamepadButtonEvent{12, SDL_GAMEPAD_BUTTON_EAST,
+                                                true})
+                  .dispatched());
+  EXPECT_EQ(probe.calls.back().code, 97);
 }
 
 TEST_F(RobloxGamepadInputTest,
