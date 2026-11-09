@@ -29,7 +29,8 @@ bool ApplyXrPose(void* state, const ScriptedPoseSample& pose);
 // Adjust a world-space grip CoordinateFrame to OpenXR aim without changing
 // the engine's hand pose. Native frame layout: row-major R[9], position[3].
 bool ApplyAimToWorldFrame(float* frame, const VrHandPose& hand,
-                         float head_scale, float native_hand_pitch_degrees);
+                         float head_scale, float native_hand_pitch_degrees,
+                         int hand_index = 1);
 
 // Guest ABI layout constants of RBX::Graphics::DebugDeviceVR. They are pinned
 // per exact build by the machine-code contracts below; changing payload
