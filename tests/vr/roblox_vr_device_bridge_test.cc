@@ -314,13 +314,27 @@ TEST(VrConstructorContract, VerifiesRelocatedVtableFor3092) {
 
 TEST(VrPointerContract, PinsWorkspaceAndCameraSlotForEachBuild) {
   for (const auto* id : {"ade08266c67aee88ec9c1d00902150e1684dad3a",
-                         "5f0704edd9064f566ee3d6df2bd2fabbcc709f03"}) {
+                         "5f0704edd9064f566ee3d6df2bd2fabbcc709f03",
+                         "a67a91ef96c700c0730acd36a250c2f93cfafbc1"}) {
     const auto& contract = *internal::FindVrBuildContract(id);
     std::array<std::uint8_t, 0x1b2> code{};
     const std::uint8_t prologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41,
                                      0x57, 0x41, 0x56, 0x41, 0x54,
                                      0x53, 0x48, 0x83, 0xec, 0x70};
     std::memcpy(code.data(), prologue, sizeof(prologue));
+    std::memcpy(code.data() + 0x24, "\x48\x63\x86", 3);
+    const std::uint32_t selector = contract.user_cframe_selector_offset;
+    std::memcpy(code.data() + 0x27, &selector, sizeof(selector));
+    for (std::size_t i = 0; i < 3; ++i) {
+      const std::uint8_t load[] = {0x0f, 0x10,
+                                    static_cast<std::uint8_t>(0x84 + i * 8), 0x06};
+      std::memcpy(code.data() + 0x33 + i * 8, load, sizeof(load));
+      const std::uint32_t frame = contract.user_cframe_base_offset + i * 0x10;
+      std::memcpy(code.data() + 0x37 + i * 8, &frame, sizeof(frame));
+    }
+    std::memcpy(code.data() + 0x13d, "\xf3\x41\x0f\x10\x86", 5);
+    const std::uint32_t head_scale = contract.camera_head_scale_offset;
+    std::memcpy(code.data() + 0x142, &head_scale, sizeof(head_scale));
     code[0x59] = 0xe8;
     const std::int32_t displacement =
         static_cast<std::int64_t>(contract.workspace_getter_rva) -

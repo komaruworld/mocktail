@@ -20,8 +20,8 @@ Corporation or VinegarHQ and does not distribute the Roblox client.
 
 ## VR build and launch
 
-VR device profiles currently cover Roblox builds 2998 and 3092. Build 3222,
-used by `main`, requires a new VR profile before it can run with `--vr`.
+VR device profiles cover the exact x86-64 Roblox builds 2998, 3092, and 3222.
+The 3222 profile includes its changed controller-pointer and camera layout.
 
 ### Build
 

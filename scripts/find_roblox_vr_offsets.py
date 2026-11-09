@@ -99,16 +99,16 @@ USERCFRAME_SELECTOR_OFFSET = 0x118
 USERCFRAME_BASE_OFFSET = 0x174
 USERCFRAME_STRIDE = 0x30
 CAMERA_HEAD_SCALE_OFFSET = 0x140
+POINTER_LAYOUTS = (
+    (USERCFRAME_SELECTOR_OFFSET, USERCFRAME_BASE_OFFSET, CAMERA_HEAD_SCALE_OFFSET),
+    (0x108, 0x16C, 0x130),  # Roblox 2.742.1059 (3222).
+)
 
 EXPECTED_STATE_GETTER_SLOT = 0x28
 EXPECTED_EYE_GETTER_SLOT = 0x48
 EXPECTED_EYE_INITIALIZER_SLOT = 0xD0
 EXPECTED_HAPTIC_SLOT = 0x18
 MAX_VTABLE_SCAN_BYTES = 0x200
-
-# movsxd rax, [rsi+0x118]; movups xmm0, [rsi+rax+0x174].
-POINTER_GETTER_SELECTOR_PATTERN = bytes.fromhex("48 63 86 18 01 00 00")
-POINTER_GETTER_MOVUPS_PATTERN = bytes.fromhex("0f 10 84 06 74 01 00 00")
 
 TEXT_REF_OPCODES = re.compile(
     rb"[\x8d\x8b\x89\x8a\x88\x3b\x39\x3a\x38\x03\x33\x2b\x85\x80\x81\x83"
@@ -948,7 +948,12 @@ def extract_hand_pitch(instructions: Sequence[Any],
     return None
 
 
-def match_pointer_getter(instructions: Sequence[Any]) -> bool:
+def match_pointer_getter(
+    instructions: Sequence[Any],
+    selector_offset: int = USERCFRAME_SELECTOR_OFFSET,
+    usercframe_offset: int = USERCFRAME_BASE_OFFSET,
+    head_scale_offset: int = CAMERA_HEAD_SCALE_OFFSET,
+) -> bool:
     """World-space pointer getter: UserCFrame copy + workspace/camera path."""
     has_selector = False
     has_scale = False
@@ -963,7 +968,7 @@ def match_pointer_getter(instructions: Sequence[Any]) -> bool:
             if (operands[1].type == capstone_x86.X86_OP_MEM and
                     operands[1].mem.base == capstone_x86.X86_REG_RSI and
                     operands[1].mem.index == capstone_x86.X86_REG_INVALID and
-                    operands[1].mem.disp == USERCFRAME_SELECTOR_OFFSET):
+                    operands[1].mem.disp == selector_offset):
                 has_selector = True
         if instruction.mnemonic == "lea" and len(operands) == 2:
             memory = operands[1]
@@ -987,16 +992,16 @@ def match_pointer_getter(instructions: Sequence[Any]) -> bool:
                     memory.mem.base == capstone_x86.X86_REG_RSI and
                     memory.mem.index == capstone_x86.X86_REG_RAX and
                     memory.mem.disp in (
-                        USERCFRAME_BASE_OFFSET,
-                        USERCFRAME_BASE_OFFSET + 0x10,
-                        USERCFRAME_BASE_OFFSET + 0x20,
+                        usercframe_offset,
+                        usercframe_offset + 0x10,
+                        usercframe_offset + 0x20,
                     )):
                 usercframe_loads += 1
         if instruction.mnemonic == "movss" and len(operands) == 2:
             memory = operands[1]
             if (memory.type == capstone_x86.X86_OP_MEM and
                     memory.mem.index == capstone_x86.X86_REG_INVALID and
-                    memory.mem.disp == CAMERA_HEAD_SCALE_OFFSET):
+                    memory.mem.disp == head_scale_offset):
                 has_head_scale = True
     for index, instruction in enumerate(instructions):
         operands = instruction.operands
@@ -1214,6 +1219,12 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
                 raise AnalyzerError(
                     f"ambiguous {label} contract matches: {listed}")
         state_slot, state_getter = state_matches[0]
+        state_memcpy = next(
+            instruction.operands[0].imm
+            for instruction in disasm.function(*table.bounds(state_getter))
+            if instruction.mnemonic == "call" and instruction.operands and
+            instruction.operands[0].type == capstone_x86.X86_OP_IMM)
+        image.require_code_rva(state_memcpy)
         eye_slot, eye_getter = eye_matches[0]
         initializer_slot, eye_initializer = initializer_matches[0]
         for label, slot, expected in (
@@ -1358,8 +1369,13 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
             f"hand pitch: dword default {hand_pitch_default} degrees with name"
             f" pointer at storage+8 -> 0x{hand_pitch_storage:x}")
 
-        selector_hits = scan_text_bytes(image, POINTER_GETTER_SELECTOR_PATTERN)
-        movups_hits = scan_text_bytes(image, POINTER_GETTER_MOVUPS_PATTERN)
+        selector_hits = []
+        movups_hits = []
+        for selector, usercframe, _head_scale in POINTER_LAYOUTS:
+            selector_hits.extend(scan_text_bytes(
+                image, b"\x48\x63\x86" + struct.pack("<I", selector)))
+            movups_hits.extend(scan_text_bytes(
+                image, b"\x0f\x10\x84\x06" + struct.pack("<I", usercframe)))
         getter_candidates: set[int] = set()
         for hit in selector_hits + movups_hits:
             try:
@@ -1367,25 +1383,27 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
             except AnalyzerError:
                 continue
             getter_candidates.add(start)
-        getter_matches: list[tuple[int, tuple[Any, ...]]] = []
+        getter_matches: list[tuple[int, tuple[Any, ...], tuple[int, int, int]]] = []
         for start in sorted(getter_candidates):
             instructions = disasm.function(*table.bounds(start))
-            if match_pointer_getter(instructions):
-                getter_matches.append((start, instructions))
+            for layout in POINTER_LAYOUTS:
+                if match_pointer_getter(instructions, *layout):
+                    getter_matches.append((start, instructions, layout))
         if not getter_matches:
             raise AnalyzerError(
                 "no function satisfies the world-space pointer getter contract")
         if len(getter_matches) > 1:
-            listed = ", ".join(f"0x{start:x}" for start, _ in getter_matches)
+            listed = ", ".join(f"0x{start:x}" for start, _, _ in getter_matches)
             raise AnalyzerError(f"ambiguous pointer getter matches: {listed}")
-        pointer_getter, getter_instructions = getter_matches[0]
+        pointer_getter, getter_instructions, pointer_layout = getter_matches[0]
+        selector_offset, usercframe_offset, head_scale_offset = pointer_layout
         workspace_getter, camera_slot = extract_pointer_getter_anchors(
             getter_instructions, image)
         evidence.append("pointer getter: UserCFrame selector"
-                        f" +0x{USERCFRAME_SELECTOR_OFFSET:x},"
-                        f" base +0x{USERCFRAME_BASE_OFFSET:x}, stride"
+                        f" +0x{selector_offset:x},"
+                        f" base +0x{usercframe_offset:x}, stride"
                         f" 0x{USERCFRAME_STRIDE:x},"
-                        f" HeadScale +0x{CAMERA_HEAD_SCALE_OFFSET:x}"
+                        f" HeadScale +0x{head_scale_offset:x}"
                         f" -> 0x{pointer_getter:x}")
         evidence.append(f"workspace getter 0x{workspace_getter:x}"
                         " via mov rdi,rsi + direct call;"
@@ -1417,6 +1435,10 @@ def find_vr_offsets(elf_path: pathlib.Path) -> dict[str, Any]:
                     f"0x{framebuffer_slot:x}",
             },
             "vr_bridge_supplement": {
+                "state_memcpy_rva": f"0x{state_memcpy:x}",
+                "user_cframe_selector_offset": f"0x{selector_offset:x}",
+                "user_cframe_base_offset": f"0x{usercframe_offset:x}",
+                "camera_head_scale_offset": f"0x{head_scale_offset:x}",
                 "state_getter_vtable_slot_offset":
                     f"0x{state_slot:x}",
                 "eye_getter_vtable_slot_offset":

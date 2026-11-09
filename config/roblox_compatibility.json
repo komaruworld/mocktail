@@ -137,7 +137,16 @@
         "input_current_method_rva": "0x2ee536c",
         "input_select_method_rva": "0x2ee3f32"
       },
-      "reason": "Verified with isolated Vulkan canaries and real game sessions; exact Build-ID native allocator, constructor replay, fullscreen, and FMOD output-device profile."
+      "reason": "Verified with isolated Vulkan canaries and real game sessions; exact Build-ID native allocator, constructor replay, fullscreen, and FMOD output-device profile. Experimental VR metadata and pointer/camera ABI are derived from this exact ELF and validated at activation; physical headset acceptance remains pending.",
+      "vr_debug_device_bridge": {
+        "vtable_rva": "0x7083a48",
+        "constructor_rva": "0x549c884",
+        "state_getter_rva": "0x549cc66",
+        "eye_getter_rva": "0x549cc56",
+        "eye_initializer_rva": "0x549cc88",
+        "emulator_flag_storage_rva": "0x74d1640",
+        "device_create_framebuffer_vtable_offset": "0x190"
+      }
     },
     {
       "version_name": "2.742.1059",

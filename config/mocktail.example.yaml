@@ -54,7 +54,7 @@ graphics:
 
 # vr:
   # Boolean (default: enabled in VR builds, disabled in non-VR builds).
-  # Experimental VR for verified builds 2998 and 3092. Mocktail initializes
+  # Experimental VR for profiled builds 2998, 3092, and 3222. Mocktail initializes
   # the guest DebugDeviceVR eye resources (two
   # distinct 500x500 eye framebuffers), the Roblox renderer draws both eyes
   # every frame, and the frames are submitted to the active OpenXR runtime as

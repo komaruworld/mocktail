@@ -20,6 +20,9 @@ struct VrBuildContract {
   std::uintptr_t camera_vtable_offset;
   std::uintptr_t hand_pitch_storage_rva;
   std::uintptr_t haptic_sink_rva;
+  std::uintptr_t user_cframe_selector_offset = 0x118;
+  std::uintptr_t user_cframe_base_offset = 0x174;
+  std::uintptr_t camera_head_scale_offset = 0x140;
 };
 
 const VrBuildContract* FindVrBuildContract(std::string_view build_id);

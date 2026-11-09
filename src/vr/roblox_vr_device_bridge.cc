@@ -308,6 +308,20 @@ const VrBuildContract* FindVrBuildContract(std::string_view build_id) {
        0x3a0,
        0x73f24c8,
        0x1d8f8c0},
+      // Roblox 2.742.1059 x86-64. Derived from the exact ELF's RTTI,
+      // relocations, state/eye methods and world-pointer data accesses.
+      {"a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+       {0x7083a48, 0x549c884, 0x549cc66, 0x549cc56, 0x549cc88, 0x74d1640,
+        0x190},
+       0x6daad30,
+       0x4fd8cb0,
+       0x264bb76,
+       0x3a0,
+       0x74cf430,
+       0x1e2fcf0,
+       0x108,
+       0x16c,
+       0x130},
   };
   for (const auto& contract : kContracts) {
     if (contract.build_id == build_id) return &contract;
@@ -320,14 +334,30 @@ bool HasExpectedVrPointerContract(const std::uint8_t* code, std::size_t size,
   if (code == nullptr || size < 0x1b2 ||
       std::memcmp(code, kPointerPrologue.data(), kPointerPrologue.size()) !=
           0 ||
+      std::memcmp(code + 0x24, "\x48\x63\x86", 3) != 0 ||
+      std::memcmp(code + 0x33, "\x0f\x10\x84\x06", 4) != 0 ||
+      std::memcmp(code + 0x3b, "\x0f\x10\x8c\x06", 4) != 0 ||
+      std::memcmp(code + 0x43, "\x0f\x10\x94\x06", 4) != 0 ||
+      std::memcmp(code + 0x13d, "\xf3\x41\x0f\x10\x86", 5) != 0 ||
       code[0x59] != 0xe8 || code[0x6d] != 0xff || code[0x6e] != 0x91) {
     return false;
   }
   std::uint32_t camera_slot;
   std::memcpy(&camera_slot, code + 0x6f, sizeof(camera_slot));
+  std::uint32_t selector, frames[3], head_scale;
+  std::memcpy(&selector, code + 0x27, sizeof(selector));
+  std::memcpy(&frames[0], code + 0x37, sizeof(frames[0]));
+  std::memcpy(&frames[1], code + 0x3f, sizeof(frames[1]));
+  std::memcpy(&frames[2], code + 0x47, sizeof(frames[2]));
+  std::memcpy(&head_scale, code + 0x142, sizeof(head_scale));
   return RelativeTarget(code + 0x5a, contract.pointer_frame_rva + 0x5e) ==
              contract.workspace_getter_rva &&
-         camera_slot == contract.camera_vtable_offset;
+         camera_slot == contract.camera_vtable_offset &&
+         selector == contract.user_cframe_selector_offset &&
+         frames[0] == contract.user_cframe_base_offset &&
+         frames[1] == contract.user_cframe_base_offset + 0x10 &&
+         frames[2] == contract.user_cframe_base_offset + 0x20 &&
+         head_scale == contract.camera_head_scale_offset;
 }
 
 EyeResourceState InspectEyeResources(const void *object) {
@@ -569,7 +599,8 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
   const auto current = backend->PublishedHeadPose();
   if (!current.valid) return;
   int index = 0;
-  std::memcpy(&index, static_cast<unsigned char*>(service) + 0x118, 4);
+  std::memcpy(&index, static_cast<unsigned char*>(service) +
+                          contract_->user_cframe_selector_offset, sizeof(index));
   if (index != 1 && index != 2) return;
   if (!current.hands[index - 1].aim_valid) return;
   const auto& hand = native_pose.hands[index - 1];
@@ -586,7 +617,8 @@ void RobloxVrDeviceBridge::OnPointerFrameCall(void* result, void* service) {
   if (!camera) return;
   float scale = 0;
   int degrees = 0;
-  std::memcpy(&scale, static_cast<unsigned char*>(camera) + 0x140, 4);
+  std::memcpy(&scale, static_cast<unsigned char*>(camera) +
+                          contract_->camera_head_scale_offset, sizeof(scale));
   std::memcpy(&degrees,
               reinterpret_cast<void*>(base + contract_->hand_pitch_storage_rva),
               4);

@@ -1,0 +1,133 @@
+{
+  "description": "Exact x86-64 Roblox 2.742.1059 (3222) machine-code excerpts. Test fixture; guest functions are never executed.",
+  "build_id": "a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+  "elf_sha256": "4892d8949918db453f72d3db64093bc985f3ed6dba870a6381d9f3be3b7a3338",
+  "image_size": 128426624,
+  "program_headers": [
+    {
+      "type": 1,
+      "flags": 5,
+      "vaddr": 0,
+      "memsz": 115000848
+    },
+    {
+      "type": 1,
+      "flags": 6,
+      "vaddr": 115017280,
+      "memsz": 5245376
+    },
+    {
+      "type": 1,
+      "flags": 6,
+      "vaddr": 120278464,
+      "memsz": 8148160
+    },
+    {
+      "type": 1685382482,
+      "flags": 4,
+      "vaddr": 115017280,
+      "memsz": 5245376
+    }
+  ],
+  "vr_debug_device_bridge": {
+    "vtable_rva": "0x7083a48",
+    "constructor_rva": "0x549c884",
+    "state_getter_rva": "0x549cc66",
+    "eye_getter_rva": "0x549cc56",
+    "eye_initializer_rva": "0x549cc88",
+    "emulator_flag_storage_rva": "0x74d1640",
+    "device_create_framebuffer_vtable_offset": "0x190"
+  },
+  "vr_bridge_supplement": {
+    "state_memcpy_rva": "0x6daad30",
+    "user_cframe_selector_offset": "0x108",
+    "user_cframe_base_offset": "0x16c",
+    "camera_head_scale_offset": "0x130",
+    "state_getter_vtable_slot_offset": "0x28",
+    "eye_getter_vtable_slot_offset": "0x48",
+    "eye_initializer_vtable_slot_offset": "0xd0",
+    "haptic_sink_rva": "0x1e2fcf0",
+    "haptic_sink_vtable_slot_offset": "0x18",
+    "world_pointer_getter_rva": "0x4fd8cb0",
+    "workspace_getter_rva": "0x264bb76",
+    "workspace_camera_vtable_offset": "0x3a0",
+    "new_vr_system_hand_pitch_storage_rva": "0x74cf430",
+    "new_vr_system_hand_pitch_default_degrees": 20
+  },
+  "vtable_targets": [
+    "0x549cf44",
+    "0x549cfa0",
+    "0x549cb9a",
+    "0x1e2fcf0",
+    "0x1e2fcf0",
+    "0x549cc66",
+    "0x22eecd0",
+    "0x2507cc0",
+    "0x1e48b90",
+    "0x549cc56",
+    "0x1e48b90",
+    "0x1e48b90",
+    "0x1e48b90",
+    "0x1e48b90",
+    "0x1e48b90",
+    "0x258f8ea",
+    "0x258f8ea",
+    "0x258f8ea",
+    "0x258f8ea",
+    "0x1e48b90",
+    "0x1e48b90",
+    "0x258f8ea",
+    "0x258f8ea",
+    "0x1e48b90",
+    "0x1e2fcf0",
+    "0x1e48b90",
+    "0x549cc88"
+  ],
+  "functions": {
+    "constructor": {
+      "rva": "0x549c884",
+      "bytes": "554889e54157415641554154534883ec284989cf4189d44189f54889fb488b05c033e101488b00488945d0488d059271be01488907488d051e49f1fa48894708c74710060000004c8d7714ba340100004c89f731f6e872e49001c78348010000040000000f57c00f1183500100000f1183600100000f1183700100000f1183800100004489ab900100004489a3940100004c89bb980100000f280d4d7bd7fa0f118ba0010000f20f100d6e63d7faf20f118bb0010000c783b80100000000803e488db3d00100000f1183bc0100000f1183cc0100000f1183dc0100000f1183ec0100000f1183fc0100000f2805bb21d7fa0f11830c02000048b809000000020000004889831c02000066c783240200000101c68346010000004c89f7e8770100004c8d6354488d830c010000488945b84c8dabdc010000488d83f4010000488945b041c6060141b70131c04889c148c1e1054d8d340c48c1e002488d3440f2410f10443500f2410f11440c04f3410f10443508f3410f11440c0c480375b04c89f7e81201000041c60601b80100000041f6c70141bf0000000075b0b00131c90f280526a8d7fa488b75b8488d0c49488d0c8e31d2f30f108c93b8010000a80174130f57c8f30f110c9148ffc24883fa0375e2eb10f30f110c9148ffc24883fa0375d2eb09b90100000031c0ebbd4531f6f3420f1084b3a8010000f30f5905b21016fbe815e19001f3420f1144b5c049ffc64983fe0475d90f2845c00f1183240100000fc6c0b40f118334010000488b05b031e101488b00483b45d0750f4883c4285b415c415d415e415f5dc3e89bf49001eb004989c64c8dbb800100004531e44b8d3c27e8633d9cfc4983c4f04983fce075ed4881c3600100004531ff4a8d3c3be8463d9cfc4983c7f04983ffe075ed4c89f7e864bc9afd"
+    },
+    "state_getter": {
+      "rva": "0x549cc66",
+      "bytes": "554889e553504889fb4883c614ba38010000e8b3e090014889d84883c4085b5dc3"
+    },
+    "eye_getter": {
+      "rva": "0x549cc56",
+      "bytes": "4863c648c1e004488b840750010000c3"
+    },
+    "eye_initializer": {
+      "rva": "0x549cc88",
+      "bytes": "554889e54157415641554154534881eca80000004889b550ffffff488b05be2fe101488b00488945d0b101888f47010000888f94000000888f44010000488d877001000048898540ffffff4889bd38ffffff488d875001000048898548ffffff4531ff4c8d7590898d5cffffff488b8538ffffff448ba090010000448ba894010000488d5db04889df488d3550780dfbe827ec97fc488bb550ffffff488b06488b80900100004c89f731d2b9040000004589e04589e9536a0341ba010000004152415241524152ffd04883c43049c1e704488b8540ffffff4e8d2c384c89ef4c89f6e8a953e4fc4c8b65984d85e4742548c7c0fffffffff0490fc14424084885c07512498b04244c89e7ff50104c89e7e863b995fdf645b0017409488b7dc0e83cbf97fc4889df4c89eee8c3e323fd0f57c00f29459048b80000000001000000488945a0c745a8000000000f298560ffffff48c78570ffffff000000004c8d65804c89e7488bb550ffffff4889da4c89f14c8d8560ffffffe82f0b24fd4c03bd48ffffff4c89ff4c89e6e80153e4fc4c8b7d884d85ff742348c7c0fffffffff0490fc147084885c07511498b074c89ffff50104c89ffe8bdb895fdf68560ffffff01740c488bbd70ffffffe890be97fc4c8b7d984d85ff742348c7c0fffffffff0490fc147084885c07511498b074c89ffff50104c89ffe87cb895fd4c8b7db84d85ff742348c7c0fffffffff0490fc147084885c07511498b074c89ffff50104c89ffe850b895fd41bf01000000f6855cffffff01b9000000000f8527feffff488b05992de101488b00483b45d075124881c4a80000005b415c415d415e415f5dc3e881f09001eb4aeb484889c3f645b0017437488b7dc0e8e3bd97fceb2ceb324889c3f68560ffffff01740c488bbd70ffffffe8c7bd97fc488d7d90e826399cfc488d7db0e81d399cfc4889dfe845b89afd4889c7e817f59afdcc"
+    },
+    "pointer": {
+      "rva": "0x4fd8cb0",
+      "bytes": "554889e5415741564154534883ec704989f74889fb4c8b259c6f2d02498b0424488945d848638608010000488d044048c1e0040f1084066c0100000f108c067c0100000f1094068c0100000f1157200f114f100f11074889f7e8682e67fd4885c00f842b010000488b084889c7ff91a00300004885c00f84160100004989c680b84c010000000f85b100000066410f10876c01000066410f108f7c01000066410f10978c010000660f28d8f20f10d90fc6dbd3660f28e1660fc6e201660f28ea0fc6ea550f28f20fc6f2aa0f59f30f28da0fc6daff0f59dc0f59e80f58ee0f58eb0f57db0f5cdd0f28e00fc6e1d6660f3a0cc1040fc6c06c0fc6cc8c0f16d30fc6d398488db570ffffff0f29060f294e100f2956204c8d7da84c89ff4889dae8aaa67afd410f1007410f104f10410f1057200f1153200f114b100f1103f3410f108630010000f20f104b24f30f12d0f30f59432c0f59d10f135324f30f11432c4981c6c00000004c8d7da84c89ff4c89f64889dae855a67afd410f1007410f104f10410f1057200f1153200f114b100f1103498b0424483b45d875104889d84883c4705b415c415e415f5dc3e80f31dd01cc"
+    },
+    "state_memcpy": {
+      "rva": "0x6daad30",
+      "bytes": "ff"
+    },
+    "workspace_getter": {
+      "rva": "0x264bb76",
+      "bytes": "55"
+    },
+    "haptic_sink": {
+      "rva": "0x1e2fcf0",
+      "bytes": "c3"
+    }
+  },
+  "evidence": [
+    "RTTI: mangled name 'N3RBX8Graphics13DebugDeviceVRE' at 0xb6c4b0 -> typeinfo 0x7083ba8 -> vtable 0x7083a48 through APS2 relative relocations",
+    "state getter: sret memcpy of 0x138 bytes from +0x14 at vtable+0x28 -> 0x549cc66",
+    "eye getter: movsxd/shl/mov [rdi+rax+0x150] at vtable+0x48 -> 0x549cc56",
+    "eye initializer: 'VR Eye' label, ready bytes ['0x94', '0x144', '0x147'], slot arrays +0x150/+0x170 at vtable+0xd0 -> 0x549cc88",
+    "haptic sink: 1-byte ret stub at vtable+0x18 -> 0x1e2fcf0",
+    "constructor: vtable store, 'DebugDevice' name at +0x8, type 6 at +0x10, memset 0x134 of +0x14 -> 0x549c884",
+    "device createFramebuffer: mov rax,[rax+0x190]; call rax inside the eye initializer",
+    "emulator flag: registration lea rsi/rdx contract plus init byte-store cross-check -> 0x74d1640",
+    "hand pitch: dword default 20 degrees with name pointer at storage+8 -> 0x74cf430",
+    "pointer getter: UserCFrame selector +0x108, base +0x16c, stride 0x30, HeadScale +0x130 -> 0x4fd8cb0",
+    "workspace getter 0x264bb76 via mov rdi,rsi + direct call; camera via call [rcx+0x3a0]"
+  ]
+}

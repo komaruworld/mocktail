@@ -44,14 +44,18 @@ target_link_libraries(vr_evidence_layer_test PRIVATE Vulkan::Headers
   ${CMAKE_DL_LIBS} GTest::gtest_main)
 mocktail_apply_compile_options(vr_evidence_layer_test)
 
-add_executable(roblox_vr_device_bridge_test vr/roblox_vr_device_bridge_test.cc)
+add_executable(roblox_vr_device_bridge_test
+  vr/roblox_vr_device_bridge_test.cc
+  vr/roblox_3222_profile_test.cc)
 target_include_directories(roblox_vr_device_bridge_test PRIVATE
   "${PROJECT_SOURCE_DIR}/src")
 target_compile_definitions(roblox_vr_device_bridge_test PRIVATE
-  "MOCKTAIL_TEST_BINARY_DIRECTORY=\"${CMAKE_CURRENT_BINARY_DIR}\"")
+  "MOCKTAIL_TEST_BINARY_DIRECTORY=\"${CMAKE_CURRENT_BINARY_DIR}\""
+  "MOCKTAIL_TEST_SOURCE_DIRECTORY=\"${PROJECT_SOURCE_DIR}\"")
 target_link_libraries(roblox_vr_device_bridge_test PRIVATE
   Mocktail::VR
   Mocktail::Compat
+  nlohmann_json::nlohmann_json
   GTest::gtest_main
 )
 mocktail_apply_compile_options(roblox_vr_device_bridge_test)
