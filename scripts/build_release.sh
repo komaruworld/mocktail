@@ -224,7 +224,7 @@ CollectBuildArtifacts() {
     output+=("${artifact}")
   done < <(find "${BUILD_DIR}" -maxdepth 1 -type f \
     \( -name mocktail -o -name mocktail_failure_dialog -o \
-       -name mocktail_webview_helper -o -name '*.so' \) \
+       -name mocktail_webview_helper -o -name mocktail_cookie_helper -o -name '*.so' \) \
     -print0 | sort -z)
   (( ${#output[@]} > 0 )) || Die "no linked ELF artifacts in ${BUILD_DIR}"
 }

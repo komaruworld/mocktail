@@ -8,6 +8,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <utility>
 
 #include "window/platform_event_observer.h"
 
@@ -142,6 +143,51 @@ TEST(WindowSurfaceLifecycleTest, ZeroExtentDoesNotFabricateDestruction) {
   EXPECT_EQ(snapshot.generation, 1U);
   EXPECT_EQ(snapshot.width, 1280U);
   EXPECT_EQ(snapshot.height, 720U);
+}
+
+TEST(WindowSurfaceLifecycleTest, TinyResizeRetainsUsableExtentAndThenRecovers) {
+  WindowSurfaceLifecycle lifecycle;
+  ASSERT_TRUE(lifecycle.Activate(0x44, 561, 1235).ok());
+
+  for (const auto& extent : {std::pair{1U, 1235U}, std::pair{1280U, 1U},
+                            std::pair{159U, 720U}, std::pair{1280U, 119U}}) {
+    ASSERT_TRUE(lifecycle.Observe(0x44, extent.first, extent.second).ok());
+    EXPECT_TRUE(Drain(&lifecycle).empty());
+    EXPECT_EQ(lifecycle.Snapshot().width, 561U);
+    EXPECT_EQ(lifecycle.Snapshot().height, 1235U);
+    EXPECT_TRUE(lifecycle.Snapshot().available);
+  }
+
+  ASSERT_TRUE(lifecycle.Observe(0x44, 160, 120).ok());
+  const auto events = Drain(&lifecycle);
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events[0].type, WindowSurfaceEventType::kChanged);
+  EXPECT_EQ(events[0].surface.generation, 1U);
+  EXPECT_EQ(events[0].surface.width, 160U);
+  EXPECT_EQ(events[0].surface.height, 120U);
+}
+
+TEST(WindowSurfaceLifecycleTest, TinyReplacementTracksDestructionUntilUsable) {
+  WindowSurfaceLifecycle lifecycle;
+  ASSERT_TRUE(lifecycle.Activate(0x44, 1280, 720).ok());
+  ASSERT_TRUE(lifecycle.Observe(0x55, 1, 1235).ok());
+  const auto destroyed = Drain(&lifecycle);
+  ASSERT_EQ(destroyed.size(), 1U);
+  EXPECT_EQ(destroyed[0].type, WindowSurfaceEventType::kDestroyed);
+  EXPECT_FALSE(lifecycle.Snapshot().available);
+
+  ASSERT_TRUE(lifecycle.Observe(0x55, 561, 1235).ok());
+  EXPECT_TRUE(lifecycle.Snapshot().available);
+  EXPECT_EQ(lifecycle.Snapshot().native_window, 0x55U);
+  EXPECT_EQ(lifecycle.Snapshot().generation, 2U);
+  EXPECT_EQ(lifecycle.Snapshot().width, 561U);
+}
+
+TEST(WindowSurfaceLifecycleTest, TinyInitialSurfaceIsRejected) {
+  WindowSurfaceLifecycle lifecycle;
+  EXPECT_FALSE(lifecycle.Activate(0x44, 1, 1235).ok());
+  EXPECT_FALSE(lifecycle.Activate(0x44, 1280, 1).ok());
+  EXPECT_TRUE(lifecycle.Activate(0x44, 160, 120).ok());
 }
 
 TEST(WindowSurfaceLifecycleTest, HandleLossAndRestoreCreatesNewGeneration) {

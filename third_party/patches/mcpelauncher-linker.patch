@@ -256,3 +256,16 @@ index cb70ca162..4d0dfa0b4 100644
 +    PRINT("\"%s\": skipping constructors by Mocktail hook", get_realpath());
 +    return;
 +  }
+diff --git a/include/linux/types.h b/include/linux/types.h
+index 9f69de9..8917c32 100644
+--- a/include/linux/types.h
++++ b/include/linux/types.h
+@@ -10 +10,6 @@ typedef uint8_t __u8;
+-typedef int8_t __s8;
+\ No newline at end of file
++typedef int8_t __s8;
++
++#ifdef __SIZEOF_INT128__
++typedef __signed__ __int128 __s128 __attribute__((aligned(16)));
++typedef unsigned __int128 __u128 __attribute__((aligned(16)));
++#endif

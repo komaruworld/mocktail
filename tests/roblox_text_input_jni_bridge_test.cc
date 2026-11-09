@@ -282,6 +282,51 @@ TEST(RobloxTextInputJniBridgeTest,
 }
 
 TEST(RobloxTextInputJniBridgeTest,
+     IdenticalPendingShowsOpenOnlyOneFocusSession) {
+  jnivm::VM vm;
+  auto backend = std::make_shared<FakeBackend>();
+  std::unique_ptr<RobloxTextInputJniBridge> bridge;
+  ASSERT_TRUE(
+      RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+  const auto request = ShowRequest(42, "draft");
+  for (int i = 0; i < 80; ++i) {
+    ASSERT_TRUE(vm.DispatchRobloxTextInputShow(request));
+  }
+  ASSERT_TRUE(backend->Pump());
+  EXPECT_EQ(backend->calls, (std::vector<std::string>{"begin:1", "show:1"}));
+  EXPECT_TRUE(backend->active);
+  EXPECT_EQ(backend->last_initial_text, "draft");
+  EXPECT_TRUE(bridge->Shutdown().ok());
+}
+
+TEST(RobloxTextInputJniBridgeTest,
+     SameTextBoxCanReopenAfterHostCompletionWithoutNativeHide) {
+  for (const bool pump_completion_first : {false, true}) {
+    SCOPED_TRACE(pump_completion_first);
+    jnivm::VM vm;
+    auto backend = std::make_shared<FakeBackend>();
+    std::unique_ptr<RobloxTextInputJniBridge> bridge;
+    ASSERT_TRUE(
+        RobloxTextInputJniBridge::CreateForTesting(&vm, backend, &bridge).ok());
+    const auto request = ShowRequest(42, "draft");
+    ASSERT_TRUE(vm.DispatchRobloxTextInputShow(request));
+    ASSERT_TRUE(backend->Pump());
+
+    backend->active = false;
+    if (pump_completion_first) {
+      ASSERT_TRUE(backend->Pump());
+    }
+    ASSERT_TRUE(vm.DispatchRobloxTextInputShow(request));
+    ASSERT_TRUE(backend->Pump());
+
+    EXPECT_TRUE(backend->active);
+    EXPECT_EQ(backend->active_handle, 42);
+    EXPECT_EQ(backend->active_generation, 2U);
+    EXPECT_TRUE(bridge->Shutdown().ok());
+  }
+}
+
+TEST(RobloxTextInputJniBridgeTest,
      PendingReplaceCallbacksCollapseToLatestTextInCurrentGeneration) {
   jnivm::VM vm;
   auto backend = std::make_shared<FakeBackend>();

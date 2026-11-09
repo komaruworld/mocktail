@@ -30,6 +30,11 @@
   "config/roblox_signing_certificates.json"
 #endif
 
+#ifndef MOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST
+#define MOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST \
+  "config/roblox_download_sources.json"
+#endif
+
 namespace {
 
 std::optional<std::string> Environment(std::string_view name) {
@@ -63,11 +68,14 @@ std::filesystem::path InstalledMetadataEntry(std::string_view name,
   const std::filesystem::path executable = ExecutablePath();
   if (!executable.empty()) {
     const std::filesystem::path directory = executable.parent_path();
-    if (directory.filename() == "mocktail" &&
-        directory.parent_path().filename() == "lib") {
-      const std::filesystem::path candidate =
-          directory.parent_path().parent_path() / "share/mocktail/metadata" /
-          std::string(name);
+    const auto parent = directory.parent_path();
+    const bool private_binary = directory.filename() == "mocktail" &&
+        (parent.filename() == "lib" || parent.filename() == "lib64" ||
+         parent.filename() == "libexec");
+    const auto prefix = private_binary ? parent.parent_path() : parent;
+    for (const auto& metadata : {prefix / "share/mocktail/metadata",
+                                 prefix / "metadata"}) {
+      const auto candidate = metadata / name;
       std::error_code error;
       if (directory_entry ? std::filesystem::is_directory(candidate, error)
                           : std::filesystem::is_regular_file(candidate, error)) {
@@ -131,13 +139,21 @@ mocktail::update::UpdatePaths ResolvePaths() {
           .value_or(installed_trust.empty()
                         ? MOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST
                         : installed_trust.string());
+  const auto installed_sources = InstalledMetadata("roblox_download_sources.json");
+  paths.download_sources_manifest =
+      Environment("MOCKTAIL_UPDATE_DOWNLOAD_SOURCES_PATH")
+          .value_or(installed_sources.empty()
+                        ? MOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST
+                        : installed_sources.string());
   paths.host_abi_reference_profile =
       Environment("MOCKTAIL_UPDATE_HOST_ABI_REFERENCE")
           .value_or(default_host_abi_reference.string());
   const std::filesystem::path executable = ExecutablePath();
   std::filesystem::path runtime = executable.parent_path() / "mocktail";
   if (executable.parent_path().filename() == "mocktail" &&
-      executable.parent_path().parent_path().filename() == "lib") {
+      (executable.parent_path().parent_path().filename() == "lib" ||
+       executable.parent_path().parent_path().filename() == "lib64" ||
+       executable.parent_path().parent_path().filename() == "libexec")) {
     const std::filesystem::path public_runtime =
         executable.parent_path().parent_path().parent_path() / "bin/mocktail";
     std::error_code error;
@@ -145,8 +161,10 @@ mocktail::update::UpdatePaths ResolvePaths() {
       runtime = public_runtime;
     }
   }
-  paths.runtime_binary =
+  paths.runtime_launcher =
       Environment("MOCKTAIL_UPDATE_CANARY_BIN").value_or(runtime.string());
+  paths.runtime_binary = Environment("MOCKTAIL_UPDATE_RUNTIME_BINARY")
+                             .value_or(paths.runtime_launcher.string());
   return paths;
 }
 
@@ -166,7 +184,7 @@ void Usage(std::ostream& output) {
   output << "Usage: mocktail_updater COMMAND [OPTIONS]\n\n"
             "Commands:\n"
             "  update [--startup-preflight] [--no-latest-check] "
-            "[--skip-canary]\n"
+            "[--skip-canary] [--download-only]\n"
             "  check-latest\n"
             "  verify-current\n"
             "  verify-apk APK\n"
@@ -334,6 +352,8 @@ int main(int argc, char** argv) {
       request.startup_preflight = true;
     } else if (option == "--no-latest-check") {
       request.check_latest = false;
+    } else if (option == "--download-only") {
+      request.download_only = true;
     } else if (option == "--skip-canary") {
       request.run_canary = false;
     } else if (option == "--force-run-latest") {
@@ -344,9 +364,11 @@ int main(int argc, char** argv) {
     }
   }
   if (request.force_run_latest &&
-      (request.startup_preflight || !request.check_latest || !request.run_canary)) {
+      (request.startup_preflight || request.download_only ||
+       !request.check_latest || !request.run_canary)) {
     std::cerr << "[native-updater] --force-run-latest cannot be combined with "
-                 "--startup-preflight, --no-latest-check, or --skip-canary\n";
+                 "--startup-preflight, --download-only, --no-latest-check, or "
+                 "--skip-canary\n";
     return 2;
   }
   if (request.force_run_latest) {

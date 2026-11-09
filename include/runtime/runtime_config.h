@@ -49,6 +49,8 @@ struct NetworkProxyConfig {
   std::string scheme = "http";
   std::string host;
   int port = 0;
+  std::string username;
+  std::string password;
 };
 
 struct DiscordRpcTextConfig {
@@ -72,8 +74,11 @@ struct DiscordRpcConfig {
 
 std::optional<NetworkProxyConfig> ParseNetworkProxyConfig(
     std::string_view host, std::string_view port,
-    std::string_view scheme = "http");
-std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy);
+    std::string_view scheme = "http", std::string_view username = {},
+    std::string_view password = {});
+std::optional<NetworkProxyConfig> ReadNetworkProxy(const Environment& environment);
+std::string BuildNetworkProxyUrl(const NetworkProxyConfig& proxy,
+                                 bool include_credentials = false);
 
 // Immutable, supported runtime options. Advanced MOCKTAIL_PATCH_* controls
 // intentionally do not belong here; they remain isolated in the legacy path.
@@ -84,6 +89,7 @@ class RuntimeConfig {
   bool headless() const { return headless_; }
   bool vr_enabled() const { return vr_enabled_; }
   bool vr_valid() const { return vr_valid_; }
+  bool use_libsecret() const { return use_libsecret_; }
   const std::filesystem::path& roblox_library_path() const {
     return roblox_library_path_;
   }
@@ -110,6 +116,11 @@ class RuntimeConfig {
   }
   const FrameRatePolicy& frame_rate() const { return frame_rate_; }
   const std::string& vsync_mode() const { return vsync_mode_; }
+  const std::string& present_mode() const { return present_mode_; }
+  static bool IsValidPresentMode(std::string_view mode) {
+    return mode == "auto" || mode == "fifo" || mode == "mailbox" ||
+           mode == "immediate";
+  }
   const PerformancePolicy& performance() const { return performance_; }
   const std::string& audio_output_device() const {
     return audio_output_device_;
@@ -126,6 +137,13 @@ class RuntimeConfig {
   }
   bool ca_bundle_valid() const { return ca_bundle_valid_; }
   bool use_system_proxy() const { return use_system_proxy_; }
+  bool fleasion_enabled() const { return fleasion_enabled_; }
+  bool fleasion_valid() const { return fleasion_valid_; }
+  const std::string& fleasion_proxy_mode() const { return fleasion_proxy_mode_; }
+  int fleasion_proxy_port() const { return fleasion_proxy_port_; }
+  const std::optional<std::filesystem::path>& fleasion_ca_certificate() const {
+    return fleasion_ca_certificate_;
+  }
   const DiscordRpcConfig& discord_rpc() const { return discord_rpc_; }
   bool discord_rpc_valid() const { return discord_rpc_valid_; }
 
@@ -144,6 +162,7 @@ class RuntimeConfig {
   bool headless_ = false;
   bool vr_enabled_ = kDefaultVrEnabled;
   bool vr_valid_ = true;
+  bool use_libsecret_ = false;
   std::filesystem::path roblox_library_path_ = "rbx_bin/libroblox.so";
   GraphicsBackend graphics_backend_ = GraphicsBackend::kVulkan;
   std::string graphics_backend_name_ = "direct-vulkan";
@@ -155,12 +174,18 @@ class RuntimeConfig {
   std::optional<std::string> roblox_http_user_agent_;
   FrameRatePolicy frame_rate_;
   std::string vsync_mode_ = "auto";
+  std::string present_mode_ = "auto";
   PerformancePolicy performance_;
   std::string audio_output_device_ = "default";
   bool audio_output_device_valid_ = true;
   std::string audio_input_device_ = "default";
   bool audio_input_device_valid_ = true;
   bool use_system_proxy_ = false;
+  bool fleasion_enabled_ = false;
+  bool fleasion_valid_ = true;
+  std::string fleasion_proxy_mode_ = "env";
+  int fleasion_proxy_port_ = 58443;
+  std::optional<std::filesystem::path> fleasion_ca_certificate_;
   std::optional<NetworkProxyConfig> network_proxy_;
   std::optional<std::filesystem::path> ca_bundle_;
   bool ca_bundle_valid_ = true;

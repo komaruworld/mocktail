@@ -1,5 +1,7 @@
 #include "compat/bionic_abi_exports.h"
 
+#include "compat/guest_abi.h"
+
 #include <gtest/gtest.h>
 
 #include <fcntl.h>
@@ -37,8 +39,10 @@ TEST(BionicAbiExportsTest, ReportsStableAndroidSystemProperties) {
   EXPECT_STREQ("35", value.data());
 
   value.fill('\0');
-  EXPECT_EQ(6, __system_property_get("ro.product.cpu.abi", value.data()));
-  EXPECT_STREQ("x86_64", value.data());
+  EXPECT_EQ(static_cast<int>(mocktail::compat::kGuestAbi.size()),
+            __system_property_get("ro.product.cpu.abi", value.data()));
+  EXPECT_STREQ(std::string(mocktail::compat::kGuestAbi).c_str(),
+               value.data());
 
   value.fill('x');
   EXPECT_EQ(0, __system_property_get("mocktail.unknown", value.data()));

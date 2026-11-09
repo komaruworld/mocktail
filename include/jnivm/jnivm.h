@@ -48,9 +48,15 @@ struct PlatformIdentity {
   std::string manufacturer = "Mocktail";
   std::string model = "Mocktail Headless";
   std::string brand = "Mocktail";
+#if defined(__aarch64__)
+  std::string device_code = "linux-arm64";
+  std::string device_sku = "mocktail-arm64";
+  std::string soc_model = "aarch64";
+#else
   std::string device_code = "linux-x86_64";
   std::string device_sku = "mocktail-x86_64";
   std::string soc_model = "x86_64";
+#endif
 };
 
 struct RobloxCredentialView {

@@ -24,7 +24,17 @@ struct PersistedWindowState {
   bool has_position = false;
   bool fullscreen = false;
   bool maximized = false;
+  int configured_width = 0;
+  int configured_height = 0;
+  bool has_configured_size = false;
 };
+
+inline bool RestoredSizeApplies(const PersistedWindowState& state,
+                                int configured_width, int configured_height) {
+  return state.has_configured_size &&
+         state.configured_width == configured_width &&
+         state.configured_height == configured_height;
+}
 
 // Fullscreen can be part of native window creation, but maximization must be
 // requested only after startup size constraints and the windowed restore

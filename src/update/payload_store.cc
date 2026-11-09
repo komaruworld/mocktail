@@ -1,5 +1,7 @@
 #include "update/payload_store.h"
 
+#include "update/state_file.h"
+
 #define JSON_NOEXCEPTION 1
 #include <fcntl.h>
 #include <sys/file.h>
@@ -297,7 +299,10 @@ bool CloneOrCopyFile(const std::filesystem::path& source,
   }
   bool copied = false;
 #if defined(__linux__) && defined(FICLONE)
-  copied = ioctl(output, FICLONE, input) == 0;
+  struct stat cloned_metadata = {};
+  copied = ioctl(output, FICLONE, input) == 0 &&
+           fstat(output, &cloned_metadata) == 0 &&
+           cloned_metadata.st_size == metadata.st_size;
 #endif
 #if defined(__linux__)
   if (!copied) {
@@ -946,6 +951,7 @@ std::string PayloadStore::StatusJson(std::string* output_error) const {
     return {};
   }
   nlohmann::json document;
+  document["updates"] = ReadStateFile(root_ / "update.json");
   document["current"] =
       current.contents.empty()
           ? nlohmann::json(nullptr)

@@ -55,6 +55,31 @@
     <binary>mocktail</binary>
   </provides>
   <releases>
+    <release version="1.0.5" date="2026-11-05">
+      <description>
+        <ul>
+          <li>Updated the default Roblox version to 2.742.1059.</li>
+          <li>Fixed texture issues and reduced blurring.</li>
+          <li>Fixed chat, text cursor positioning, mouse input, and other issues.</li>
+          <li>Improved voice chat and fixed related bugs.</li>
+          <li>Added authentication storage via libsecret.</li>
+          <li>Added experimental ARM64 support.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.4" date="2026-09-11">
+      <description>
+        <ul>
+          <li>Fixed login issues</li>
+          <li>Fixed low-resolution textures, skybox rendering and HiDPI scaling.</li>
+          <li>Added vc support.</li>
+          <li>Added Xbox and PlayStation gamepad support.</li>
+          <li>Added Nix support</li>
+          <li>Improved text input, fullscreen mode, window sizing, and mouse controls.</li>
+          <li>Updated support for Roblox 2.736.1408.</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.3" date="2026-08-16">
       <description>
         <ul>

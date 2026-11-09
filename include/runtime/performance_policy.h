@@ -70,6 +70,10 @@ bool MergeVrClientSettingsOverrides(bool enabled, std::string_view base_json,
 // Keeps the legacy test bypass disabled. The host PermissionsProtocol now
 // answers microphone authorization from capture configuration. No permission
 // query opens a recording device.
+bool MergeAudioDeviceMenuClientSettingsOverrides(std::string_view base_json,
+                                                 std::string *merged_json,
+                                                 std::string *error);
+
 bool MergeAudioCaptureClientSettingsOverrides(bool microphone_enabled,
                                               std::string_view base_json,
                                               std::string* merged_json,

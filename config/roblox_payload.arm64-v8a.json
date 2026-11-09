@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "package": "com.roblox.client",
+  "version_name": "2.742.1059",
+  "version_code": 3222,
+  "abi": "arm64-v8a",
+  "elf_build_id": "25aa7fd31008a744c3c99f717e7d16d81d371d12",
+  "sha256": {
+    "libroblox": "086a5d9726301b64b87da9dd37fb28127ef3dc670b2dd284be75ca9c81512f40",
+    "base_apk": "86eb9e513c01b0d9f2b5658b390e53b9b9fb192aae307d91dd4792a57bc0e2f1",
+    "arm64_v8a_split_apk": "86eb9e513c01b0d9f2b5658b390e53b9b9fb192aae307d91dd4792a57bc0e2f1"
+  },
+  "signing_certificates_sha256": [
+    "44932ea35a17a267372d71b54d1a0cb3da0dca5113e94406ae2fe18090ba1477"
+  ],
+  "assets": {
+    "file_count": 596,
+    "sha256_tree": "4b534483ccf88c10eb7ddbb94521d2a5bc1187bbbf4695dbc868364d68f53bc9"
+  },
+  "source": "native-local-import",
+  "imported_at": "2026-11-05T18:50:25Z",
+  "compatibility_status": "supported",
+  "apk_layout": "monolithic"
+}

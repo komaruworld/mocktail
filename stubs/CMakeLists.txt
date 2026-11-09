@@ -1,3 +1,4 @@
+# Includes changes by vii from CoderDayton/nightcap.
 # Copyright 2026 Mocktail Project Authors
 # Licensed under the Apache License, Version 2.0.
 
@@ -106,13 +107,22 @@ target_link_libraries(stub_glesv2 PRIVATE dl)
 add_library(stub_vulkan SHARED
   ${CMAKE_SOURCE_DIR}/src/graphics/bionic_vulkan_loader_adapter.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_text_overlay_compositor.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 configure_stub(stub_vulkan "libvulkan.so")
+# Keep proc-address lookups bound to our wrappers even if the host Vulkan
+# loader was loaded first. Host calls use explicitly resolved function pointers.
+target_link_options(stub_vulkan PRIVATE "LINKER:-Bsymbolic-functions")
 target_include_directories(stub_vulkan PRIVATE ${CMAKE_SOURCE_DIR}/include)
 pkg_check_modules(LIBPLACEBO REQUIRED IMPORTED_TARGET libplacebo)
+pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)
 target_link_libraries(stub_vulkan PRIVATE
   Mocktail::SdlVulkanWsi
   PkgConfig::LIBPLACEBO
+  PkgConfig::LIBPNG
+  Threads::Threads
   dl
 )
 

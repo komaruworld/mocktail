@@ -42,6 +42,8 @@ struct AAsset {
   std::string path;
   std::string apk_entry;
   std::vector<unsigned char> data;
+  bool loaded = false;
+  bool transcoded = false;
   size_t offset = 0;
 };
 struct AAssetDir {};
@@ -320,6 +322,22 @@ bool MocktailUsesDirectVulkan() {
   return backend != nullptr && std::strcmp(backend, "direct-vulkan") == 0;
 }
 
+bool EnsureLoaded(AAsset* asset) {
+  if (asset->loaded) {
+    return true;
+  }
+  if (!LoadFile(asset->path, &asset->data)) {
+    asset->data.clear();
+    return false;
+  }
+  asset->loaded = true;
+  if (MocktailUsesDirectVulkan()) {
+    asset->transcoded = libc_shim::TranscodeEtc1SkyTextureForVulkan(
+        asset->path.c_str(), &asset->data);
+  }
+  return true;
+}
+
 }  // namespace
 
 extern "C" {
@@ -336,16 +354,13 @@ AAsset* AAssetManager_open(AAssetManager* mgr, const char* filename,
   auto* asset = new AAsset;
   asset->path = path;
   asset->apk_entry = ApkEntryName(filename);
-  if (!LoadFile(path, &asset->data)) {
+  if (MocktailUsesDirectVulkan() && libc_shim::IsBundledSkyTexture(path.c_str()) &&
+      !EnsureLoaded(asset)) {
     delete asset;
     return nullptr;
   }
-  if (MocktailUsesDirectVulkan()) {
-    libc_shim::TranscodeEtc1SkyTextureForVulkan(path.c_str(), &asset->data);
-  }
   if (AssetTraceEnabled()) {
-    std::fprintf(stderr, "[asset] open %s -> %s (%zu bytes)\n", filename,
-                 path.c_str(), asset->data.size());
+    std::fprintf(stderr, "[asset] open %s -> %s\n", filename, path.c_str());
   }
   return asset;
 }
@@ -360,7 +375,7 @@ void AAsset_close(AAsset* asset) {
 }
 
 int AAsset_read(AAsset* asset, void* buf, size_t count) {
-  if (asset == nullptr || buf == nullptr) {
+  if (asset == nullptr || buf == nullptr || !EnsureLoaded(asset)) {
     return -1;
   }
   const size_t remaining = asset->offset <= asset->data.size()
@@ -379,7 +394,7 @@ int AAsset_read(AAsset* asset, void* buf, size_t count) {
 }
 
 const void* AAsset_getBuffer(AAsset* asset) {
-  if (asset == nullptr) {
+  if (asset == nullptr || !EnsureLoaded(asset)) {
     return nullptr;
   }
   if (AssetTraceEnabled() && asset->path.find("shader") != std::string::npos) {
@@ -391,6 +406,9 @@ const void* AAsset_getBuffer(AAsset* asset) {
 }
 
 off_t AAsset_getLength(AAsset* asset) {
+  if (asset != nullptr) {
+    EnsureLoaded(asset);
+  }
   if (asset != nullptr && AssetTraceEnabled() &&
       asset->path.find("shader") != std::string::npos) {
     std::fprintf(stderr, "[asset] getLength %s -> %zu bytes\n",
@@ -402,7 +420,8 @@ off_t AAsset_getLength(AAsset* asset) {
 off_t AAsset_getLength64(AAsset* asset) { return AAsset_getLength(asset); }
 
 off_t AAsset_getRemainingLength(AAsset* asset) {
-  if (asset == nullptr || asset->offset > asset->data.size()) {
+  if (asset == nullptr || !EnsureLoaded(asset) ||
+      asset->offset > asset->data.size()) {
     return 0;
   }
   if (AssetTraceEnabled() && asset->path.find("shader") != std::string::npos) {
@@ -417,7 +436,7 @@ off_t AAsset_getRemainingLength64(AAsset* asset) {
 }
 
 off_t AAsset_seek(AAsset* asset, off_t offset, int whence) {
-  if (asset == nullptr) {
+  if (asset == nullptr || !EnsureLoaded(asset)) {
     return -1;
   }
   off_t base = 0;
@@ -455,12 +474,20 @@ int AAsset_openFileDescriptor(AAsset* asset, off_t* outStart,
   if (asset == nullptr || asset->path.empty()) {
     return -1;
   }
+  // Force buffered reads: files still contain the original ETC1 bytes.
+  if (asset->transcoded) {
+    return -1;
+  }
   int fd = -1;
   off_t start = 0;
   off_t descriptor_length = static_cast<off_t>(asset->data.size());
   if (!OpenStoredApkEntryDescriptor(asset->apk_entry, &fd, &start,
                                     &descriptor_length)) {
     fd = ::open(asset->path.c_str(), O_RDONLY | O_CLOEXEC);
+    struct stat st;
+    if (fd >= 0 && !asset->loaded && ::fstat(fd, &st) == 0) {
+      descriptor_length = st.st_size;
+    }
   }
   if (fd < 0) {
     return -1;

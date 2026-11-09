@@ -1,8 +1,11 @@
 #include "window/window_pointer_capture_owner.h"
 
+#include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_video.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace mocktail {
@@ -53,7 +56,7 @@ void WindowPointerCaptureOwner::ClearQuery() {
 
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   if (!focused_) {
-    return Apply(false, true);
+    return Apply(false, true, false);
   }
   MouseLockQueryCallback callback = nullptr;
   void* context = nullptr;
@@ -107,13 +110,17 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   return Apply(capture_requested, cursor_visible);
 }
 
-bool WindowPointerCaptureOwner::OnRightButton(bool pressed,
-                                              bool text_input_active) {
+bool WindowPointerCaptureOwner::OnRightButton(
+    bool pressed, bool text_input_active,
+    std::optional<PointerPosition> position) {
   if (pressed) {
     focused_ = true;
+    if (!right_button_held_ && !captured_) right_drag_anchor_ = position;
   }
   right_button_held_ = pressed;
-  return Pump(text_input_active);
+  const bool applied = Pump(text_input_active);
+  if (!pressed) right_drag_anchor_.reset();
+  return applied;
 }
 
 bool WindowPointerCaptureOwner::OnShiftKeyPressed(bool text_input_active) {
@@ -138,28 +145,31 @@ bool WindowPointerCaptureOwner::OnFocusGained(bool text_input_active) {
 bool WindowPointerCaptureOwner::OnFocusLost() {
   focused_ = false;
   right_button_held_ = false;
+  right_drag_anchor_.reset();
   native_lock_observed_ = false;
   native_lock_was_active_before_right_drag_ = false;
   shift_key_pressed_during_right_drag_ = false;
   wait_for_native_unlock_after_right_drag_ = false;
   discard_next_motion_after_right_drag_ = false;
-  return Apply(false, true);
+  return Apply(false, true, false);
 }
 
 bool WindowPointerCaptureOwner::Shutdown() {
   ClearQuery();
   focused_ = false;
   right_button_held_ = false;
+  right_drag_anchor_.reset();
   native_lock_observed_ = false;
   native_lock_was_active_before_right_drag_ = false;
   shift_key_pressed_during_right_drag_ = false;
   wait_for_native_unlock_after_right_drag_ = false;
   discard_next_motion_after_right_drag_ = false;
-  return Apply(false, true);
+  return Apply(false, true, false);
 }
 
-bool WindowPointerCaptureOwner::Apply(bool capture, bool cursor_visible) {
-  if (capture == captured_ && cursor_visible == cursor_visible_) {
+bool WindowPointerCaptureOwner::Apply(bool capture, bool cursor_visible,
+                                      bool restore_position) {
+  if (state_valid_ && capture == captured_ && cursor_visible == cursor_visible_) {
     return true;
   }
   if (backend_ == nullptr) {
@@ -167,7 +177,9 @@ bool WindowPointerCaptureOwner::Apply(bool capture, bool cursor_visible) {
     cursor_visible_ = true;
     return !capture && cursor_visible;
   }
-  if (backend_->Apply(capture, cursor_visible)) {
+  if (backend_->Apply(
+          {capture, cursor_visible, right_drag_anchor_, restore_position})) {
+    state_valid_ = true;
     const bool capture_changed = capture != captured_;
     const bool cursor_changed = cursor_visible != cursor_visible_;
     captured_ = capture;
@@ -183,42 +195,58 @@ bool WindowPointerCaptureOwner::Apply(bool capture, bool cursor_visible) {
     }
     return true;
   }
-  backend_->Apply(false, true);
+  state_valid_ = backend_->Apply({false, true, std::nullopt, false});
   captured_ = false;
   cursor_visible_ = true;
   return false;
 }
 
-bool SdlPointerCaptureBackend::Apply(bool relative_mode, bool cursor_visible) {
+bool SdlPointerCaptureBackend::Apply(const PointerCaptureRequest& request) {
   auto* window = static_cast<SDL_Window*>(window_);
   if (window == nullptr) {
     return false;
   }
 
-  if (relative_mode && !relative_mode_) {
-    SDL_GetMouseState(&capture_anchor_x_, &capture_anchor_y_);
-    capture_anchor_valid_ = true;
-    SDL_SetWindowMouseGrab(window, true);
+  if (request.relative_mode && !relative_mode_) {
+    if (request.anchor) {
+      capture_anchor_x_ = request.anchor->x;
+      capture_anchor_y_ = request.anchor->y;
+    } else {
+      SDL_GetMouseState(&capture_anchor_x_, &capture_anchor_y_);
+    }
+    capture_anchor_valid_ =
+        std::isfinite(capture_anchor_x_) && std::isfinite(capture_anchor_y_);
+    if (!SDL_SetWindowMouseGrab(window, true)) {
+      capture_anchor_valid_ = false;
+      return false;
+    }
   }
-  if (!relative_mode && relative_mode_ && capture_anchor_valid_) {
+  if (!request.relative_mode && relative_mode_ && request.restore_position &&
+      capture_anchor_valid_ && SDL_GetKeyboardFocus() == window) {
     // SDL requires the warp before relative mode is disabled. This preserves
     // the desktop pointer position across Roblox's transient RMB camera drag.
-    SDL_WarpMouseInWindow(window, capture_anchor_x_, capture_anchor_y_);
-    SDL_SetWindowMouseGrab(window, false);
+    int width = 0;
+    int height = 0;
+    if (SDL_GetWindowSize(window, &width, &height) && width > 0 && height > 0) {
+      SDL_WarpMouseInWindow(
+          window, std::clamp(capture_anchor_x_, 0.0f, static_cast<float>(width - 1)),
+          std::clamp(capture_anchor_y_, 0.0f, static_cast<float>(height - 1)));
+    }
   }
-  if (relative_mode != relative_mode_ &&
-      !SDL_SetWindowRelativeMouseMode(window, relative_mode)) {
-    if (relative_mode) {
+  if (request.relative_mode != relative_mode_ &&
+      !SDL_SetWindowRelativeMouseMode(window, request.relative_mode)) {
+    if (request.relative_mode) {
       capture_anchor_valid_ = false;
       SDL_SetWindowMouseGrab(window, false);
     }
     return false;
   }
-  relative_mode_ = relative_mode;
+  relative_mode_ = request.relative_mode;
   if (!relative_mode_) {
     capture_anchor_valid_ = false;
   }
-  return cursor_visible ? SDL_ShowCursor() : SDL_HideCursor();
+  if (!request.relative_mode && !SDL_SetWindowMouseGrab(window, false)) return false;
+  return request.cursor_visible ? SDL_ShowCursor() : SDL_HideCursor();
 }
 
 }  // namespace window

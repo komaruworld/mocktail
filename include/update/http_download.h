@@ -13,6 +13,7 @@ struct HttpTransferRequest {
   std::string url;
   std::vector<std::string> headers;
   std::vector<std::string> allowed_hosts;
+  std::filesystem::path ca_bundle;
   std::size_t maximum_bytes = 0;
   long connect_timeout_ms = 10000;
   // Hard ceiling for one attempt; zero means none. A several hundred MiB

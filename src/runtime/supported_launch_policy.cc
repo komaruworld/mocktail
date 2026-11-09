@@ -9,6 +9,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef MOCKTAIL_INSTALL_LIBDIR
+#define MOCKTAIL_INSTALL_LIBDIR "lib"
+#endif
+
 namespace mocktail {
 namespace runtime {
 namespace {
@@ -44,25 +48,28 @@ bool ApplyInstalledResourceDefaults(std::string* error) {
   if (executable.empty()) {
     return true;
   }
-  const std::filesystem::path runtime_directory = executable.parent_path();
-  std::filesystem::path prefix;
-  std::filesystem::path helper;
-  std::filesystem::path progress_helper;
-  std::filesystem::path update_helper;
-  if (runtime_directory.filename() == "mocktail" &&
-      runtime_directory.parent_path().filename() == "lib") {
-    prefix = runtime_directory.parent_path().parent_path();
-    helper = runtime_directory / "mocktail_webview_helper";
-    progress_helper = runtime_directory / "mocktail_failure_dialog";
-    update_helper = runtime_directory / "mocktail_updater";
+  std::filesystem::path runtime_directory = executable.parent_path();
+  const std::filesystem::path library_directory = MOCKTAIL_INSTALL_LIBDIR;
+  std::filesystem::path prefix = runtime_directory.parent_path();
+  if (runtime_directory.filename() == "mocktail") {
+    for (auto component = library_directory.end();
+         component != library_directory.begin();) {
+      if (prefix.filename() != *--component) {
+        return true;
+      }
+      prefix = prefix.parent_path();
+    }
   } else if (runtime_directory.filename() == "bin") {
-    prefix = runtime_directory.parent_path();
-    helper = prefix / "lib/mocktail/mocktail_webview_helper";
-    progress_helper = prefix / "lib/mocktail/mocktail_failure_dialog";
-    update_helper = prefix / "lib/mocktail/mocktail_updater";
+    runtime_directory = prefix / library_directory / "mocktail";
   } else {
     return true;
   }
+  const std::filesystem::path helper =
+      runtime_directory / "mocktail_webview_helper";
+  const std::filesystem::path progress_helper =
+      runtime_directory / "mocktail_failure_dialog";
+  const std::filesystem::path update_helper =
+      runtime_directory / "mocktail_updater";
   const std::filesystem::path data_directory = prefix / "share/mocktail";
   const std::filesystem::path metadata_directory = data_directory / "metadata";
   std::error_code filesystem_error;
@@ -78,11 +85,13 @@ bool ApplyInstalledResourceDefaults(std::string* error) {
        metadata_directory / "roblox_compatibility.json"},
       {"MOCKTAIL_UPDATE_SIGNING_TRUST_PATH",
        metadata_directory / "roblox_signing_certificates.json"},
+      {"MOCKTAIL_UPDATE_DOWNLOAD_SOURCES_PATH",
+       metadata_directory / "roblox_download_sources.json"},
       {"MOCKTAIL_BOOTSTRAP_SOURCES_PATH",
        metadata_directory / "roblox_bootstrap_sources.json"},
       {"MOCKTAIL_UPDATE_CANARY_BIN", executable},
       {"MOCKTAIL_UPDATE_HELPER", update_helper},
-      {"MOCKTAIL_RUNTIME_LIBRARY_DIR", helper.parent_path()},
+      {"MOCKTAIL_RUNTIME_LIBRARY_DIR", runtime_directory},
       {"MOCKTAIL_WEBVIEW_HELPER", helper},
       {"MOCKTAIL_UPDATE_PROGRESS_HELPER", progress_helper},
   };
@@ -140,7 +149,6 @@ bool ApplySupportedLaunchPolicy(bool interactive, std::string* error) {
       {"MOCKTAIL_RESUME_GAME_WITH_PLATFORM_PARAMS_AFTER_START_GAME", "0"},
       {"MOCKTAIL_SEND_APP_READY", "0"},
       {"MOCKTAIL_SEND_GAME_LOADED", "0"},
-      {"MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP", "1"},
       {"MOCKTAIL_AUTO_EXIT_AFTER_PRESENT_MS", "0"},
   };
   for (const auto& [name, value] : defaults) {

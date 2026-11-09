@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "compat/elf_build_id.h"
+#include "compat/guest_abi.h"
 #include "update/android_manifest.h"
 #include "update/apk_signature.h"
 #include "update/payload_integrity.h"
@@ -173,9 +174,14 @@ bool EndsWith(std::string_view value, std::string_view suffix) {
 struct ApkCandidate {
   std::filesystem::path path;
   AndroidManifestIdentity identity;
-  bool has_x86_64_library = false;
+  bool has_guest_library = false;
   bool has_assets = false;
 };
+
+std::string GuestLibEntryName() {
+  return std::string(compat::kGuestLibApkEntryPrefix) +
+         std::string(compat::kGuestAbi) + "/libroblox.so";
+}
 
 bool CollectCandidates(const std::vector<std::filesystem::path>& archives,
                        const std::filesystem::path& directory,
@@ -250,7 +256,7 @@ bool InspectCandidates(const std::vector<std::filesystem::path>& paths,
     ApkCandidate candidate;
     candidate.path = path;
     candidate.identity = std::move(identity);
-    candidate.has_x86_64_library = HasEntry(list, "lib/x86_64/libroblox.so");
+    candidate.has_guest_library = HasEntry(list, GuestLibEntryName());
     candidate.has_assets = std::any_of(
         list.entries.begin(), list.entries.end(), [](const ZipEntry& entry) {
           return entry.name.size() > 7 && entry.name.substr(0, 7) == "assets/";
@@ -314,7 +320,8 @@ std::vector<std::string> CommonTrustedCertificates(
   const ApkSignatureResult split_signature =
       base == split ? base_signature : VerifyApkSignature(split);
   if (!split_signature) {
-    *error = "x86_64 APK signature: " + split_signature.error;
+    *error = std::string(compat::kGuestAbi) +
+             " APK signature: " + split_signature.error;
     return {};
   }
   std::vector<std::string> accepted;
@@ -356,9 +363,11 @@ bool ValidateElf(const std::filesystem::path& path, std::string* build_id,
   }
   GElf_Ehdr header{};
   if (gelf_getehdr(elf.get(), &header) == nullptr ||
-      header.e_machine != EM_X86_64 || gelf_getclass(elf.get()) != ELFCLASS64) {
+      header.e_machine != compat::kGuestElfMachine ||
+      gelf_getclass(elf.get()) != ELFCLASS64) {
     close_elf();
-    *error = "libroblox.so is not an x86-64 ELF";
+    *error = "libroblox.so is not a " + std::string(compat::kGuestAbi) +
+             " ELF";
     return false;
   }
   std::size_t section_count = 0;
@@ -464,16 +473,18 @@ PreparedPayload PreparePayloadFromArchives(
       base = &candidate;
     }
   }
+  const std::string guest_split_name(compat::kGuestApkSplitName);
   for (const ApkCandidate& candidate : candidates) {
-    if (candidate.has_x86_64_library &&
-        (candidate.identity.split_name == "config.x86_64" ||
+    if (candidate.has_guest_library &&
+        (candidate.identity.split_name == guest_split_name ||
          candidate.identity.split_name.empty()) &&
         split == nullptr) {
       split = &candidate;
     }
   }
   if (base == nullptr || split == nullptr) {
-    result.error = "no matching Roblox base and x86_64 APK pair was found";
+    result.error = "no matching Roblox base and " +
+                   std::string(compat::kGuestAbi) + " APK pair was found";
     return result;
   }
   const std::set<std::string> trusted =
@@ -488,12 +499,13 @@ PreparedPayload PreparePayloadFromArchives(
   if (filesystem_error ||
       !CopyRegular(base->path, prepared / "sober_apk/base.apk",
                    &result.error) ||
-      !CopyRegular(split->path, prepared / "sober_apk/split_config.x86_64.apk",
+      !CopyRegular(split->path,
+                   prepared / "sober_apk" / compat::kGuestSplitApkFile,
                    &result.error)) {
     if (result.error.empty()) result.error = "cannot create prepared payload";
     return result;
   }
-  if (!ExtractZipEntry(split->path, "lib/x86_64/libroblox.so",
+  if (!ExtractZipEntry(split->path, GuestLibEntryName(),
                        prepared / "libroblox.so", kMaximumApkBytes,
                        &result.error)) {
     return result;
@@ -527,7 +539,7 @@ PreparedPayload PreparePayloadFromArchives(
   const std::string base_hash =
       HashRegularFile(prepared / "sober_apk/base.apk", &hash_error);
   const std::string split_hash = HashRegularFile(
-      prepared / "sober_apk/split_config.x86_64.apk", &hash_error);
+      prepared / "sober_apk" / compat::kGuestSplitApkFile, &hash_error);
   if (!hash_error.empty()) {
     result.error = hash_error;
     return result;
@@ -537,12 +549,12 @@ PreparedPayload PreparePayloadFromArchives(
       {"package", "com.roblox.client"},
       {"version_name", expected.version_name},
       {"version_code", expected.version_code},
-      {"abi", "x86_64"},
+      {"abi", std::string(compat::kGuestAbi)},
       {"elf_build_id", build_id},
       {"sha256",
        {{"libroblox", library_hash},
         {"base_apk", base_hash},
-        {"x86_64_split_apk", split_hash}}},
+        {std::string(compat::kGuestSplitApkHashKey), split_hash}}},
       {"signing_certificates_sha256", accepted},
       {"assets",
        {{"file_count", asset_count_verified},

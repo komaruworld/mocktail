@@ -130,6 +130,8 @@ TEST(LinkerRegistryTest, KeepsHostIndependentBionicAbiOwnedByLibc) {
             reinterpret_cast<void *>(mocktail___readlink_chk));
   EXPECT_EQ(symbols.at("arc4random_buf"),
             reinterpret_cast<void *>(mocktail_bionic_arc4random_buf));
+  EXPECT_EQ(symbols.at("atoi"),
+            reinterpret_cast<void *>(mocktail_bionic_atoi));
   EXPECT_EQ(symbols.at("mallinfo"),
             reinterpret_cast<void *>(mocktail_bionic_mallinfo));
   EXPECT_EQ(symbols.at("sysinfo"),

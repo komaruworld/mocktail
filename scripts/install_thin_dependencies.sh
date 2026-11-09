@@ -103,6 +103,7 @@ bubblewrap
 xdg-dbus-proxy
 vulkan-icd-loader
 libadwaita
+libsecret
 webkitgtk-6.0
 jq
 unzip
@@ -119,6 +120,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+libpng
 util-linux'
       INSTALL_ARGS='-S --needed --noconfirm'
       ;;
@@ -128,6 +130,7 @@ bubblewrap
 xdg-dbus-proxy
 vulkan-loader
 libadwaita
+libsecret
 libwebkitgtk60
 jq
 unzip
@@ -144,6 +147,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+libpng
 util-linux'
       if HostUsesMusl; then
         PACKAGES="$PACKAGES gcompat"
@@ -156,6 +160,7 @@ bubblewrap
 xdg-dbus-proxy
 vulkan-loader
 libadwaita
+libsecret
 webkit2gtk-6.0
 jq
 unzip
@@ -172,6 +177,7 @@ libyaml
 fontconfig
 minizip
 libplacebo
+libpng
 coreutils
 findutils
 util-linux'

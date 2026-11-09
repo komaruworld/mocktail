@@ -36,6 +36,10 @@ Status ConfigureSdlRecordingDevice(
 Status GetConfiguredSdlRecordingDevice(std::uint32_t* recording_device_id,
                                        std::string* resolved_name);
 
+// Migrates live captures without changing their format or callback buffers.
+Status SwitchSdlRecordingDevice(std::uint32_t recording_device_id,
+                                std::string *resolved_name);
+
 using AudioCaptureDataCallback = void (*)(void* context,
                                           std::size_t size_bytes);
 

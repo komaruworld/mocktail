@@ -1,0 +1,12 @@
+# Allowed reduced packages from pkgforge-dev/archlinux-pkgs-debloated.
+# continuous is rolling: the installer snapshots GitHub asset IDs and SHA256
+# digests together at build time, and verifies every archive before installation.
+# Only the disposable AppImage build container installs these packages.
+ffmpeg-mini-x86_64.pkg.tar.zst
+gdk-pixbuf2-mini-x86_64.pkg.tar.zst
+gtk4-mini-x86_64.pkg.tar.zst
+icu-mini-x86_64.pkg.tar.zst
+librsvg-mini-x86_64.pkg.tar.zst
+libxml2-mini-x86_64.pkg.tar.zst
+mesa-mini-x86_64.pkg.tar.zst
+opus-mini-x86_64.pkg.tar.zst

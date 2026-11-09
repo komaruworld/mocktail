@@ -14,6 +14,7 @@
 #include "mocktail/status.h"
 #include "runtime/owned_pthread.h"
 #include "runtime/roblox_browser_service_bridge.h"
+#include "runtime/roblox_call_protocol_bridge.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_experience_presence.h"
 #include "runtime/roblox_fresh_game_launch_controller.h"
@@ -95,7 +96,9 @@ struct RobloxExperienceSurfaceProvider {
   void* context = nullptr;
   GameSurface (*snapshot)(void* context) = nullptr;
 
-  bool valid() const { return snapshot != nullptr; }
+  bool valid() const {
+    return snapshot != nullptr;
+  }
 };
 
 // Production composition for the APK platform protocols and ExperienceProtocol
@@ -248,6 +251,7 @@ class RobloxExperienceComposition final {
   std::unique_ptr<RobloxWebViewBridge> web_view_bridge_;
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge_;
   std::unique_ptr<RobloxPermissionsBridge> permissions_bridge_;
+  std::unique_ptr<RobloxCallProtocolBridge> call_protocol_bridge_;
   std::shared_ptr<WebViewHelperProcess> web_surface_process_;
   std::shared_ptr<WebSurfaceExitTarget> web_surface_exit_target_;
   std::shared_ptr<LifecycleTarget> lifecycle_target_;

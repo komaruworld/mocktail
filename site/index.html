@@ -10,7 +10,7 @@
 <body><main>
   <img src="../packaging/space.bigrat.mocktail.svg" alt="Mocktail logo">
   <h1>Mocktail</h1>
-  <p>Play Roblox on Linux. Use the stable Flathub release, or try the latest nightly build from main.</p>
+  <p>Play Roblox on Linux. Use the stable Flathub release, or try the latest nightly build from main. Nightly Flatpaks are available for x86_64 and aarch64; Roblox runtime support on aarch64 is experimental.</p>
   <a class="button" href="https://flathub.org/apps/space.bigrat.mocktail">Stable on Flathub</a>
   <a class="button secondary" href="https://mocktail.bigrat.space/mocktail.flatpakref">Nightly build</a>
   <div class="commands">
@@ -19,6 +19,10 @@
     <p>Nightly</p>
     <code>flatpak install --user https://mocktail.bigrat.space/mocktail.flatpakref</code>
   </div>
+  <p class="links">
+    <a href="Mocktail-x86_64.flatpak">x86_64 nightly Flatpak</a>
+    <a href="Mocktail-aarch64.flatpak">aarch64 nightly Flatpak</a>
+  </p>
   <h2>AUR packages</h2>
   <p>Available from the AUR. Choose one package:</p>
   <p class="links">
@@ -51,7 +55,7 @@ sudo apt update</code>
     <code>sudo apt install mocktail-nightly</code>
   </div>
   <h2>Direct downloads</h2>
-  <p>Prebuilt packages for Linux x86_64.</p>
+  <p>Prebuilt Linux packages. DEB and RPM are for x86_64; the nightly AppImage also has an aarch64 build.</p>
   <p class="download-label">Stable</p>
   <p class="links">
     <a href="https://github.com/komaruworld/mocktail/releases/latest/download/Mocktail-x86_64.AppImage">AppImage</a>
@@ -60,7 +64,8 @@ sudo apt update</code>
   </p>
   <p class="download-label">Nightly</p>
   <p class="links">
-    <a href="https://github.com/komaruworld/mocktail/releases/download/continuous/mocktail-nightly.AppImage">AppImage</a>
+    <a href="https://github.com/komaruworld/mocktail/releases/download/continuous/mocktail-nightly.AppImage">AppImage (x86_64)</a>
+    <a href="https://github.com/komaruworld/mocktail/releases/download/continuous/mocktail-nightly-aarch64.AppImage">AppImage (aarch64)</a>
     <a href="https://github.com/komaruworld/mocktail/releases/download/continuous/mocktail-nightly.deb">DEB</a>
     <a href="https://github.com/komaruworld/mocktail/releases/download/continuous/mocktail-nightly.rpm">RPM</a>
   </p>

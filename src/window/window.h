@@ -114,6 +114,7 @@ bool UsesDirectVulkan();
 void* GetGLProcAddress(const char* name);
 
 bool SwapBuffers();
+bool SetSwapInterval(int interval);
 
 bool HasPresentedFrame();
 

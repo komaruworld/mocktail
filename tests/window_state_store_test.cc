@@ -75,6 +75,73 @@ TEST(WindowStateStoreTest, RoundTripsGeometryAndPresentationState) {
   EXPECT_FALSE(loaded.state.maximized);
 }
 
+TEST(WindowStateStoreTest, RoundTripsConfiguredSize) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path path =
+      temporary.path() / "window-state.json";
+  PersistedWindowState expected;
+  expected.width = 1600;
+  expected.height = 900;
+  expected.configured_width = 540;
+  expected.configured_height = 340;
+  expected.has_configured_size = true;
+
+  ASSERT_TRUE(StoreWindowState(path, expected).ok());
+
+  const WindowStateLoadResult loaded = LoadWindowState(path);
+  ASSERT_TRUE(loaded) << loaded.status.message();
+  ASSERT_TRUE(loaded.found);
+  EXPECT_TRUE(loaded.state.has_configured_size);
+  EXPECT_EQ(loaded.state.configured_width, expected.configured_width);
+  EXPECT_EQ(loaded.state.configured_height, expected.configured_height);
+}
+
+TEST(WindowStateStoreTest, LegacyStateWithoutConfiguredSizeStillLoads) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path path = temporary.path() / "window-state.json";
+  {
+    std::ofstream output(path);
+    output << R"({"schema_version":1,"fullscreen":false,"maximized":false,)"
+              R"("windowed":{"has_position":false,"width":1440,"height":900}})";
+  }
+
+  const WindowStateLoadResult loaded = LoadWindowState(path);
+  ASSERT_TRUE(loaded) << loaded.status.message();
+  ASSERT_TRUE(loaded.found);
+  EXPECT_EQ(loaded.state.width, 1440);
+  EXPECT_FALSE(loaded.state.has_configured_size);
+}
+
+TEST(WindowStateStoreTest, RestoredSizeAppliesOnlyToUnchangedConfiguredSize) {
+  PersistedWindowState state;
+  EXPECT_FALSE(RestoredSizeApplies(state, 1280, 720));
+
+  state.has_configured_size = true;
+  state.configured_width = 1280;
+  state.configured_height = 720;
+  EXPECT_TRUE(RestoredSizeApplies(state, 1280, 720));
+  EXPECT_FALSE(RestoredSizeApplies(state, 540, 340));
+  EXPECT_FALSE(RestoredSizeApplies(state, 1280, 340));
+}
+
+TEST(WindowStateStoreTest, RejectsMalformedConfiguredSize) {
+  TemporaryDirectory temporary;
+  const std::filesystem::path path = temporary.path() / "window-state.json";
+  {
+    std::ofstream output(path);
+    output << R"({"schema_version":1,"fullscreen":false,"maximized":false,)"
+              R"("configured":{"width":"540","height":340},)"
+              R"("windowed":{"has_position":false,"width":1280,"height":720}})";
+  }
+  EXPECT_FALSE(LoadWindowState(path));
+
+  PersistedWindowState invalid;
+  invalid.has_configured_size = true;
+  invalid.configured_width = 0;
+  invalid.configured_height = 720;
+  EXPECT_FALSE(StoreWindowState(path, invalid).ok());
+}
+
 TEST(WindowStateStoreTest,
      DefersMaximizedRestoreUntilAfterStartupConstraints) {
   PersistedWindowState windowed;

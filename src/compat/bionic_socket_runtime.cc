@@ -1,5 +1,7 @@
 #include "compat/bionic_socket_runtime.h"
 
+#include "runtime/helper_environment.h"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -251,9 +253,11 @@ int ApplyFreeBsdPathMtuDiscovery(int socket, int discovery_mode) noexcept {
       const_cast<char *>(kFreeBsdSocketHelper), descriptor.data(), enabled,
       nullptr};
   pid_t child = -1;
+  const auto child_environment =
+      mocktail::runtime::BuildHelperEnvironment(environ);
   const int spawn_status =
       ::posix_spawn(&child, helper.c_str(), nullptr, nullptr, arguments,
-                    environ);
+                    child_environment.data());
   ::close(inherited_socket);
   if (spawn_status != 0) return -1;
 

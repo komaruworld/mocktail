@@ -7,11 +7,14 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,6 +25,8 @@
 #include "jnivm/jnivm.h"
 #include "legacy/legacy_runtime.h"
 #include "runtime/environment.h"
+#include "runtime/roblox_cookie_store.h"
+#include "runtime/roblox_presence_resolver.h"
 #include "runtime/runtime_paths.h"
 #include "services/auth_service.h"
 #include "services/http_client.h"
@@ -29,6 +34,16 @@
 namespace mocktail {
 namespace runtime {
 namespace {
+
+AuthRuntimeComposition ComposeTestAuthRuntime(
+    const Environment& environment, const RuntimePaths& paths,
+    services::AuthService& auth_service,
+    std::shared_ptr<services::HttpClient> client = nullptr,
+    std::shared_ptr<RobloxSecretStore> secrets =
+        std::make_shared<RobloxSecretStore>()) {
+  return ComposeAuthRuntime(environment, paths, auth_service, std::move(client),
+                            std::move(secrets));
+}
 
 constexpr char kCredential[] = "_|test-auth-runtime-credential";
 
@@ -167,7 +182,7 @@ TEST(AuthRuntimeCompositionTest,
       {}};
   services::AuthService auth_service(http);
 
-  const AuthRuntimeComposition composition = ComposeAuthRuntime(
+  const AuthRuntimeComposition composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service);
 
   ASSERT_TRUE(composition);
@@ -203,7 +218,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
   const auto paths = PathsFor(environment, directory);
   AuthRuntimeComposition production =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
   ASSERT_EQ(production.status, AuthRuntimeStatus::kGuest);
   ASSERT_TRUE(production);
 
@@ -213,7 +228,7 @@ TEST(AuthRuntimeCompositionTest,
   environment.Set("MOCKTAIL_ROBLOX_COOKIES", "RBXEventTrackerV2=test-tracker");
   {
     AuthRuntimeComposition candidate =
-        ComposeAuthRuntime(environment, paths, auth_service);
+        ComposeTestAuthRuntime(environment, paths, auth_service);
     ASSERT_EQ(candidate.status, AuthRuntimeStatus::kGuest);
     ASSERT_TRUE(candidate);
     ASSERT_NE(candidate.jni_vm, production.jni_vm);
@@ -242,7 +257,7 @@ TEST(AuthRuntimeCompositionTest, SoberCookieIsIgnoredAndGuestPolicyRequired) {
   FakeHttpClient http;
   services::AuthService auth_service(http);
 
-  AuthRuntimeComposition composition = ComposeAuthRuntime(
+  AuthRuntimeComposition composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service);
   EXPECT_FALSE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kInvalidCredentials);
@@ -252,7 +267,7 @@ TEST(AuthRuntimeCompositionTest, SoberCookieIsIgnoredAndGuestPolicyRequired) {
   EXPECT_EQ(composition.account_identity.user_id, -1);
 
   environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
-  composition = ComposeAuthRuntime(
+  composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service);
   ASSERT_TRUE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
@@ -274,7 +289,7 @@ TEST(AuthRuntimeCompositionTest,
   FakeHttpClient http;
   services::AuthService auth_service(http);
   AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
   ASSERT_TRUE(composition);
   ASSERT_EQ(composition.status, AuthRuntimeStatus::kGuest);
 
@@ -308,6 +323,7 @@ TEST(AuthRuntimeCompositionTest,
         composition.jni_vm->GetRobloxAuthIdentitySnapshot().user_id, -1);
   }
 
+  composition.jni_vm->ClearRobloxCredentialSink();
   std::ifstream input(paths.cookie_file(), std::ios::binary);
   ASSERT_TRUE(input.good());
   const std::string persisted((std::istreambuf_iterator<char>(input)),
@@ -339,7 +355,7 @@ TEST(AuthRuntimeCompositionTest,
       {}};
   services::AuthService auth_service(*http);
   AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service, http);
+      ComposeTestAuthRuntime(environment, paths, auth_service, http);
   ASSERT_TRUE(composition);
   ASSERT_EQ(composition.status, AuthRuntimeStatus::kGuest);
   ASSERT_EQ(http->request_count, 0);
@@ -365,6 +381,7 @@ TEST(AuthRuntimeCompositionTest,
   EXPECT_EQ(identity.user_id, 987);
   EXPECT_EQ(identity.username, "LiveUser");
   EXPECT_EQ(identity.display_name, "Live User");
+  composition.jni_vm->ClearRobloxCredentialSink();
   EXPECT_EQ(ReadFile(paths.cookie_file()), saved + "\n");
 }
 
@@ -378,7 +395,7 @@ TEST(AuthRuntimeCompositionTest,
   FakeHttpClient initial_http;
   services::AuthService initial_auth_service(initial_http);
   AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, initial_auth_service);
+      ComposeTestAuthRuntime(environment, paths, initial_auth_service);
   ASSERT_TRUE(composition);
   ASSERT_EQ(composition.status, AuthRuntimeStatus::kGuest);
 
@@ -416,6 +433,7 @@ TEST(AuthRuntimeCompositionTest,
   EXPECT_EQ(callback_probe->calls, 1);
   EXPECT_EQ(callback_probe->cookie, saved);
   EXPECT_EQ(callback_probe->url, "https://www.roblox.com/");
+  composition.jni_vm->ClearRobloxCredentialSink();
   EXPECT_EQ(ReadFile(paths.cookie_file()), saved + "\n");
 
   MapEnvironment restart_environment;
@@ -427,7 +445,7 @@ TEST(AuthRuntimeCompositionTest,
       R"({"id":777,"name":"RestartUser","displayName":"Restart User"})",
       {}};
   services::AuthService restart_auth_service(restart_http);
-  const AuthRuntimeComposition restarted = ComposeAuthRuntime(
+  const AuthRuntimeComposition restarted = ComposeTestAuthRuntime(
       restart_environment, PathsFor(restart_environment, directory),
       restart_auth_service);
 
@@ -453,7 +471,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   EXPECT_FALSE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kInvalidCredentials);
@@ -482,7 +500,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   ASSERT_TRUE(composition) << composition.error;
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
@@ -502,7 +520,7 @@ TEST(AuthRuntimeCompositionTest,
   FakeHttpClient restart_http;
   services::AuthService restart_auth_service(restart_http);
   const AuthRuntimeComposition restarted =
-      ComposeAuthRuntime(environment, paths, restart_auth_service);
+      ComposeTestAuthRuntime(environment, paths, restart_auth_service);
   ASSERT_TRUE(restarted) << restarted.error;
   EXPECT_EQ(restarted.status, AuthRuntimeStatus::kGuest);
   EXPECT_EQ(restart_http.request_count, 0);
@@ -526,7 +544,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   ASSERT_TRUE(composition) << composition.error;
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
@@ -556,7 +574,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   ASSERT_TRUE(composition) << composition.error;
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
@@ -569,7 +587,7 @@ TEST(AuthRuntimeCompositionTest,
   FakeHttpClient restart_http;
   services::AuthService restart_auth_service(restart_http);
   const AuthRuntimeComposition restarted =
-      ComposeAuthRuntime(environment, paths, restart_auth_service);
+      ComposeTestAuthRuntime(environment, paths, restart_auth_service);
   ASSERT_TRUE(restarted) << restarted.error;
   EXPECT_EQ(restarted.status, AuthRuntimeStatus::kGuest);
   EXPECT_EQ(restart_http.request_count, 0);
@@ -589,7 +607,7 @@ TEST(AuthRuntimeCompositionTest, Http403ClearsManagedCookieAndStartsGuest) {
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   ASSERT_TRUE(composition) << composition.error;
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
@@ -618,7 +636,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   EXPECT_FALSE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kInvalidCredentials);
@@ -644,7 +662,7 @@ TEST(AuthRuntimeCompositionTest,
   http.response = {true, 401, {}, {}};
   services::AuthService auth_service(http);
 
-  const AuthRuntimeComposition composition = ComposeAuthRuntime(
+  const AuthRuntimeComposition composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service);
 
   EXPECT_FALSE(composition);
@@ -676,7 +694,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   EXPECT_FALSE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
@@ -708,7 +726,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   EXPECT_FALSE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
@@ -749,7 +767,7 @@ TEST(AuthRuntimeCompositionTest,
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   EXPECT_FALSE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
@@ -769,7 +787,7 @@ TEST(AuthRuntimeCompositionTest, UnavailableAuthFailsClosedAndRedactsErrors) {
   http.response = {false, 0, {}, std::string("request exposed ") + kCredential};
   services::AuthService auth_service(http);
 
-  const AuthRuntimeComposition composition = ComposeAuthRuntime(
+  const AuthRuntimeComposition composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service);
 
   EXPECT_FALSE(composition);
@@ -794,7 +812,7 @@ TEST(AuthRuntimeCompositionTest, ExplicitCookieFileIsAuthoritative) {
   services::AuthService auth_service(http);
 
   const AuthRuntimeComposition composition =
-      ComposeAuthRuntime(environment, paths, auth_service);
+      ComposeTestAuthRuntime(environment, paths, auth_service);
 
   EXPECT_FALSE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
@@ -814,7 +832,7 @@ TEST(AuthRuntimeCompositionTest, RejectsCookieFileWithSharedPermissions) {
   FakeHttpClient http;
   services::AuthService auth_service(http);
 
-  const AuthRuntimeComposition composition = ComposeAuthRuntime(
+  const AuthRuntimeComposition composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service);
 
   EXPECT_FALSE(composition);
@@ -838,7 +856,7 @@ TEST(AuthRuntimeCompositionTest, RejectsSymlinkCookieSource) {
   FakeHttpClient http;
   services::AuthService auth_service(http);
 
-  const AuthRuntimeComposition composition = ComposeAuthRuntime(
+  const AuthRuntimeComposition composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service);
 
   EXPECT_FALSE(composition);
@@ -865,7 +883,7 @@ TEST(AuthRuntimeCompositionTest,
       R"({"id":777,"name":"ConsistentUser","displayName":"Consistent"})",
       {}};
   services::AuthService auth_service(http);
-  AuthRuntimeComposition composition = ComposeAuthRuntime(
+  AuthRuntimeComposition composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service);
   ASSERT_TRUE(composition);
 
@@ -916,7 +934,7 @@ TEST(AuthRuntimeCompositionTest,
       R"({"id":999,"name":"GuestPromotedUser","displayName":"GuestPromoted"})",
       {}};
   services::AuthService auth_service(*http);
-  AuthRuntimeComposition composition = ComposeAuthRuntime(
+  AuthRuntimeComposition composition = ComposeTestAuthRuntime(
       environment, PathsFor(environment, directory), auth_service, http);
   ASSERT_TRUE(composition);
   EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
@@ -947,6 +965,425 @@ TEST(AuthRuntimeCompositionTest,
   auto java_cookie = static_cast<jstring>(env->CallStaticObjectMethod(
       cookie_manager, get_cookie, env->NewStringUTF("roblox.com")));
   EXPECT_EQ(ReadJavaString(env, java_cookie), dispatched_header);
+}
+
+class MemorySecretStore final : public RobloxSecretStore {
+ public:
+  StoredCookie Load(const std::filesystem::path& profile) override {
+    if (!available) return RobloxSecretStore::Load(profile);
+    const auto item = cookies.find(profile);
+    return item == cookies.end()
+               ? StoredCookie{StoredCookieStatus::kMissing, {}, {}, true}
+               : StoredCookie{
+                     StoredCookieStatus::kFound, item->second, {}, true};
+  }
+  bool Store(const std::filesystem::path& profile,
+             const std::string& cookie) override {
+    if (before_store) before_store();
+    if (!available) return false;
+    cookies[profile] = cookie;
+    return true;
+  }
+  bool Clear(const std::filesystem::path& profile) override {
+    if (!available) return false;
+    cookies.erase(profile);
+    return true;
+  }
+  void Warn(std::string_view message) override {
+    warnings.emplace_back(message);
+  }
+
+  bool available = true;
+  std::map<std::filesystem::path, std::string> cookies;
+  std::vector<std::string> warnings;
+  std::function<void()> before_store;
+};
+
+TEST(AuthRuntimeCompositionTest, MigratesCookieAndRemovesWebViewCopies) {
+  TempDirectory directory;
+  const auto path = directory.path() / "auth/roblox.cookie";
+  const auto webview = directory.path() / "webview";
+  const std::string cookie = ".ROBLOSECURITY=_|migration";
+  ASSERT_TRUE(WriteFile(path, cookie + "; RBXEventTrackerV2=tracker\n"));
+  for (const char* suffix : {"", "-wal", "-shm", "-journal"})
+    ASSERT_TRUE(WriteFile(webview / (std::string("cookies.sqlite") + suffix),
+                          "old-cookie-copy"));
+  auto secrets = std::make_shared<MemorySecretStore>();
+  ASSERT_TRUE(PersistRobloxCookie(path, cookie, secrets, webview));
+  EXPECT_EQ(secrets->cookies[path], cookie);
+  EXPECT_FALSE(std::filesystem::exists(path));
+  for (const char* suffix : {"", "-wal", "-shm", "-journal"})
+    EXPECT_FALSE(std::filesystem::exists(
+        webview / (std::string("cookies.sqlite") + suffix)));
+  EXPECT_TRUE(secrets->warnings.empty());
+  const auto loaded = LoadManagedRobloxCookie(path, *secrets);
+  EXPECT_TRUE(loaded.from_secret_store);
+  EXPECT_EQ(loaded.value, cookie);
+}
+
+TEST(AuthRuntimeCompositionTest,
+     FallbackMigratesNewestCookieWhenKeyringReturns) {
+  TempDirectory directory;
+  const auto path = directory.path() / "auth/roblox.cookie";
+  auto secrets = std::make_shared<MemorySecretStore>();
+  secrets->cookies[path] = ".ROBLOSECURITY=_|old";
+  secrets->available = false;
+  ASSERT_TRUE(PersistRobloxCookie(path, "_|new", secrets));
+  ASSERT_EQ(secrets->warnings.size(), 1U);
+  EXPECT_NE(secrets->warnings[0].find("unencrypted"), std::string::npos);
+  struct stat metadata{};
+  ASSERT_EQ(stat(path.c_str(), &metadata), 0);
+  EXPECT_EQ(metadata.st_mode & 0777, 0600);
+  secrets->available = true;
+  auto loaded = LoadManagedRobloxCookie(path, *secrets);
+  EXPECT_FALSE(loaded.from_secret_store);
+  EXPECT_EQ(loaded.value, ".ROBLOSECURITY=_|new\n");
+  ASSERT_TRUE(PersistRobloxCookie(path, "_|new", secrets));
+  EXPECT_FALSE(std::filesystem::exists(path));
+  EXPECT_EQ(secrets->cookies[path], ".ROBLOSECURITY=_|new");
+}
+
+TEST(AuthRuntimeCompositionTest, FailedMigrationKeepsTheOnlySavedCookie) {
+  TempDirectory directory;
+  const auto path = directory.path() / "auth/roblox.cookie";
+  const std::string cookie = ".ROBLOSECURITY=_|keep";
+  ASSERT_TRUE(WriteFile(path, cookie + "\n"));
+  auto secrets = std::make_shared<MemorySecretStore>();
+  secrets->available = false;
+  ASSERT_TRUE(PersistRobloxCookie(path, cookie, secrets));
+  EXPECT_EQ(ReadFile(path), cookie + "\n");
+  EXPECT_TRUE(secrets->cookies.empty());
+  EXPECT_FALSE(secrets->warnings.empty());
+}
+
+TEST(AuthRuntimeCompositionTest,
+     MigrationDoesNotRemoveConcurrentlyReplacedFile) {
+  TempDirectory directory;
+  const auto path = directory.path() / "auth/roblox.cookie";
+  ASSERT_TRUE(WriteFile(path, ".ROBLOSECURITY=_|old\n"));
+  auto secrets = std::make_shared<MemorySecretStore>();
+  secrets->before_store = [&] {
+    EXPECT_TRUE(WriteFile(path, ".ROBLOSECURITY=_|replacement\n"));
+  };
+  EXPECT_FALSE(PersistRobloxCookie(path, "_|old", secrets));
+  EXPECT_EQ(ReadFile(path), ".ROBLOSECURITY=_|replacement\n");
+  EXPECT_FALSE(secrets->warnings.empty());
+}
+
+TEST(AuthRuntimeCompositionTest, AuthenticatesFromKeyringWithoutPlaintextFile) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  const auto paths = PathsFor(environment, directory);
+  auto secrets = std::make_shared<MemorySecretStore>();
+  secrets->cookies[paths.cookie_file()] = ".ROBLOSECURITY=_|keyring";
+  FakeHttpClient http;
+  http.response = {
+      true,
+      200,
+      R"({"id":321,"name":"RuntimeUser","displayName":"Runtime Display"})",
+      {}};
+  services::AuthService auth(http);
+  auto composition =
+      ComposeTestAuthRuntime(environment, paths, auth, nullptr, secrets);
+  ASSERT_EQ(composition.status, AuthRuntimeStatus::kAuthenticated);
+  EXPECT_EQ(composition.credential.view(), ".ROBLOSECURITY=_|keyring");
+  EXPECT_FALSE(std::filesystem::exists(paths.cookie_file()));
+  EXPECT_TRUE(secrets->warnings.empty());
+}
+
+TEST(AuthRuntimeCompositionTest, RejectsAndRetiresKeyringCredential) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
+  const auto paths = PathsFor(environment, directory);
+  auto secrets = std::make_shared<MemorySecretStore>();
+  secrets->cookies[paths.cookie_file()] = ".ROBLOSECURITY=_|expired";
+  FakeHttpClient http;
+  http.response = {true, 401, "{}", {}};
+  services::AuthService auth(http);
+  auto composition =
+      ComposeTestAuthRuntime(environment, paths, auth, nullptr, secrets);
+  EXPECT_EQ(composition.status, AuthRuntimeStatus::kGuest);
+  EXPECT_TRUE(composition.rejected_credential_retired);
+  EXPECT_TRUE(secrets->cookies.empty());
+}
+
+TEST(AuthRuntimeCompositionTest, DoesNotRetireNewerKeyringCredential) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
+  const auto paths = PathsFor(environment, directory);
+  auto secrets = std::make_shared<MemorySecretStore>();
+  secrets->cookies[paths.cookie_file()] = ".ROBLOSECURITY=_|expired";
+  FakeHttpClient http;
+  http.response = {true, 401, "{}", {}};
+  http.before_response = [&] {
+    secrets->cookies[paths.cookie_file()] = ".ROBLOSECURITY=_|new";
+  };
+  services::AuthService auth(http);
+  auto composition =
+      ComposeTestAuthRuntime(environment, paths, auth, nullptr, secrets);
+  EXPECT_EQ(composition.status, AuthRuntimeStatus::kUnavailable);
+  EXPECT_FALSE(composition.rejected_credential_retired);
+  EXPECT_EQ(secrets->cookies[paths.cookie_file()], ".ROBLOSECURITY=_|new");
+}
+
+TEST(AuthRuntimeCompositionTest,
+     RetiredFallbackDoesNotResurrectOlderKeyringSession) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
+  const auto paths = PathsFor(environment, directory);
+  ASSERT_TRUE(WriteFile(paths.cookie_file(), ".ROBLOSECURITY=_|expired\n"));
+  auto secrets = std::make_shared<MemorySecretStore>();
+  secrets->cookies[paths.cookie_file()] = ".ROBLOSECURITY=_|older";
+  FakeHttpClient http;
+  http.response = {true, 401, "{}", {}};
+  services::AuthService auth(http);
+  auto first =
+      ComposeTestAuthRuntime(environment, paths, auth, nullptr, secrets);
+  EXPECT_TRUE(first.rejected_credential_retired);
+  auto restart =
+      ComposeTestAuthRuntime(environment, paths, auth, nullptr, secrets);
+  EXPECT_EQ(restart.status, AuthRuntimeStatus::kGuest);
+  EXPECT_TRUE(restart.credential.empty());
+  EXPECT_EQ(http.request_count, 1);
+}
+
+TEST(AuthRuntimeCompositionTest, NativeCookieWriteDoesNotWaitForKeyring) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  environment.Set("MOCKTAIL_ALLOW_NO_COOKIE_LUA_APP", "1");
+  const auto paths = PathsFor(environment, directory);
+  auto secrets = std::make_shared<MemorySecretStore>();
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool entered = false;
+  bool released = false;
+  secrets->before_store = [&] {
+    std::unique_lock<std::mutex> lock(mutex);
+    entered = true;
+    condition.notify_all();
+    condition.wait_for(lock, std::chrono::seconds(3), [&] { return released; });
+  };
+  FakeHttpClient http;
+  services::AuthService auth(http);
+  auto composition =
+      ComposeTestAuthRuntime(environment, paths, auth, nullptr, secrets);
+  const std::string first = ".ROBLOSECURITY=_|first";
+  const std::string latest = ".ROBLOSECURITY=_|latest";
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_TRUE(
+      composition.jni_vm->DispatchRobloxCredential(first.data(), first.size()));
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1));
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    EXPECT_TRUE(condition.wait_for(lock, std::chrono::seconds(2),
+                                   [&] { return entered; }));
+  }
+  EXPECT_TRUE(composition.jni_vm->DispatchRobloxCredential(latest.data(),
+                                                           latest.size()));
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    released = true;
+  }
+  condition.notify_all();
+  composition.jni_vm->ClearRobloxCredentialSink();
+  EXPECT_EQ(secrets->cookies[paths.cookie_file()], latest);
+  EXPECT_FALSE(std::filesystem::exists(paths.cookie_file()));
+}
+
+TEST(AuthRuntimeCompositionTest, UnsafeWebViewCleanupKeepsLegacyCookie) {
+  TempDirectory directory;
+  const auto path = directory.path() / "auth/roblox.cookie";
+  const auto webview = directory.path() / "webview";
+  const auto protected_file = directory.path() / "protected";
+  ASSERT_TRUE(WriteFile(path, ".ROBLOSECURITY=_|keep\n"));
+  ASSERT_TRUE(WriteFile(protected_file, "keep"));
+  std::filesystem::create_directory(webview);
+  std::filesystem::create_symlink(protected_file, webview / "cookies.sqlite");
+  auto secrets = std::make_shared<MemorySecretStore>();
+  EXPECT_FALSE(PersistRobloxCookie(path, "_|keep", secrets, webview));
+  EXPECT_EQ(ReadFile(protected_file), "keep");
+  EXPECT_EQ(ReadFile(path), ".ROBLOSECURITY=_|keep\n");
+  EXPECT_FALSE(secrets->warnings.empty());
+}
+
+class ScopedCookieEnvironment {
+ public:
+  void Set(const char* name, const std::string& value) {
+    if (previous.find(name) == previous.end()) {
+      const char* old = std::getenv(name);
+      previous[name] =
+          old == nullptr ? std::nullopt : std::optional<std::string>(old);
+    }
+    ASSERT_EQ(setenv(name, value.c_str(), 1), 0);
+  }
+  ~ScopedCookieEnvironment() {
+    for (const auto& [name, value] : previous) {
+      if (value)
+        setenv(name.c_str(), value->c_str(), 1);
+      else
+        unsetenv(name.c_str());
+    }
+  }
+  std::map<std::string, std::optional<std::string>> previous;
+};
+
+TEST(AuthRuntimeCompositionTest,
+     FollowUserReadsKeyringAndHonorsExplicitCookie) {
+  TempDirectory directory;
+  const auto path = directory.path() / "auth/roblox.cookie";
+  ScopedCookieEnvironment environment;
+  environment.Set("MOCKTAIL_AUTH_ROOT", path.parent_path().string());
+  environment.Set("MOCKTAIL_ROBLOX_COOKIES", "");
+  environment.Set("MOCKTAIL_COOKIE_FILE", "");
+  auto secrets = std::make_shared<MemorySecretStore>();
+  secrets->cookies[path] = ".ROBLOSECURITY=_|follow";
+  EXPECT_EQ(ReadStoredRoblosecurityCookie(secrets), "_|follow");
+  ASSERT_TRUE(WriteFile(path, ".ROBLOSECURITY=_|fallback\n"));
+  EXPECT_EQ(ReadStoredRoblosecurityCookie(secrets), "_|fallback");
+  environment.Set("MOCKTAIL_ROBLOX_COOKIES", ".ROBLOSECURITY=_|explicit");
+  EXPECT_EQ(ReadStoredRoblosecurityCookie(secrets), "_|explicit");
+}
+
+TEST(AuthRuntimeCompositionTest, UnsafePersistenceWarnsAndPreservesFiles) {
+  TempDirectory directory;
+  const auto protected_file = directory.path() / "protected";
+  const auto path = directory.path() / "roblox.cookie";
+  ASSERT_TRUE(WriteFile(protected_file, "keep"));
+  std::filesystem::create_symlink(protected_file, path);
+  auto secrets = std::make_shared<MemorySecretStore>();
+  EXPECT_FALSE(PersistRobloxCookie(path, "_|test", secrets));
+  EXPECT_EQ(ReadFile(protected_file), "keep");
+  EXPECT_TRUE(secrets->cookies.empty());
+  EXPECT_FALSE(secrets->warnings.empty());
+}
+
+TEST(AuthRuntimeCompositionTest, ExplicitManagedPathIsNotDeletedByMigration) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  const auto paths = PathsFor(environment, directory);
+  environment.Set("MOCKTAIL_COOKIE_FILE", paths.cookie_file().string());
+  const std::string original = ".ROBLOSECURITY=_|explicit; OtherCookie=keep\n";
+  ASSERT_TRUE(WriteFile(paths.cookie_file(), original));
+  auto secrets = std::make_shared<MemorySecretStore>();
+  FakeHttpClient http;
+  http.response = {
+      true,
+      200,
+      R"({"id":321,"name":"RuntimeUser","displayName":"Runtime Display"})",
+      {}};
+  services::AuthService auth(http);
+  auto composition =
+      ComposeTestAuthRuntime(environment, paths, auth, nullptr, secrets);
+  ASSERT_EQ(composition.status, AuthRuntimeStatus::kAuthenticated);
+  EXPECT_EQ(ReadFile(paths.cookie_file()), original);
+  EXPECT_EQ(secrets->cookies[paths.cookie_file()], ".ROBLOSECURITY=_|explicit");
+}
+
+std::shared_ptr<RobloxSecretStore> OpenYamlSecretStore(
+    const TempDirectory& directory) {
+  MapEnvironment environment;
+  environment.Set("MOCKTAIL_CONFIG_ROOT", directory.path().string());
+  EXPECT_TRUE(WriteFile(directory.path() / "config.yaml",
+                        "auth:\n  use_libsecret: true\n"));
+  return OpenRobloxSecretStore(environment);
+}
+
+TEST(AuthRuntimeCompositionTest, CookieStorageRequiresYamlOptIn) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("MOCKTAIL_CONFIG_ROOT", directory.path().string());
+  auto secrets = OpenRobloxSecretStore(environment);
+  EXPECT_FALSE(secrets->enabled());
+  EXPECT_EQ(secrets->Load(directory.path() / "cookie").status,
+            StoredCookieStatus::kMissing);
+  EXPECT_TRUE(OpenYamlSecretStore(directory)->enabled());
+  ASSERT_TRUE(WriteFile(directory.path() / "config.yaml",
+                        "auth:\n  use_libsecret: false\n"));
+  EXPECT_FALSE(OpenRobloxSecretStore(environment)->enabled());
+}
+
+TEST(AuthRuntimeCompositionTest, DefaultFileStorageDoesNotMigrateOrWarn) {
+  TempDirectory directory;
+  MapEnvironment environment;
+  environment.Set("HOME", directory.path().string());
+  environment.Set("MOCKTAIL_CONFIG_ROOT", directory.path().string());
+  const auto paths = PathsFor(environment, directory);
+  const std::string cookie = ".ROBLOSECURITY=_|file-default";
+  ASSERT_TRUE(WriteFile(paths.cookie_file(), cookie + "\n"));
+  const auto database = directory.path() / ".local/share/mocktail/webview/cookies.sqlite";
+  ASSERT_TRUE(WriteFile(database, "old-cookie-copy"));
+  FakeHttpClient http;
+  http.response = {true, 200,
+      R"({"id":321,"name":"RuntimeUser","displayName":"Runtime Display"})", {}};
+  services::AuthService auth(http);
+  testing::internal::CaptureStderr();
+  auto composition = ComposeAuthRuntime(environment, paths, auth);
+  const auto diagnostics = testing::internal::GetCapturedStderr();
+  EXPECT_EQ(composition.status, AuthRuntimeStatus::kAuthenticated);
+  EXPECT_EQ(ReadFile(paths.cookie_file()), cookie + "\n");
+  EXPECT_EQ(ReadFile(database), "old-cookie-copy");
+  EXPECT_TRUE(diagnostics.empty()) << diagnostics;
+}
+
+TEST(AuthRuntimeCompositionTest, MissingHelperIsUnavailable) {
+  TempDirectory directory;
+  ScopedCookieEnvironment environment;
+  environment.Set("MOCKTAIL_COOKIE_HELPER",
+                  (directory.path() / "absent").string());
+  auto secrets = OpenYamlSecretStore(directory);
+  EXPECT_EQ(secrets->Load(directory.path() / "profile").status,
+            StoredCookieStatus::kUnavailable);
+  EXPECT_FALSE(secrets->Store(directory.path() / "profile", "_|test"));
+}
+
+TEST(AuthRuntimeCompositionTest, UnresponsiveHelperIsTerminated) {
+  TempDirectory directory;
+  const auto helper = directory.path() / "helper";
+  ASSERT_TRUE(WriteFile(helper, "#!/bin/sh\nexec sleep 60\n"));
+  ASSERT_EQ(chmod(helper.c_str(), 0700), 0);
+  ScopedCookieEnvironment environment;
+  environment.Set("MOCKTAIL_COOKIE_HELPER", helper.string());
+  auto secrets = OpenYamlSecretStore(directory);
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_EQ(secrets->Load(directory.path() / "profile").status,
+            StoredCookieStatus::kUnavailable);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(18));
+}
+
+TEST(AuthRuntimeCompositionTest, LibsecretEncryptedFileRoundTrip) {
+#ifndef MOCKTAIL_TEST_LIBSECRET
+  GTEST_SKIP() << "libsecret headers are unavailable";
+#else
+  TempDirectory directory;
+  ScopedCookieEnvironment environment;
+  environment.Set("SECRET_BACKEND", "file");
+  environment.Set("SECRET_FILE_TEST_PATH",
+                  (directory.path() / "keyring").string());
+  environment.Set("SECRET_FILE_TEST_PASSWORD",
+                  "mocktail-isolated-test-password");
+  const auto path = directory.path() / "profile/roblox.cookie";
+  auto secrets = OpenYamlSecretStore(directory);
+  EXPECT_EQ(secrets->Load(path).status, StoredCookieStatus::kMissing);
+  ASSERT_TRUE(secrets->Store(path, ".ROBLOSECURITY=_|isolated-test-cookie"));
+  EXPECT_EQ(secrets->Load(path).value, ".ROBLOSECURITY=_|isolated-test-cookie");
+  EXPECT_EQ(secrets->Load(directory.path() / "another-profile").status,
+            StoredCookieStatus::kMissing);
+  EXPECT_EQ(ReadFile(directory.path() / "keyring").find("isolated-test-cookie"),
+            std::string::npos);
+  ASSERT_TRUE(secrets->Store(path, ".ROBLOSECURITY=_|updated-test-cookie"));
+  EXPECT_EQ(secrets->Load(path).value, ".ROBLOSECURITY=_|updated-test-cookie");
+  ASSERT_TRUE(secrets->Clear(path));
+  EXPECT_EQ(secrets->Load(path).status, StoredCookieStatus::kMissing);
+#endif
 }
 
 }  // namespace

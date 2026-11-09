@@ -329,6 +329,7 @@ def run_trial(args, max_ctors, skipped_offsets, trial_id):
   log_path = args.log_dir / f"trial_{trial_id:03d}_max_{max_ctors}.log"
   env = os.environ.copy()
   env.update({
+      "ROBLOX_LIB_PATH": str(args.libroblox),
       "MOCKTAIL_RUN_LIBROBLOX_CTORS": "1",
       "MOCKTAIL_LIBROBLOX_CTOR_POLICY": args.ctor_policy,
       "MOCKTAIL_GRAPHICS_BACKEND": args.graphics_backend,
@@ -500,7 +501,7 @@ def parse_args():
   parser = argparse.ArgumentParser()
   parser.add_argument("--project-root", type=Path, default=project_root)
   parser.add_argument("--run-script", type=Path,
-                      default=project_root / "scripts" / "run_sober.sh")
+                      default=project_root / "build" / "mocktail")
   parser.add_argument("--libroblox", type=Path,
                       default=project_root / "rbx_bin" / "libroblox.so")
   parser.add_argument("--log-dir", type=Path,

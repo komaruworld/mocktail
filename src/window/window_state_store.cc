@@ -76,6 +76,8 @@ bool IsValidState(const PersistedWindowState& state) {
          state.width <= kMaximumExtent &&
          state.height >= kMinimumWindowHeight &&
          state.height <= kMaximumExtent &&
+         (!state.has_configured_size ||
+          (state.configured_width > 0 && state.configured_height > 0)) &&
          (!state.has_position || (state.x >= -kMaximumCoordinateMagnitude &&
                                   state.x <= kMaximumCoordinateMagnitude &&
                                   state.y >= -kMaximumCoordinateMagnitude &&
@@ -183,6 +185,18 @@ WindowStateLoadResult LoadWindowState(const std::filesystem::path& path) {
     result.status = InvalidState("window state position is incomplete");
     return result;
   }
+  const auto configured = parsed.find("configured");
+  if (configured != parsed.end()) {
+    if (!configured->is_object() ||
+        !ReadInteger(*configured, "width",
+                     &result.state.configured_width) ||
+        !ReadInteger(*configured, "height",
+                     &result.state.configured_height)) {
+      result.status = InvalidState("window state configured size is malformed");
+      return result;
+    }
+    result.state.has_configured_size = true;
+  }
   if (!IsValidState(result.state)) {
     result.status = InvalidState("window state geometry is out of range");
     return result;
@@ -225,12 +239,18 @@ Status StoreWindowState(const std::filesystem::path& path,
     windowed["x"] = state.x;
     windowed["y"] = state.y;
   }
-  const nlohmann::json encoded = {
+  nlohmann::json encoded = {
       {"schema_version", kSchemaVersion},
       {"fullscreen", state.fullscreen},
       {"maximized", state.maximized},
       {"windowed", std::move(windowed)},
   };
+  if (state.has_configured_size) {
+    encoded["configured"] = {
+        {"width", state.configured_width},
+        {"height", state.configured_height},
+    };
+  }
   const std::string bytes = encoded.dump();
 
   const std::filesystem::path temporary =

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,10 +20,11 @@ namespace internal {
 struct FmodInputCaptureProfile;
 }
 
-// Replaces the output-device query/select slots of the exact Build-ID-scoped
-// FmodAudioDevice vtable, including microphone capture on verified builds.
-// Roblox keeps owning its FMOD engine, while the existing settings UI sees
-// and selects the SDL host routes that consume Android AudioTrack PCM.
+
+// Replaces the profiled input/output-device query/select slots of the exact
+// Build-ID-scoped FmodAudioDevice vtable. Roblox keeps owning its FMOD engine,
+// while the existing settings UI sees and selects the SDL host routes that
+// consume Android AudioTrack PCM.
 class RobloxOutputDeviceBridge final {
  public:
   RobloxOutputDeviceBridge();
@@ -55,19 +57,25 @@ class RobloxOutputDeviceBridge final {
   Status PatchVtableLocked();
   Status PrepareCaptureLocked();
   bool RestoreVtableLocked();
-  int DeviceCount();
-  void* DeviceInfo(void* result, int index);
-  int CurrentDevice();
-  void SelectDevice(int index);
+  static int GetInputDeviceCount(void *self);
+  static void *GetInputDeviceInfo(void *result, void *self, int index);
+  static int GetCurrentInputDevice(void *self);
+  static void SetCurrentInputDevice(void *self, int index);
+  int DeviceCount(bool input = false);
+  void *DeviceInfo(void *result, int index, bool input = false);
+  int CurrentDevice(bool input = false);
+  void SelectDevice(int index, bool input = false);
   void ConstructGuestString(void* destination, std::string_view value) const;
 
-  std::unique_ptr<NativeInputCapture> capture_;
+  std::shared_ptr<NativeInputCapture> capture_;
   const internal::FmodInputCaptureProfile* capture_profile_ = nullptr;
   std::array<std::uintptr_t, 6> original_capture_methods_{};
   mutable std::mutex mutex_;
   compat::FmodOutputDeviceBridgeProfile profile_;
   std::vector<MenuDevice> devices_;
-  std::array<std::uintptr_t, 4> original_methods_{};
+  std::vector<MenuDevice> input_devices_;
+  int selected_input_index_ = 0;
+  std::array<std::uintptr_t, 8> original_methods_{};
   std::uintptr_t library_base_ = 0;
   std::uintptr_t* vtable_ = nullptr;
   void* string_constructor_ = nullptr;

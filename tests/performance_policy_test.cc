@@ -153,6 +153,34 @@ TEST(PerformancePolicyTest, WorkerModesRetainRobloxManagedAssetCacheSizes) {
   }
 }
 
+TEST(PerformancePolicyTest, WorkerModesPreserveRobloxAndExplicitMsaaSelection) {
+  for (const bool throughput : {false, true}) {
+    PerformancePolicy policy;
+    policy.multithreaded_rendering = !throughput;
+    policy.physical_core_count = 14;
+    policy.physics_worker_mode = throughput ? PhysicsWorkerMode::kThroughput
+                                            : PhysicsWorkerMode::kAuto;
+    for (const std::string samples : {"", "1", "4", "8"}) {
+      nlohmann::json requested = nlohmann::json::object();
+      if (!samples.empty()) {
+        requested["FIntDebugForceMSAASamples"] = samples;
+      }
+      std::string merged;
+      std::string error;
+      ASSERT_TRUE(MergeRuntimeClientSettingsOverrides(
+          ParseFrameRatePolicy("144"), policy, requested.dump(), &merged,
+          &error)) << error;
+      const auto parsed = nlohmann::json::parse(merged);
+      EXPECT_FALSE(parsed.contains(""));
+      if (samples.empty()) {
+        EXPECT_FALSE(parsed.contains("FIntDebugForceMSAASamples"));
+      } else {
+        EXPECT_EQ(parsed.at("FIntDebugForceMSAASamples"), samples);
+      }
+    }
+  }
+}
+
 TEST(PerformancePolicyTest, PreservesExplicitAssetCacheByteBudgets) {
   const nlohmann::json requested = {
       {"FIntMeshContentProviderForceCacheSize", "268435456"},
@@ -264,6 +292,21 @@ TEST(PerformancePolicyTest, RejectsConflictingOrMalformedOverrides) {
       &error));
   EXPECT_NE(error.find("DFIntSimMidPhaseContactPipelineBatchSize"),
             std::string::npos);
+}
+
+TEST(PerformancePolicyTest, HostAudioMenuUsesBridgedDeviceQueries) {
+  std::string merged;
+  std::string error;
+  ASSERT_TRUE(MergeAudioDeviceMenuClientSettingsOverrides(
+      R"({"FFlagDebugUseWebRtcAudioDevices":"True","FFlagRemoteAudioDeviceSync":"True","unrelated":123})",
+      &merged, &error));
+  const auto parsed = nlohmann::json::parse(merged);
+  EXPECT_EQ(parsed.at("FFlagDebugUseWebRtcAudioDevices"), "False");
+  EXPECT_EQ(parsed.at("FFlagRemoteAudioDeviceSync"), "False");
+  EXPECT_EQ(parsed.at("unrelated"), 123);
+  EXPECT_FALSE(parsed.contains("DFFlagVoiceChatSkipPermissionCheckForTests"));
+  EXPECT_FALSE(
+      MergeAudioDeviceMenuClientSettingsOverrides("[]", &merged, &error));
 }
 
 TEST(PerformancePolicyTest, PermissionProtocolDoesNotUseTheTestBypass) {

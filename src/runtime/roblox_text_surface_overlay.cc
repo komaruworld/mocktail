@@ -202,16 +202,17 @@ void BlendSurface(const SDL_Surface* surface, int destination_x,
                static_cast<std::size_t>(destination_width) +
            static_cast<std::size_t>(x)) *
           4;
-      const std::uint32_t alpha =
-          (static_cast<std::uint32_t>(source[source_offset + 3]) * opacity +
-           127U) /
-          255U;
+      const std::uint32_t coverage = source[source_offset + 3];
+      const std::uint32_t alpha = (coverage * opacity + 127U) / 255U;
       if (alpha == 0) {
         continue;
       }
-      (*destination)[destination_offset] = source[source_offset];
-      (*destination)[destination_offset + 1] = source[source_offset + 1];
-      (*destination)[destination_offset + 2] = source[source_offset + 2];
+      for (std::size_t channel = 0; channel < 3; ++channel) {
+        (*destination)[destination_offset + channel] =
+            static_cast<std::uint8_t>(std::min(
+                255U, (source[source_offset + channel] * 255U + coverage / 2U) /
+                          coverage));
+      }
       (*destination)[destination_offset + 3] = static_cast<std::uint8_t>(alpha);
     }
   }
@@ -244,7 +245,7 @@ struct TextBytePosition {
 };
 
 TextBytePosition TextPosition(TTF_Text* layout, std::size_t byte_offset,
-                              int text_width) {
+                              int text_width, bool single_line) {
   if (layout == nullptr) {
     return {};
   }
@@ -259,7 +260,11 @@ TextBytePosition TextPosition(TTF_Text* layout, std::size_t byte_offset,
   position.y = substring.rect.y;
   position.height = substring.rect.h;
   if ((substring.flags & TTF_SUBSTRING_TEXT_END) != 0) {
-    position.x = std::min(text_width, substring.rect.x + substring.rect.w);
+    // Trailing whitespace has no ink, so the final cluster rect stops short of
+    // the laid-out width that a caret at the end of a single line sits behind.
+    position.x = single_line ? text_width
+                             : std::min(text_width,
+                                        substring.rect.x + substring.rect.w);
   }
   return position;
 }
@@ -487,45 +492,45 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
   SensitiveString text = VisibleTextWindow(
       presentation, &caret_byte, &selection_begin_byte, &selection_end_byte);
   SDL_Surface* rendered = nullptr;
-  SDL_Surface* converted = nullptr;
   const SDL_Color text_color = ResolveTextColor(presentation.text_color);
-  TTF_Text* layout = TTF_CreateText(nullptr, fonts.front(), text.value.data(),
-                                    text.value.size());
-  if (layout != nullptr && wrapped_layout) {
-    (void)TTF_SetTextWrapWidth(layout, available_width);
+  TTF_TextEngine* engine = TTF_CreateSurfaceTextEngine();
+  TTF_Text* layout = engine != nullptr
+                         ? TTF_CreateText(engine, fonts.front(), text.value.data(),
+                                          text.value.size())
+                         : nullptr;
+  bool success = layout != nullptr;
+  if (success && wrapped_layout) {
+    success = TTF_SetTextWrapWidth(layout, available_width) &&
+              TTF_SetTextWrapWhitespaceVisible(layout, true);
   }
   int text_width = 0;
   int text_height = std::max(1, TTF_GetFontHeight(fonts.front()));
   TextBytePosition caret_position;
   TextBytePosition selection_begin_position;
   TextBytePosition selection_end_position;
-  if (layout != nullptr) {
-    (void)TTF_GetTextSize(layout, &text_width, &text_height);
-    caret_position = TextPosition(layout, caret_byte, text_width);
-    selection_begin_position =
-        TextPosition(layout, selection_begin_byte, text_width);
-    selection_end_position =
-        TextPosition(layout, selection_end_byte, text_width);
+  if (success) {
+    success = TTF_GetTextSize(layout, &text_width, &text_height);
   }
-  if (!text.value.empty()) {
-    // SDL_ttf implementations have historically differed on whether fg.a is
-    // incorporated into glyph coverage. Rasterize opaque color and apply the
-    // Android ARGB opacity explicitly while copying the straight-alpha mask.
-    const SDL_Color raster_color = {text_color.r, text_color.g, text_color.b,
-                                    255};
-    rendered = wrapped_layout
-                   ? TTF_RenderText_Blended_Wrapped(
-                         fonts.front(), text.value.data(), text.value.size(),
-                         raster_color, available_width)
-                   : TTF_RenderText_Blended(fonts.front(), text.value.data(),
-                                            text.value.size(), raster_color);
-    if (rendered != nullptr) {
-      converted = SDL_ConvertSurface(rendered, SDL_PIXELFORMAT_RGBA32);
-    }
+  if (success) {
+    caret_position =
+        TextPosition(layout, caret_byte, text_width, !wrapped_layout);
+    selection_begin_position = TextPosition(layout, selection_begin_byte,
+                                            text_width, !wrapped_layout);
+    selection_end_position =
+        TextPosition(layout, selection_end_byte, text_width, !wrapped_layout);
+  }
+  if (success && !text.value.empty()) {
+    rendered = SDL_CreateSurface(std::max(1, text_width),
+                                 std::max(1, text_height),
+                                 SDL_PIXELFORMAT_RGBA32);
+    success = rendered != nullptr &&
+              TTF_SetTextColor(layout, text_color.r, text_color.g, text_color.b,
+                               255) &&
+              TTF_DrawSurfaceText(layout, 0, 0, rendered);
   }
 
   Status status = Status::Ok();
-  if (!text.value.empty() && (rendered == nullptr || converted == nullptr)) {
+  if (!success) {
     status = RasterizationFailure("unable to rasterize Unicode text");
   } else {
     int text_offset = 0;
@@ -592,8 +597,8 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
             text_y + text_height);
       }
     }
-    if (converted != nullptr) {
-      BlendSurface(converted, clip_left + text_offset, text_y, clip_left,
+    if (rendered != nullptr) {
+      BlendSurface(rendered, clip_left + text_offset, text_y, clip_left,
                    clip_top, clip_right, clip_bottom, frame_width, text_color.a,
                    &candidate);
     }
@@ -615,14 +620,14 @@ Status RobloxTextSurfaceOverlay::RasterizeLocked() {
     }
   }
 
-  if (converted != nullptr) {
-    SDL_DestroySurface(converted);
-  }
   if (rendered != nullptr) {
     SDL_DestroySurface(rendered);
   }
   if (layout != nullptr) {
     TTF_DestroyText(layout);
+  }
+  if (engine != nullptr) {
+    TTF_DestroySurfaceTextEngine(engine);
   }
   TTF_ClearFallbackFonts(fonts.front());
   for (auto iterator = fonts.rbegin(); iterator != fonts.rend(); ++iterator) {

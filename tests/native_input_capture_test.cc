@@ -91,7 +91,7 @@ class NativeInputCaptureTest : public testing::Test {
   }
 
   void TearDown() override {
-    g_native_capture.store(nullptr);
+    std::atomic_store(&g_native_capture, std::shared_ptr<NativeInputCapture>{});
     if (capture_) capture_->Shutdown();
     EXPECT_TRUE(ShutdownSdlAudioSubsystem().ok());
     SDL_ResetHint(SDL_HINT_AUDIO_DRIVER);
@@ -101,14 +101,14 @@ class NativeInputCaptureTest : public testing::Test {
   }
 
   void Publish(bool enabled) {
-    capture_ = std::make_unique<NativeInputCapture>(
+    capture_ = std::make_shared<NativeInputCapture>(
         NativeInputCapture::SinkAbi{1, &TestRelro, &TestCode, &OriginalLatency},
         enabled);
-    g_native_capture.store(capture_.get());
+    std::atomic_store(&g_native_capture, capture_);
   }
 
   char pcm_path_[64] = "/tmp/mocktail-native-capture-XXXXXX";
-  std::unique_ptr<NativeInputCapture> capture_;
+  std::shared_ptr<NativeInputCapture> capture_;
   TestSink sink_{kSinkVtable.data()};
   TestOwner owner_{kOwnerVtable.data()};
   int device_ = 0;

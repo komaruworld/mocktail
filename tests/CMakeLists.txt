@@ -100,11 +100,30 @@ target_link_libraries(jnivm_test PRIVATE
   GTest::gtest_main
 )
 
+add_executable(jnivm_fields_test jnivm_fields_test.cc)
+target_link_libraries(jnivm_fields_test PRIVATE
+  Mocktail::LegacyJni
+  GTest::gtest_main
+  Threads::Threads
+)
+
 add_executable(runtime_config_test runtime_config_test.cc)
 target_link_libraries(runtime_config_test PRIVATE
   Mocktail::Runtime
   GTest::gtest_main
 )
+
+add_executable(fleasion_probe fleasion_probe.cc)
+target_link_libraries(fleasion_probe PRIVATE Mocktail::Services libc_shim)
+mocktail_apply_compile_options(fleasion_probe)
+find_program(MOCKTAIL_TEST_PYTHON python3)
+find_program(MOCKTAIL_TEST_OPENSSL openssl)
+if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
+  add_test(NAME FleasionIntegrationTest.ProxyAndTrust
+    COMMAND ${MOCKTAIL_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/fleasion_integration_test.py
+            $<TARGET_FILE:fleasion_probe> ${MOCKTAIL_TEST_OPENSSL})
+  set_tests_properties(FleasionIntegrationTest.ProxyAndTrust PROPERTIES TIMEOUT 45)
+endif()
 
 add_executable(runtime_config_file_test runtime_config_file_test.cc)
 target_link_libraries(runtime_config_file_test PRIVATE
@@ -139,6 +158,13 @@ add_dependencies(payload_update_preflight_test
   native_update_helper_fixture
   native_progress_helper_fixture
 )
+if(MOCKTAIL_TEST_PYTHON)
+  add_test(NAME UpdateLaunchEnvironmentTest.ConfiguredBackend
+    COMMAND ${MOCKTAIL_TEST_PYTHON}
+      ${CMAKE_CURRENT_SOURCE_DIR}/updater_launch_environment_test.py
+      $<TARGET_FILE:mocktail> $<TARGET_FILE:native_update_helper_fixture>)
+  set_tests_properties(UpdateLaunchEnvironmentTest.ConfiguredBackend PROPERTIES TIMEOUT 60)
+endif()
 
 add_executable(native_update_test native_update_test.cc)
 target_link_libraries(native_update_test PRIVATE
@@ -149,11 +175,30 @@ target_compile_definitions(native_update_test PRIVATE
   MOCKTAIL_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
 )
 
+add_executable(http_download_fixture http_download_fixture.cc)
+target_link_libraries(http_download_fixture PRIVATE Mocktail::Update)
+mocktail_apply_compile_options(http_download_fixture)
+if(MOCKTAIL_TEST_PYTHON AND MOCKTAIL_TEST_OPENSSL)
+  add_test(NAME HttpDownloadIntegrationTest.Resume
+    COMMAND ${MOCKTAIL_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/http_download_integration_test.py
+            $<TARGET_FILE:http_download_fixture> ${MOCKTAIL_TEST_OPENSSL})
+  set_tests_properties(HttpDownloadIntegrationTest.Resume PROPERTIES TIMEOUT 60)
+endif()
+
+add_executable(compatibility_catalog_test compatibility_catalog_test.cc)
+target_link_libraries(compatibility_catalog_test PRIVATE
+  Mocktail::Update
+  GTest::gtest_main
+)
+
 add_executable(apk_provider_test apk_provider_test.cc)
 target_link_libraries(apk_provider_test PRIVATE
   Mocktail::Update
   GTest::gtest_main
 )
+
+add_executable(pinned_apk_provider_test pinned_apk_provider_test.cc)
+target_link_libraries(pinned_apk_provider_test PRIVATE Mocktail::Update GTest::gtest_main)
 
 add_executable(support_bundle_runtime_test support_bundle_runtime_test.cc)
 target_link_libraries(support_bundle_runtime_test PRIVATE
@@ -196,6 +241,53 @@ target_link_libraries(texture_memory_policy_test PRIVATE
   Mocktail::Runtime
   GTest::gtest_main
 )
+
+find_package(PNG REQUIRED)
+add_executable(texture_resample_test
+  texture_resample_test.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(texture_resample_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(texture_resample_test PRIVATE PNG::PNG GTest::gtest_main)
+mocktail_apply_compile_options(texture_resample_test)
+
+add_executable(etc2_decoder_test
+  etc2_decoder_test.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+)
+target_include_directories(etc2_decoder_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(etc2_decoder_test PRIVATE GTest::gtest_main Threads::Threads)
+target_link_options(etc2_decoder_test PRIVATE -Wl,--wrap=pthread_create)
+mocktail_apply_compile_options(etc2_decoder_test)
+
+add_executable(vulkan_etc2_emulation_test
+  vulkan_etc2_emulation_test.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/texture_override.cc
+)
+target_include_directories(vulkan_etc2_emulation_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(vulkan_etc2_emulation_test PRIVATE
+  Vulkan::Headers PNG::PNG GTest::gtest_main Threads::Threads
+)
+mocktail_apply_compile_options(vulkan_etc2_emulation_test)
+
+add_library(vulkan_host_fixture SHARED fixtures/vulkan_host_fixture.cc)
+target_link_libraries(vulkan_host_fixture PRIVATE Vulkan::Headers)
+mocktail_apply_compile_options(vulkan_host_fixture)
+
+add_executable(vulkan_loader_adapter_test vulkan_loader_adapter_test.cc)
+target_link_libraries(vulkan_loader_adapter_test PRIVATE
+  Vulkan::Headers GTest::gtest_main ${CMAKE_DL_LIBS}
+)
+target_compile_definitions(vulkan_loader_adapter_test PRIVATE
+  MOCKTAIL_VULKAN_HOST_FIXTURE="$<TARGET_FILE:vulkan_host_fixture>"
+  MOCKTAIL_VULKAN_ADAPTER="$<TARGET_FILE:stub_vulkan>"
+)
+add_dependencies(vulkan_loader_adapter_test stub_vulkan vulkan_host_fixture)
+mocktail_apply_compile_options(vulkan_loader_adapter_test)
 
 add_executable(http_client_policy_test http_client_policy_test.cc)
 target_link_libraries(http_client_policy_test PRIVATE
@@ -278,6 +370,13 @@ target_link_libraries(supported_launch_policy_test PRIVATE
   Mocktail::Runtime
   GTest::gtest_main
 )
+
+add_executable(process_launch_policy_test process_launch_policy_test.cc)
+target_link_libraries(process_launch_policy_test PRIVATE
+  Mocktail::Runtime
+  GTest::gtest_main
+)
+mocktail_apply_compile_options(process_launch_policy_test)
 
 add_executable(platform_cache_migration_test
   platform_cache_migration_test.cc
@@ -672,6 +771,22 @@ target_link_libraries(window_pointer_capture_owner_test PRIVATE
 )
 mocktail_apply_compile_options(window_pointer_capture_owner_test)
 
+find_package(X11 QUIET)
+find_program(MOCKTAIL_TEST_XVFB Xvfb)
+if(X11_FOUND AND X11_Xtst_FOUND AND MOCKTAIL_TEST_XVFB AND
+   MOCKTAIL_TEST_PYTHON AND NOT CMAKE_CROSSCOMPILING)
+  add_executable(window_pointer_capture_sdl_test window_pointer_capture_sdl_test.cc)
+  target_link_libraries(window_pointer_capture_sdl_test PRIVATE
+    mocktail_window SDL3::SDL3 GTest::gtest_main Threads::Threads
+    X11::X11 X11::Xtst)
+  mocktail_apply_compile_options(window_pointer_capture_sdl_test)
+  add_test(NAME WindowPointerCaptureSdlTest.X11
+    COMMAND ${MOCKTAIL_TEST_PYTHON} -B
+      ${CMAKE_CURRENT_SOURCE_DIR}/run_xvfb_pointer_test.py
+      ${MOCKTAIL_TEST_XVFB} $<TARGET_FILE:window_pointer_capture_sdl_test>)
+  set_tests_properties(WindowPointerCaptureSdlTest.X11 PROPERTIES TIMEOUT 60)
+endif()
+
 add_executable(roblox_text_input_jni_bridge_test
   roblox_text_input_jni_bridge_test.cc
 )
@@ -701,6 +816,11 @@ target_link_libraries(auth_runtime_composition_test PRIVATE
   GTest::gtest_main
 )
 mocktail_apply_compile_options(auth_runtime_composition_test)
+add_dependencies(auth_runtime_composition_test mocktail_cookie_helper)
+if(LIBSECRET_FOUND)
+  target_compile_definitions(auth_runtime_composition_test PRIVATE
+    MOCKTAIL_TEST_LIBSECRET=1)
+endif()
 
 add_executable(client_settings_service_test client_settings_service_test.cc)
 target_link_libraries(client_settings_service_test PRIVATE
@@ -821,6 +941,8 @@ target_link_libraries(bionic_pthread_create_runtime_test PRIVATE
 )
 target_link_options(bionic_pthread_create_runtime_test PRIVATE
   "-Wl,--wrap=pthread_create"
+  "-Wl,--wrap=pthread_setschedparam"
+  "-Wl,--wrap=sched_setscheduler"
 )
 
 add_executable(bionic_sysconf_test bionic_sysconf_test.cc)
@@ -964,11 +1086,14 @@ gtest_discover_tests(vr_mirror_test)
 gtest_discover_tests(vr_pose_math_test)
 gtest_discover_tests(xr_controller_test)
 gtest_discover_tests(jnivm_test)
+gtest_discover_tests(jnivm_fields_test)
 gtest_discover_tests(runtime_config_test)
 gtest_discover_tests(runtime_config_file_test)
 gtest_discover_tests(payload_update_preflight_test)
 gtest_discover_tests(apk_provider_test)
+gtest_discover_tests(pinned_apk_provider_test)
 gtest_discover_tests(native_update_test)
+gtest_discover_tests(compatibility_catalog_test)
 gtest_discover_tests(support_bundle_runtime_test)
 gtest_discover_tests(vulkan_icd_selection_test)
 gtest_discover_tests(session_log_test)
@@ -976,6 +1101,10 @@ gtest_discover_tests(failure_dialog_test)
 gtest_discover_tests(frame_rate_policy_test)
 gtest_discover_tests(performance_policy_test)
 gtest_discover_tests(texture_memory_policy_test)
+gtest_discover_tests(texture_resample_test)
+gtest_discover_tests(etc2_decoder_test)
+gtest_discover_tests(vulkan_etc2_emulation_test)
+gtest_discover_tests(vulkan_loader_adapter_test)
 gtest_discover_tests(http_client_policy_test)
 gtest_discover_tests(http_client_spin_guard_test)
 gtest_discover_tests(crash_report_policy_test)
@@ -988,6 +1117,7 @@ gtest_discover_tests(memory_limit_test)
 gtest_discover_tests(runtime_paths_test)
 gtest_discover_tests(single_instance_lock_test)
 gtest_discover_tests(supported_launch_policy_test)
+gtest_discover_tests(process_launch_policy_test)
 gtest_discover_tests(platform_cache_migration_test)
 gtest_discover_tests(roblox_desktop_app_policy_test)
 gtest_discover_tests(browser_tracker_service_test)
@@ -1078,6 +1208,12 @@ add_test(
 )
 
 add_test(
+  NAME AnyLinuxDependenciesTest.RollingAssetsAreVerified
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/anylinux_dependencies_test.sh
+          ${CMAKE_SOURCE_DIR}
+)
+
+add_test(
   NAME AnyLinuxPackagingTest.RelocatedRuntimePaths
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/anylinux_packaging_test.sh
           ${CMAKE_SOURCE_DIR} ${CMAKE_CXX_COMPILER}
@@ -1105,6 +1241,11 @@ add_test(
 )
 
 find_program(MOCKTAIL_PATCHELF_EXECUTABLE patchelf)
+add_test(
+  NAME StandaloneWebkitCacheTest.RelocatesAllLoaderNames
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/standalone_webkit_cache_test.sh
+          ${CMAKE_SOURCE_DIR}
+)
 if(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER AND MOCKTAIL_PATCHELF_EXECUTABLE)
   add_test(
     NAME PortablePackagingTest.RelocatableReadOnlyBundle
@@ -1112,6 +1253,9 @@ if(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER AND MOCKTAIL_PATCHELF_EXECUTABLE)
             MOCKTAIL_PORTABLE_TEST_BUILD_DIR=${CMAKE_BINARY_DIR}
             bash ${CMAKE_CURRENT_SOURCE_DIR}/portable_packaging_test.sh
   )
+  # Copies and verifies a full JVM/WebKit bundle, unlike the unit tests.
+  set_tests_properties(PortablePackagingTest.RelocatableReadOnlyBundle
+    PROPERTIES TIMEOUT 600)
 endif()
 
 add_test(

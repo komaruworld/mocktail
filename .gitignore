@@ -57,19 +57,7 @@ Makefile.cmake
 /cmake-build-release/
 
 # Roblox payload
-/rbx_bin/libroblox.so
-/rbx_bin/libroblox.so.*
-/rbx_bin/client_settings_android.json
-/rbx_bin/assets/
-/rbx_bin/android/
-/rbx_bin/sober_apk/
-/rbx_bin/versions/
-/rbx_bin/.payload-update.*/
-/rbx_bin/*.apk
-/rbx_bin/*.so
-/rbx_bin/*.so.*
-
-!/rbx_bin/.gitkeep
+/rbx_bin/
 
 # Runtime state
 /runtime/

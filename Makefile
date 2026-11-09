@@ -129,8 +129,8 @@ auto-run: ## Build/run loop with crash summaries
 run-gles: build ## Run strict system EGL/OpenGL ES 3 without Vulkan fallback
 	@$(BINARY) --graphics opengl
 
-run-angle: ## Run with ANGLE/Vulkan compatibility backend
-	@MOCKTAIL_GRAPHICS_BACKEND=angle-vulkan ./scripts/run_sober.sh
+run-angle: build ## Run with ANGLE/Vulkan compatibility backend
+	@$(BINARY) --graphics angle-vulkan
 
 update-roblox: ## Validate and import the current x86_64 Roblox bundle cached by Sober
 	@./scripts/update_roblox_payload.sh

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "package": "com.roblox.client",
+      "version_name": "2.742.1059",
+      "version_code": 3222,
+      "abi": "x86_64",
+      "elf_build_id": "a67a91ef96c700c0730acd36a250c2f93cfafbc1",
+      "archives": [
+        {
+          "filename": "base.apk",
+          "url": "https://github.com/Roblox-DeployHistory-Updates/android-runner/releases/download/3222/com.roblox.client-3222.apk",
+          "sha256": "d26d3afb9815d22f812538aca07d69fa686d10ea10aa0b466bb0203b70094d12",
+          "size": 102828147
+        },
+        {
+          "filename": "split_config.x86_64.apk",
+          "url": "https://github.com/Roblox-DeployHistory-Updates/android-runner/releases/download/3222/com.roblox.client-config.x86_64-3222.apk",
+          "sha256": "724db884294b6b69628d6f941f8d9cb952762f3ee6256186fe3af37e7d6b4f6a",
+          "size": 54543322
+        }
+      ]
+    },
+    {
+      "package": "com.roblox.client",
+      "version_name": "2.742.1059",
+      "version_code": 3222,
+      "abi": "arm64-v8a",
+      "elf_build_id": "25aa7fd31008a744c3c99f717e7d16d81d371d12",
+      "archives": [
+        {
+          "filename": "base.apk",
+          "url": "https://github.com/Roblox-DeployHistory-Updates/android-runner/releases/download/3222/com.roblox.client-3222.apk",
+          "sha256": "d26d3afb9815d22f812538aca07d69fa686d10ea10aa0b466bb0203b70094d12",
+          "size": 102828147
+        },
+        {
+          "filename": "split_config.arm64_v8a.apk",
+          "url": "https://github.com/Roblox-DeployHistory-Updates/android-runner/releases/download/3222/com.roblox.client-config.arm64_v8a-3222.apk",
+          "sha256": "5c6ef4ead96b916477fcb23d972e1fbe43c3841dcef2812de7cb3aff4f52e929",
+          "size": 49607666
+        }
+      ]
+    }
+  ]
+}

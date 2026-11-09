@@ -1,10 +1,16 @@
 #include "runtime/session_log.h"
+#include "runtime/process_diagnostics.h"
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -148,6 +154,83 @@ TEST(SessionLogTest, SkipsIsolatedCanary) {
   EXPECT_FALSE(log);
   EXPECT_FALSE(log.attempted());
   EXPECT_FALSE(std::filesystem::exists(paths.logs_root()));
+}
+
+TEST(SessionLogTest, CpuLimitCrashReachesConsoleAndLogAndRemainsFatal) {
+  TemporaryDirectory temporary;
+  const MapEnvironment environment({
+      {"HOME", temporary.root().string()},
+      {"MOCKTAIL_STATE_ROOT", (temporary.root() / "state").string()},
+  });
+  const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
+  int console[2];
+  ASSERT_EQ(pipe(console), 0);
+  std::cout.flush();
+  std::cerr.flush();
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    close(console[0]);
+    if (dup2(console[1], STDOUT_FILENO) < 0 ||
+        dup2(console[1], STDERR_FILENO) < 0) _exit(10);
+    close(console[1]);
+    alarm(10);
+    rlimit core{};
+    if (setrlimit(RLIMIT_CORE, &core) != 0) _exit(11);
+    SessionLog log = SessionLog::Start(environment, paths);
+    if (!log) _exit(12);
+    if (signal(SIGXCPU, SIG_DFL) == SIG_ERR) _exit(13);
+    InstallCpuLimitDiagnostics();
+    LogProcessDiagnostics(ProcessDiagnosticStage::kNativeRuntime);
+    // Set the limit after the logger forks, so only this test process expires.
+    rlimit cpu{};
+    cpu.rlim_cur = 1;
+    cpu.rlim_max = 5;
+    if (setrlimit(RLIMIT_CPU, &cpu) != 0) _exit(14);
+    timespec used{};
+    do {
+      if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &used) != 0) _exit(15);
+    } while (used.tv_sec < 3);
+    _exit(16);
+  }
+  close(console[1]);
+  std::string output;
+  char buffer[4096];
+  for (;;) {
+    const ssize_t count = read(console[0], buffer, sizeof(buffer));
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) break;
+    output.append(buffer, static_cast<std::size_t>(count));
+  }
+  close(console[0]);
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFSIGNALED(status)) << status << "\n" << output;
+  EXPECT_EQ(WTERMSIG(status), SIGXCPU);
+  const std::string logged = ReadFile(paths.logs_root() / "latest.log");
+  // EOF on the console pipe means the tee has drained and closed both outputs.
+  EXPECT_EQ(logged, output);
+  EXPECT_NE(logged.find("[crash] SIGXCPU signal=24 si_code=128"), std::string::npos);
+  EXPECT_NE(logged.find("stage=native-runtime"), std::string::npos);
+  EXPECT_NE(logged.find("process_cpu_ns="), std::string::npos);
+  EXPECT_NE(logged.find("thread_cpu_ns="), std::string::npos);
+  EXPECT_NE(logged.find("Max cpu time"), std::string::npos);
+  EXPECT_NE(logged.find("Max realtime timeout"), std::string::npos);
+  EXPECT_NE(logged.find("/proc/thread-self/sched"), std::string::npos);
+  EXPECT_NE(logged.find("/proc/self/maps"), std::string::npos);
+  EXPECT_NE(logged.find("SIGXCPU diagnostics complete"), std::string::npos);
+}
+
+TEST(SessionLogTest, CpuDiagnosticsPreservesExistingSignalDisposition) {
+  ASSERT_EXIT(
+      {
+        if (signal(SIGXCPU, SIG_IGN) == SIG_ERR) _exit(10);
+        InstallCpuLimitDiagnostics();
+        struct sigaction action{};
+        if (sigaction(SIGXCPU, nullptr, &action) != 0) _exit(11);
+        _exit(action.sa_handler == SIG_IGN ? 0 : 12);
+      },
+      ::testing::ExitedWithCode(0), "existing SIGXCPU handler retained");
 }
 
 }  // namespace

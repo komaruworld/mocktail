@@ -10,6 +10,7 @@ readonly TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mocktail-anylinux-test.XXXXXX")"
 trap 'rm -rf -- "${TEMP_DIR}"' EXIT
 
 source "${ROOT}/scripts/package_anylinux.sh"
+export UPINFO=""
 mkdir -p -- "${TEMP_DIR}/fixtures"
 
 # Compile the real adapter loader and updater canary. The fake runtime
@@ -78,14 +79,26 @@ if [[ "$1" == --make-appimage ]]; then
   printf 'make-appimage\n' >>"${MOCKTAIL_PACKAGING_FIXTURES}/calls"
   mkdir -p -- "${OUTPATH}"
   cp -- "$(type -P true)" "${OUTPATH}/${OUTNAME}"
+  if [[ -n "${UPINFO:-}" ]]; then
+    printf '%s\n' "${UPINFO}" >"${OUTPATH}/update-info"
+    case "${MOCKTAIL_TEST_ZSYNC:-present}" in
+      present)
+        printf 'Filename: %s\nURL: %s\n\n\0checksum fixture' "${OUTNAME}" "${OUTNAME}" \
+          >"${OUTPATH}/${OUTNAME}.zsync"
+        cp -- "${OUTPATH}/${OUTNAME}.zsync" "${OUTPATH}/expected.zsync"
+        ;;
+      empty) touch "${OUTPATH}/${OUTNAME}.zsync" ;;
+      missing) : ;;
+    esac
+  fi
   exit 0
 fi
-[[ "$#" == 7 && "$1" == /usr/bin/mocktail &&
+[[ "$#" == 8 && "$1" == /usr/bin/mocktail &&
    "$2" == /usr/lib/mocktail/mocktail_webview_helper &&
    "$3" == /usr/lib/mocktail/mocktail_failure_dialog &&
    "$4" == /usr/lib/mocktail/mocktail_updater &&
    "$5" == /usr/lib/mocktail && "$6" == /usr/share/mocktail &&
-   "$7" == /usr/bin/bash ]]
+   "$7" == /usr/bin/bash && "$8" == /usr/lib/mocktail/mocktail_cookie_helper ]]
 [[ "${DESKTOP}" == /usr/share/applications/space.bigrat.mocktail.desktop ]]
 [[ "${MAIN_BIN}" == mocktail && "${STRACE_MODE}" == 1 ]]
 [[ "${STRACE_BINARY}" == mocktail && "${STRACE_FLAGS}" == --help ]]
@@ -106,10 +119,10 @@ cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libEGL.
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libvulkan.so"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${APPDIR}/lib/mocktail/libmediandk.so"
 for metadata in roblox_compatibility roblox_bootstrap_sources \
-    roblox_host_abi_reference roblox_signing_certificates; do
+    roblox_host_abi_reference roblox_signing_certificates roblox_download_sources; do
   printf '{}\n' >"${APPDIR}/share/mocktail/metadata/${metadata}.json"
 done
-for name in mocktail_updater mocktail_failure_dialog mocktail_webview_helper \
+for name in mocktail_updater mocktail_failure_dialog mocktail_webview_helper mocktail_cookie_helper \
     WebKitNetworkProcess WebKitWebProcess WebKitGPUProcess; do
   cp -- "$(type -P true)" "${APPDIR}/bin/${name}"
 done
@@ -144,7 +157,40 @@ mkdir -p -- "${ANYLINUX_WORK}"
 AnyLinuxVerifyInstalled() { :; }
 AnyLinuxDeploy
 [[ -x "${ANYLINUX_OUTPUT}" ]]
+[[ ! -e "${ANYLINUX_OUTPUT}.zsync" ]]
 [[ "$(<"${TEMP_DIR}/fixtures/calls")" == $'deploy-usr\nmake-appimage' ]]
+
+for filename in mocktail-nightly.AppImage mocktail-nightly-aarch64.AppImage \
+    Mocktail-1.0.5-x86_64.AppImage; do
+  (
+    ANYLINUX_WORK="${TEMP_DIR}/updates/${filename}"
+    ANYLINUX_OUTPUT="${TEMP_DIR}/${filename}"
+    export UPINFO="gh-releases-zsync|owner|repository|continuous|${filename}.zsync"
+    if [[ "${filename}" == Mocktail-* ]]; then
+      UPINFO='gh-releases-zsync|owner|repository|latest|Mocktail-*-x86_64.AppImage.zsync'
+    fi
+    AnyLinuxDeploy
+    [[ "$(<"${ANYLINUX_WORK}/image/update-info")" == "${UPINFO}" ]]
+    cmp -- "${ANYLINUX_WORK}/image/expected.zsync" "${ANYLINUX_OUTPUT}.zsync"
+    grep -aFxq "URL: ${filename}" "${ANYLINUX_OUTPUT}.zsync"
+    [[ ! -e "${ANYLINUX_WORK}/image/${filename}.zsync" ]]
+  )
+done
+
+for sidecar in missing empty; do
+  if (
+    ANYLINUX_WORK="${TEMP_DIR}/updates/${sidecar}"
+    ANYLINUX_OUTPUT="${TEMP_DIR}/${sidecar}.AppImage"
+    export UPINFO="gh-releases-zsync|owner|repository|continuous|${sidecar}.AppImage.zsync"
+    export MOCKTAIL_TEST_ZSYNC="${sidecar}"
+    AnyLinuxDeploy
+  ) >"${TEMP_DIR}/${sidecar}.log" 2>&1; then
+    printf 'packager accepted a %s .zsync file\n' "${sidecar}" >&2
+    exit 1
+  fi
+  grep -Fq 'no .zsync was generated' "${TEMP_DIR}/${sidecar}.log"
+  [[ ! -e "${TEMP_DIR}/${sidecar}.AppImage" ]]
+done
 
 mv -- "${ANYLINUX_WORK}/AppDir" "${TEMP_DIR}/relocated AppDir"
 app_dir="${TEMP_DIR}/relocated AppDir"
@@ -160,6 +206,7 @@ output="$(
   [[ "${USE_HOST_XDG_CACHE_HOME}" == 1 &&
      "${XDG_CACHE_HOME}" == "${TEMP_DIR}/user-cache" ]]
   [[ "${MOCKTAIL_WEBVIEW_HELPER}" == "${app_dir}/bin/mocktail_webview_helper" ]]
+  [[ "${MOCKTAIL_COOKIE_HELPER}" == "${app_dir}/bin/mocktail_cookie_helper" ]]
   [[ "${MOCKTAIL_UPDATE_SIGNING_TRUST_PATH}" == \
      "${app_dir}/share/mocktail/metadata/roblox_signing_certificates.json" ]]
   [[ "${MOCKTAIL_COMPATIBILITY_MANIFEST}" == "${TEMP_DIR}/candidate-override.json" ]]
@@ -214,14 +261,14 @@ set -Eeuo pipefail
 prefix="${DESTDIR}/usr"
 mkdir -p "${prefix}/bin" "${prefix}/lib/mocktail" "${prefix}/share/mocktail/metadata"
 cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/mocktail" "${prefix}/bin/mocktail"
-for helper in mocktail_updater mocktail_failure_dialog mocktail_webview_helper; do
+for helper in mocktail_updater mocktail_failure_dialog mocktail_webview_helper mocktail_cookie_helper; do
   cp -- "$(type -P true)" "${prefix}/lib/mocktail/${helper}"
 done
 for adapter in libEGL.so libvulkan.so libmediandk.so; do
   cp -- "${MOCKTAIL_PACKAGING_FIXTURES}/libEGL.so" "${prefix}/lib/mocktail/${adapter}"
 done
 for metadata in roblox_compatibility roblox_bootstrap_sources \
-    roblox_host_abi_reference roblox_signing_certificates; do
+    roblox_host_abi_reference roblox_signing_certificates roblox_download_sources; do
   printf '{}\n' >"${prefix}/share/mocktail/metadata/${metadata}.json"
 done
 EOF

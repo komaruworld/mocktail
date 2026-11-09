@@ -176,6 +176,27 @@ TEST(HostAbiProfileTest, ResearchedBaselineKeepsHostBridgeDefault) {
             HostAllocatorStrategy::kNativeMimalloc);
 }
 
+TEST(HostAbiProfileTest, Arm64UpdateInitializesThreadAtRelocatedProcessLoad) {
+  const auto* profile =
+      FindHostAbiProfile("25aa7fd31008a744c3c99f717e7d16d81d371d12");
+  ASSERT_NE(profile, nullptr);
+  EXPECT_EQ(profile->ResolveAllocatorStrategy(false, false),
+            HostAllocatorStrategy::kNativeMimalloc);
+  EXPECT_FALSE(profile->host_allocator_bridges_supported);
+  ASSERT_TRUE(profile->HasValidNativeMimallocConstructorRanges());
+  EXPECT_FALSE(profile->AllowsNativeMimallocConstructor(0));
+  EXPECT_FALSE(profile->AllowsNativeMimallocConstructor(1));
+  for (std::size_t index = 2; index < profile->init_array_count; ++index) {
+    EXPECT_TRUE(profile->AllowsNativeMimallocConstructor(index)) << index;
+    EXPECT_EQ(
+        profile->ShouldInitializeNativeMimallocThreadAfterConstructor(index),
+        index == 7) << index;
+  }
+  EXPECT_FALSE(
+      profile->AllowsNativeMimallocConstructor(profile->init_array_count));
+  EXPECT_TRUE(profile->HasValidNativePreJniBootstrap());
+}
+
 TEST(HostAbiProfileTest, UnknownBuildHasNoNativeOffsets) {
   EXPECT_EQ(FindHostAbiProfile("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
             nullptr);
@@ -698,6 +719,52 @@ TEST_F(ExternalHostAbiProfileLoaderTest,
   EXPECT_EQ(result.profile, FindHostAbiProfile(build_id_));
   EXPECT_EQ(result.payload_sha256, payload_sha256_);
   EXPECT_EQ(result.profile_sha256, profile_sha256_);
+}
+
+TEST_F(ExternalHostAbiProfileLoaderTest, ValidatesReorderedNativeOnlyRoles) {
+  const auto previous_style = ::testing::FLAGS_gtest_death_test_style;
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      ([&] {
+        auto document = ReadJson(profile_path_);
+        auto& profile = document["profile"];
+        const auto count = profile["init_array_count"];
+        profile["host_allocator_bridges_supported"] = false;
+        profile["native_mimalloc_thread_initializer_after_constructor"] = 5;
+        profile["constructor_run_ranges"] = {
+            {{"begin", 2}, {"end_exclusive", count}}};
+        document["derivation_anchors"]["constructor_indices"] = {
+            {"2", 5}, {"3", 2}, {"4", 4}, {"5", 3}};
+        auto request = BaseRequest();
+        request.candidate_canary = true;
+        request.candidate_process_authorization = true;
+        request.explicit_unverified_authorization = true;
+        request.profile_file = (temporary_root_ / "reordered.json").string();
+        auto invalid = document;
+        invalid["derivation_anchors"]["constructor_indices"]["5"] = 2;
+        WriteJson(request.profile_file, invalid);
+        if (LoadExternalHostAbiProfile(request)) std::_Exit(1);
+        invalid = document;
+        invalid["profile"]
+               ["native_mimalloc_thread_initializer_after_constructor"] = 2;
+        WriteJson(request.profile_file, invalid);
+        if (LoadExternalHostAbiProfile(request)) std::_Exit(2);
+        invalid = document;
+        invalid["profile"]["host_allocator_bridges_supported"] = true;
+        WriteJson(request.profile_file, invalid);
+        if (LoadExternalHostAbiProfile(request)) std::_Exit(3);
+        WriteJson(request.profile_file, document);
+        const auto loaded = LoadExternalHostAbiProfile(request);
+        std::_Exit(
+            loaded && !loaded.profile->host_allocator_bridges_supported &&
+                    loaded.profile
+                        ->ShouldInitializeNativeMimallocThreadAfterConstructor(
+                            5)
+                ? 0
+                : 4);
+      }()),
+      ::testing::ExitedWithCode(0), "");
+  ::testing::FLAGS_gtest_death_test_style = previous_style;
 }
 
 TEST_F(ExternalHostAbiProfileLoaderTest, AcceptsExactRepeatedTierCReceipt) {

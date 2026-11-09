@@ -8,6 +8,8 @@
 #include <string>
 #include <utility>
 
+#include "runtime/environment.h"
+
 namespace mocktail {
 namespace runtime {
 namespace {
@@ -1207,7 +1209,23 @@ Status RobloxWebViewBridge::DispatchOpenRequest(
   if (!status.ok()) {
     return status;
   }
-  const bool browser_login_fallback = IsLoginChallengeUrl(request.url);
+  // Native sign-in must keep the original challenge and its return token so
+  // Roblox can finish the in-app login instead of starting a browser login.
+  const bool login_challenge = IsLoginChallengeUrl(request.url);
+  const bool browser_login_fallback =
+      ProcessEnvironment{}.Get("MOCKTAIL_NATIVE_LOGIN") == "0" &&
+      login_challenge;
+  if (login_challenge) {
+    // Roblox can preload challenges with isVisible=false and ask to reveal
+    // them only after the page signals readiness. A failed resource load then
+    // leaves the native login waiting behind an inaccessible host window.
+    // Present verification immediately so it can always be seen and closed.
+    request.is_visible = true;
+    if (request.title.empty()) {
+      request.title = "Roblox verification";
+    }
+    std::fprintf(stderr, "  [webview] presenting login verification window\n");
+  }
   if (browser_login_fallback) {
     request.url = kBrowserLoginUrl;
     request.title = "Roblox sign in";

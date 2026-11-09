@@ -102,8 +102,10 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
   EXPECT_EQ(loaded.config.vr_enabled(), kDefaultVrEnabled);
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
+  EXPECT_FALSE(loaded.config.use_libsecret());
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnmanaged);
   EXPECT_EQ(loaded.config.vsync_mode(), "auto");
+  EXPECT_EQ(loaded.config.present_mode(), "auto");
   EXPECT_FALSE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().memory_limit_mb, 0U);
   EXPECT_EQ(loaded.config.performance().game_mode, GameModePolicy::kAuto);
@@ -315,7 +317,22 @@ TEST(RuntimeConfigFileTest, UsesDefaultsWhenFileDoesNotExist) {
   EXPECT_FALSE(loaded.file_loaded);
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.theme_mode(), "roblox");
+  EXPECT_FALSE(loaded.config.use_libsecret());
   EXPECT_EQ(loaded.config.roblox_library_path(), "rbx_bin/libroblox.so");
+}
+
+TEST(RuntimeConfigFileTest, LibsecretUsesYamlBoolean) {
+  TemporaryDirectory temporary;
+  for (const auto value : {"true", "false"}) {
+    const auto file = temporary.Write(std::string("auth:\n  use_libsecret: ") + value + "\n");
+    const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+    ASSERT_TRUE(loaded) << loaded.error;
+    EXPECT_EQ(loaded.config.use_libsecret(), std::string_view(value) == "true");
+  }
+  const auto file = temporary.Write("auth:\n  use_libsecret: auto\n");
+  const auto invalid = LoadRuntimeConfig(MapEnvironment(), file);
+  EXPECT_FALSE(invalid);
+  EXPECT_EQ(invalid.error, "auth.use_libsecret must be true or false");
 }
 
 TEST(RuntimeConfigFileTest, RejectsSymlinkAndOversizedConfiguration) {
@@ -351,6 +368,7 @@ graphics:
   backend: vulkan
   frame_rate_limit: unlimited
   vsync: off
+  present_mode: mailbox
 performance:
   multithreaded_rendering: true
   physics_worker_mode: latency
@@ -397,6 +415,7 @@ updates:
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.frame_rate().mode, FrameRateLimitMode::kUnlimited);
   EXPECT_EQ(loaded.config.vsync_mode(), "off");
+  EXPECT_EQ(loaded.config.present_mode(), "mailbox");
   EXPECT_EQ(loaded.config.theme_mode(), "dark");
   EXPECT_TRUE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().physics_worker_mode,
@@ -443,6 +462,7 @@ graphics:
   backend: system
   frame_rate_limit: 60
   vsync: on
+  present_mode: fifo
 performance:
   multithreaded_rendering: true
   physics_worker_mode: latency
@@ -465,6 +485,7 @@ network:
       {"MOCKTAIL_GRAPHICS_BACKEND", "vulkan"},
       {"MOCKTAIL_FRAME_RATE_LIMIT", "144"},
       {"MOCKTAIL_VSYNC", "off"},
+      {"MOCKTAIL_PRESENT_MODE", "immediate"},
       {"MOCKTAIL_MULTITHREADED_RENDERING", "0"},
       {"MOCKTAIL_PHYSICS_WORKER_MODE", "auto"},
       {"MOCKTAIL_MEMORY_LIMIT_MB", "8192"},
@@ -484,6 +505,7 @@ network:
   EXPECT_EQ(loaded.config.graphics_backend(), GraphicsBackend::kVulkan);
   EXPECT_EQ(loaded.config.frame_rate().fixed_fps, 144);
   EXPECT_EQ(loaded.config.vsync_mode(), "off");
+  EXPECT_EQ(loaded.config.present_mode(), "immediate");
   EXPECT_FALSE(loaded.config.performance().multithreaded_rendering);
   EXPECT_EQ(loaded.config.performance().physics_worker_mode,
             PhysicsWorkerMode::kAuto);
@@ -1050,6 +1072,32 @@ graphics:
   EXPECT_NE(loaded.error.find("frame_rate_limit"), std::string::npos);
 }
 
+TEST(RuntimeConfigFileTest, ValidatesAndExportsPresentModes) {
+  TemporaryDirectory temporary;
+  for (const char* mode : {"auto", "fifo", "mailbox", "immediate", "fastest"}) {
+    SCOPED_TRACE(mode);
+    const auto file = temporary.Write(
+        std::string("version: 1\ngraphics:\n  present_mode: ") + mode + "\n");
+    const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+    if (std::string(mode) == "fastest") {
+      EXPECT_FALSE(loaded);
+      EXPECT_NE(loaded.error.find("present_mode"), std::string::npos);
+    } else {
+      ASSERT_TRUE(loaded) << loaded.error;
+      std::string error;
+      ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+      EXPECT_STREQ(getenv("MOCKTAIL_PRESENT_MODE"), mode);
+    }
+  }
+  const auto file = temporary.Write("version: 1\n");
+  const MapEnvironment invalid({{"MOCKTAIL_PRESENT_MODE", "fastest"}});
+  EXPECT_FALSE(LoadRuntimeConfig(invalid, file));
+  std::string error;
+  EXPECT_FALSE(ExportRuntimeConfigEnvironment(
+      RuntimeConfig::FromEnvironment(invalid), &error));
+  unsetenv("MOCKTAIL_PRESENT_MODE");
+}
+
 TEST(RuntimeConfigFileTest, RejectsNonBooleanPerformancePolicy) {
   TemporaryDirectory temporary;
   const std::filesystem::path file = temporary.Write(R"yaml(
@@ -1091,6 +1139,54 @@ TEST(RuntimeConfigFileTest, RejectsMalformedYaml) {
 
   EXPECT_FALSE(loaded);
   EXPECT_NE(loaded.error.find("invalid YAML"), std::string::npos);
+}
+
+TEST(RuntimeConfigFileTest, FleasionRoutesThroughConfiguredLoopbackPort) {
+  TemporaryDirectory temporary;
+  const auto file = temporary.Write(
+      "integrations:\n  fleasion:\n    enabled: true\n    proxy_mode: env\n"
+      "    proxy_port: 59443\n    ca_certificate: /tmp/fleasion-ca.crt\n");
+  auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.fleasion_enabled());
+  ASSERT_TRUE(loaded.config.network_proxy());
+  EXPECT_EQ(loaded.config.network_proxy()->host, "127.0.0.1");
+  EXPECT_EQ(loaded.config.network_proxy()->port, 59443);
+  EXPECT_EQ(*loaded.config.fleasion_ca_certificate(), "/tmp/fleasion-ca.crt");
+  loaded = LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_FLEASION_ENABLED", "0"}}), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.fleasion_enabled());
+  EXPECT_FALSE(loaded.config.network_proxy());
+}
+
+TEST(RuntimeConfigFileTest, FleasionRejectsInvalidConfigurationAndProxyConflicts) {
+  TemporaryDirectory temporary;
+  for (const char* setting : {"proxy_port: 0", "proxy_port: 65536", "proxy_port: 123x",
+                              "proxy_mode: invalid", "ca_certificate: relative.pem"}) {
+    const auto file = temporary.Write(std::string(
+        "integrations:\n  fleasion:\n    enabled: true\n    ") + setting + "\n");
+    EXPECT_FALSE(LoadRuntimeConfig(MapEnvironment(), file)) << setting;
+  }
+  const auto file = temporary.Write("integrations:\n  fleasion:\n    enabled: true\n");
+  EXPECT_FALSE(LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_USE_SYSTEM_PROXY", "1"}}), file));
+  EXPECT_FALSE(LoadRuntimeConfig(MapEnvironment({{"MOCKTAIL_HTTP_PROXY_HOST", "other"},
+                                                {"MOCKTAIL_HTTP_PROXY_PORT", "3128"}}), file));
+}
+
+TEST(RuntimeConfigFileTest, FleasionEnvironmentRoundTripsAndHostsModeDoesNotSetProxy) {
+  TemporaryDirectory temporary;
+  const auto file = temporary.Write("integrations:\n  fleasion:\n    enabled: true\n"
+                                     "    proxy_mode: hosts\n");
+  const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.network_proxy());
+  std::string error;
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(loaded.config, &error)) << error;
+  const auto resolved = RuntimeConfig::FromEnvironment(ProcessEnvironment());
+  EXPECT_TRUE(resolved.fleasion_enabled());
+  EXPECT_TRUE(resolved.fleasion_valid());
+  EXPECT_EQ(resolved.fleasion_proxy_mode(), "hosts");
+  ASSERT_TRUE(ExportRuntimeConfigEnvironment(RuntimeConfig::FromEnvironment(MapEnvironment()), &error));
 }
 
 }  // namespace

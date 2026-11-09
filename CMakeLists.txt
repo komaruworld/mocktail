@@ -8,8 +8,8 @@
 
 cmake_minimum_required(VERSION 3.20)
 project(Mocktail
-  VERSION 1.0.3
-  DESCRIPTION "Android x86-64 Roblox compatibility runtime for Linux"
+  VERSION 1.0.5
+  DESCRIPTION "Android Roblox compatibility runtime for Linux"
   LANGUAGES CXX
 )
 
@@ -59,6 +59,10 @@ set(MOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST
   "${CMAKE_SOURCE_DIR}/config/roblox_signing_certificates.json"
   CACHE FILEPATH
   "Fallback signing trust manifest used outside an installed runtime"
+)
+set(MOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST
+  "${CMAKE_SOURCE_DIR}/config/roblox_download_sources.json"
+  CACHE FILEPATH "Pinned Roblox APK download sources"
 )
 set(MOCKTAIL_DISCORD_APPLICATION_ID "1537088975720812655" CACHE STRING
   "Discord application ID baked into Mocktail Rich Presence releases"
@@ -204,6 +208,7 @@ pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
 pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET minizip)
 pkg_check_modules(CAPSTONE REQUIRED IMPORTED_TARGET capstone)
 pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
+pkg_check_modules(LIBSECRET QUIET IMPORTED_TARGET libsecret-1)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
 pkg_check_modules(LIBADWAITA REQUIRED IMPORTED_TARGET "libadwaita-1>=1.6")
 pkg_check_modules(WEBKITGTK6 REQUIRED IMPORTED_TARGET webkitgtk-6.0)
@@ -220,7 +225,9 @@ add_library(mocktail_update STATIC
   src/update/host_abi_deriver.cc
   src/update/payload_integrity.cc
   src/update/payload_store.cc
+  src/update/pinned_apk_provider.cc
   src/update/readiness_canary.cc
+  src/update/state_file.cc
   src/update/unsafe_latest_runner.cc
   src/update/update_config.cc
   src/update/update_coordinator.cc
@@ -245,11 +252,15 @@ target_link_libraries(mocktail_updater PRIVATE Mocktail::Update)
 target_compile_definitions(mocktail_updater PRIVATE
   "MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=\"${MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST}\""
   "MOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST=\"${MOCKTAIL_DEFAULT_SIGNING_TRUST_MANIFEST}\""
+  "MOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST=\"${MOCKTAIL_DEFAULT_DOWNLOAD_SOURCES_MANIFEST}\""
 )
 mocktail_apply_compile_options(mocktail_updater)
 
 add_library(mocktail_legacy_jnivm STATIC
   src/jnivm/jnivm.cc
+  src/jnivm/jni_references.cc
+  src/jnivm/jni_fields.cc
+  src/jnivm/jni_strings.cc
 )
 add_library(Mocktail::LegacyJni ALIAS mocktail_legacy_jnivm)
 target_include_directories(mocktail_legacy_jnivm PUBLIC include)
@@ -266,10 +277,12 @@ add_library(mocktail_runtime STATIC
   src/runtime/command_line.cc
   src/runtime/crash_report_policy.cc
   src/runtime/discord_rpc.cc
+  src/runtime/device_memory_profile.cc
   src/runtime/device_profile.cc
   src/runtime/environment.cc
   src/runtime/external_launch_broker.cc
   src/runtime/frame_rate_policy.cc
+  src/runtime/fleasion.cc
   src/runtime/game_mode.cc
   src/runtime/game_session_coordinator.cc
   src/runtime/graphics_launch_policy.cc
@@ -284,10 +297,16 @@ add_library(mocktail_runtime STATIC
   src/runtime/roblox_capability_resolver.cc
   src/runtime/roblox_experience_launch_bridge.cc
   src/runtime/roblox_launch_uri.cc
+  src/runtime/roblox_presence_resolver.cc
+  src/runtime/roblox_cookie_store.cc
   src/runtime/roblox_game_session_native_adapter.cc
   src/runtime/roblox_web_view_bridge.cc
   src/runtime/roblox_permissions_bridge.cc
+  src/runtime/roblox_message_bus_request_bridge.cc
+  src/runtime/roblox_call_protocol_bridge.cc
   src/runtime/payload_update_preflight.cc
+  src/runtime/process_launch_policy.cc
+  src/runtime/process_diagnostics.cc
   src/runtime/runtime_config.cc
   src/runtime/runtime_config_bootstrap.cc
   src/runtime/runtime_config_file.cc
@@ -310,6 +329,7 @@ target_compile_definitions(mocktail_runtime PUBLIC
 )
 target_compile_definitions(mocktail_runtime PRIVATE
   "MOCKTAIL_DISCORD_APPLICATION_ID=\"${MOCKTAIL_DISCORD_APPLICATION_ID}\""
+  "MOCKTAIL_INSTALL_LIBDIR=\"${CMAKE_INSTALL_LIBDIR}\""
 )
 set_property(SOURCE src/runtime/session_log.cc APPEND PROPERTY
   COMPILE_DEFINITIONS
@@ -332,6 +352,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
 endif()
 target_link_libraries(mocktail_runtime PUBLIC Threads::Threads)
 target_link_libraries(mocktail_runtime PRIVATE
+  OpenSSL::Crypto
   CURL::libcurl
   nlohmann_json::nlohmann_json
   PkgConfig::GIO
@@ -355,6 +376,15 @@ add_executable(mocktail_failure_dialog
 )
 target_link_libraries(mocktail_failure_dialog PRIVATE PkgConfig::LIBADWAITA)
 mocktail_apply_compile_options(mocktail_failure_dialog)
+
+add_executable(mocktail_cookie_helper src/runtime/mocktail_cookie_helper.cc)
+if(LIBSECRET_FOUND)
+  target_link_libraries(mocktail_cookie_helper PRIVATE PkgConfig::LIBSECRET)
+  target_compile_definitions(mocktail_cookie_helper PRIVATE MOCKTAIL_HAVE_LIBSECRET=1)
+else()
+  message(WARNING "libsecret-1 headers missing: Roblox cookies will use private plaintext files")
+endif()
+mocktail_apply_compile_options(mocktail_cookie_helper)
 
 add_library(mocktail_services STATIC
   src/services/http_client.cc
@@ -470,7 +500,7 @@ target_link_libraries(mocktail_window PUBLIC
   Mocktail::SdlVulkanWsi
   SDL3::SDL3
   ${CMAKE_DL_LIBS}
-  PRIVATE Mocktail::Runtime Mocktail::GlesTextOverlay
+  PRIVATE Mocktail::Runtime Mocktail::GlesTextOverlay Mocktail::GraphicsFoundation
 )
 
 add_library(mocktail_roblox_output_device_runtime STATIC
@@ -551,50 +581,6 @@ target_link_libraries(mocktail_bionic_abi_exports PRIVATE
   Threads::Threads
 )
 
-include(CheckCXXSourceCompiles)
-include(CheckIncludeFileCXX)
-include(CMakePushCheckState)
-
-check_include_file_cxx(execinfo.h MOCKTAIL_HAVE_EXECINFO_H)
-if(NOT MOCKTAIL_HAVE_EXECINFO_H)
-  message(FATAL_ERROR
-    "execinfo.h is required for crash diagnostics; on musl install "
-    "libexecinfo-devel"
-  )
-endif()
-
-set(MOCKTAIL_EXECINFO_LINK_LIBRARY "")
-set(_mocktail_execinfo_link_probe [=[
-  #include <execinfo.h>
-  int main() {
-    void* frames[1] = {};
-    const int count = backtrace(frames, 1);
-    return backtrace_symbols(frames, count) == nullptr;
-  }
-]=])
-check_cxx_source_compiles(
-  "${_mocktail_execinfo_link_probe}"
-  MOCKTAIL_EXECINFO_IN_HOST_LIBC
-)
-if(NOT MOCKTAIL_EXECINFO_IN_HOST_LIBC)
-  find_library(MOCKTAIL_EXECINFO_LIBRARY NAMES execinfo REQUIRED)
-  cmake_push_check_state(RESET)
-  set(CMAKE_REQUIRED_LIBRARIES "${MOCKTAIL_EXECINFO_LIBRARY}")
-  check_cxx_source_compiles(
-    "${_mocktail_execinfo_link_probe}"
-    MOCKTAIL_EXECINFO_IN_EXTERNAL_LIBRARY
-  )
-  cmake_pop_check_state()
-  if(NOT MOCKTAIL_EXECINFO_IN_EXTERNAL_LIBRARY)
-    message(FATAL_ERROR
-      "execinfo.h is available, but backtrace and backtrace_symbols cannot "
-      "be linked"
-    )
-  endif()
-  set(MOCKTAIL_EXECINFO_LINK_LIBRARY "${MOCKTAIL_EXECINFO_LIBRARY}")
-endif()
-unset(_mocktail_execinfo_link_probe)
-
 add_library(mocktail_legacy_runtime STATIC
   src/legacy/legacy_runtime.cc
   src/runtime/roblox_text_input_jni_bridge.cc
@@ -619,7 +605,6 @@ target_link_libraries(mocktail_legacy_runtime PRIVATE
   libc_shim
   mocktail_window
   mocktail_graphics_foundation
-  ${MOCKTAIL_EXECINFO_LINK_LIBRARY}
 )
 target_compile_definitions(mocktail_legacy_runtime PRIVATE
   "MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST=\"${MOCKTAIL_DEFAULT_COMPATIBILITY_MANIFEST}\""
@@ -649,6 +634,11 @@ target_link_options(mocktail PRIVATE
 )
 
 # Native FreeBSD helper for Linuxulator's unsupported DF socket option.
+# The helper is x86-64 assembly; other host architectures have nothing to
+# assemble.
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER OFF)
+endif()
 option(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER
   "Build the native FreeBSD Linuxulator socket helper" ON)
 if(MOCKTAIL_BUILD_FREEBSD_SOCKET_HELPER)
@@ -698,6 +688,7 @@ install(TARGETS
     mocktail_updater
     mocktail_failure_dialog
     mocktail_webview_helper
+    mocktail_cookie_helper
     mocktail_audio_sdl
     mocktail_opensles
     stub_sys_m
@@ -722,6 +713,7 @@ endif()
 install(FILES
     config/roblox_compatibility.json
     config/roblox_bootstrap_sources.json
+    config/roblox_download_sources.json
     config/roblox_host_abi_reference.json
     config/roblox_signing_certificates.json
   DESTINATION "${MOCKTAIL_INSTALL_DATA_DIR}/metadata"
@@ -793,7 +785,7 @@ set(CPACK_PACKAGE_CONTACT "komaruworld <rtysus228@gmail.com>")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/komaruworld/mocktail")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
 set(CPACK_PACKAGE_DESCRIPTION
-  "Runs the Android x86-64 Roblox client on Linux."
+  "Runs the Android Roblox client on Linux."
 )
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
@@ -823,7 +815,7 @@ include(CPack)
 
 add_dependencies(mocktail all_stubs)
 add_dependencies(mocktail mocktail_failure_dialog)
-add_dependencies(mocktail mocktail_webview_helper)
+add_dependencies(mocktail mocktail_webview_helper mocktail_cookie_helper)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)

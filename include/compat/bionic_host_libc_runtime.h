@@ -14,16 +14,16 @@ namespace mocktail::compat {
 // Android uses size_t fields here; glibc uses int and musl has no equivalent.
 // An all-zero fallback means unknown, not zero usage.
 struct BionicMallinfoSnapshot {
-  size_t arena = 0;
-  size_t ordblks = 0;
-  size_t smblks = 0;
-  size_t hblks = 0;
-  size_t hblkhd = 0;
-  size_t usmblks = 0;
-  size_t fsmblks = 0;
-  size_t uordblks = 0;
-  size_t fordblks = 0;
-  size_t keepcost = 0;
+  size_t arena;
+  size_t ordblks;
+  size_t smblks;
+  size_t hblks;
+  size_t hblkhd;
+  size_t usmblks;
+  size_t fsmblks;
+  size_t uordblks;
+  size_t fordblks;
+  size_t keepcost;
 };
 
 struct BionicLocaleState;
@@ -90,6 +90,7 @@ int mocktail_bionic_cxa_thread_atexit_impl(
     mocktail::compat::BionicThreadDestructor destructor, void* argument,
     void* dso_handle);
 void mocktail_bionic_arc4random_buf(void* buffer, size_t size);
+int mocktail_bionic_atoi(const char* text);
 mocktail::compat::BionicMallinfoSnapshot mocktail_bionic_mallinfo();
 int mocktail_bionic_sysinfo(struct sysinfo* info);
 int mocktail_bionic_uname(struct utsname* name);

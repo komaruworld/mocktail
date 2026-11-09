@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "runtime/roblox_text_surface_overlay.h"
@@ -499,15 +500,21 @@ TEST(RobloxTextDisplayStateTest, KeepsBackgroundTransparentAndArgbCaretAlpha) {
   ASSERT_GE(rgba.size(), 4U);
   EXPECT_EQ(rgba[3], 0U);
   bool found_argb_pixel = false;
+  bool found_antialiased_pixel = false;
   std::uint8_t maximum_alpha = 0;
   for (std::size_t offset = 0; offset + 3 < rgba.size(); offset += 4) {
     maximum_alpha = std::max(maximum_alpha, rgba[offset + 3]);
     found_argb_pixel = found_argb_pixel ||
                        (rgba[offset] == 255U && rgba[offset + 1] == 0U &&
                         rgba[offset + 2] == 0U && rgba[offset + 3] == 128U);
+    if (rgba[offset + 3] > 0U && rgba[offset + 3] < 128U) {
+      found_antialiased_pixel = true;
+      EXPECT_EQ(rgba[offset], 255U);
+    }
   }
   EXPECT_LE(maximum_alpha, 128U);
   EXPECT_TRUE(found_argb_pixel);
+  EXPECT_TRUE(found_antialiased_pixel);
   EXPECT_TRUE(overlay.Shutdown().ok());
 }
 
@@ -566,6 +573,93 @@ TEST(RobloxTextDisplayStateTest, WrapsMultilineTextInsideNativeTextBox) {
     }
   }
   EXPECT_TRUE(has_lower_line_pixel);
+  EXPECT_TRUE(overlay.Shutdown().ok());
+}
+
+TEST(RobloxTextDisplayStateTest, AdvancesCaretForTrailingSpace) {
+  struct Case {
+    bool multiline;
+    bool wrapped;
+    const char* prefix;
+  };
+  for (const Case scenario : {Case{false, false, ""}, {false, true, ""},
+                              {true, false, ""},
+                              {false, true, "a wider first line\n"},
+                              {true, false, "a wider first line\n"}}) {
+    SCOPED_TRACE(::testing::Message()
+                 << "multiline=" << scenario.multiline
+                 << " wrapped=" << scenario.wrapped
+                 << " prefix=" << scenario.prefix);
+    RobloxTextSurfaceOverlay overlay;
+    ASSERT_TRUE(overlay.Initialize({800, 600}).ok());
+    RobloxTextDisplaySink sink = overlay.sink();
+    const auto caret_position = [&](const std::string& suffix,
+                                    RobloxTextDisplayEvent event) {
+      const std::string text = std::string(scenario.prefix) + suffix;
+      RobloxTextDisplayUpdate update =
+          Show(1, text, static_cast<int32_t>(text.size()));
+      update.event = event;
+      update.font_size = 18.0F;
+      update.area_height = 100;
+      update.y_alignment = 0;
+      update.multiline = scenario.multiline;
+      update.text_wrapped = scenario.wrapped;
+      sink.update(sink.context, update);
+      MocktailTextOverlayFrameInfo frame;
+      EXPECT_TRUE(overlay.QueryFrame(&frame));
+      std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+      EXPECT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+      for (int y = static_cast<int>(frame.height) - 1; y >= 0; --y) {
+        for (int x = static_cast<int>(frame.width) - 1; x >= 0; --x) {
+          if (rgba[(static_cast<std::size_t>(y) * frame.width + x) * 4 + 3]) {
+            return std::pair{x, y};
+          }
+        }
+      }
+      return std::pair{-1, -1};
+    };
+
+    const auto typed = caret_position("hi", RobloxTextDisplayEvent::kShow);
+    const auto spaced = caret_position("hi ", RobloxTextDisplayEvent::kUpdate);
+    const auto twice = caret_position("hi  ", RobloxTextDisplayEvent::kUpdate);
+    const auto erased = caret_position("hi", RobloxTextDisplayEvent::kUpdate);
+
+    ASSERT_GE(typed.first, 0);
+    EXPECT_GT(spaced.first, typed.first);
+    EXPECT_GT(twice.first, spaced.first);
+    EXPECT_EQ(spaced.second, typed.second);
+    EXPECT_EQ(twice.second, typed.second);
+    EXPECT_EQ(erased, typed);
+    EXPECT_TRUE(overlay.Shutdown().ok());
+  }
+}
+
+TEST(RobloxTextDisplayStateTest, AlignsWrappedGlyphsWithTrailingSpaces) {
+  RobloxTextSurfaceOverlay overlay;
+  ASSERT_TRUE(overlay.Initialize({800, 600}).ok());
+  RobloxTextDisplaySink sink = overlay.sink();
+  const auto render = [&](const std::string& text, int32_t alignment) {
+    RobloxTextDisplayUpdate update =
+        Show(1, text, static_cast<int32_t>(text.size()));
+    update.font_size = 18.0F;
+    update.x_alignment = alignment;
+    update.text_wrapped = true;
+    sink.update(sink.context, update);
+    MocktailTextOverlayFrameInfo frame;
+    EXPECT_TRUE(overlay.QueryFrame(&frame));
+    std::vector<std::uint8_t> rgba(frame.rgba_bytes);
+    EXPECT_TRUE(overlay.CopyFrame(frame.revision, rgba.data(), rgba.size()));
+    return FindAlphaBounds(frame, rgba);
+  };
+
+  for (const int32_t alignment : {1, 2}) {
+    SCOPED_TRACE(alignment);
+    const AlphaBounds typed = render("MMMM", alignment);
+    const AlphaBounds spaced = render("MMMM   ", alignment);
+    ASSERT_TRUE(typed.valid());
+    ASSERT_TRUE(spaced.valid());
+    EXPECT_LT(spaced.minimum_x, typed.minimum_x);
+  }
   EXPECT_TRUE(overlay.Shutdown().ok());
 }
 

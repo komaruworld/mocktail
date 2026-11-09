@@ -21,7 +21,6 @@ namespace services {
 namespace {
 
 constexpr const char kEmptyDefaults[] = "{\"applicationSettings\":{}}";
-constexpr std::uintmax_t kMaximumFflagsFileBytes = 64U * 1024U;
 
 class ScopedFileDescriptor final {
  public:
@@ -169,18 +168,12 @@ FflagsMergeResult LoadAndMergeFflagsFile(const std::filesystem::path& path,
   const ScopedFileDescriptor file(descriptor);
 
   struct stat metadata = {};
-  if (fstat(file.get(), &metadata) != 0) {
+  if (fstat(file.get(), &metadata) != 0 || metadata.st_size < 0) {
     result.error = "cannot inspect fflags file";
     return result;
   }
   if (!S_ISREG(metadata.st_mode)) {
     result.error = "fflags file is not a regular file";
-    return result;
-  }
-  if (metadata.st_size < 0 ||
-      static_cast<std::uintmax_t>(metadata.st_size) >
-          kMaximumFflagsFileBytes) {
-    result.error = "fflags file exceeds the 64 KiB read limit";
     return result;
   }
 
@@ -200,11 +193,6 @@ FflagsMergeResult LoadAndMergeFflagsFile(const std::filesystem::path& path,
       return result;
     }
     const std::size_t count = static_cast<std::size_t>(read_count);
-    if (bytes.size() >
-        static_cast<std::size_t>(kMaximumFflagsFileBytes) - count) {
-      result.error = "fflags file exceeds the 64 KiB read limit";
-      return result;
-    }
     bytes.append(buffer.data(), count);
   }
 

@@ -19,6 +19,13 @@ inline constexpr std::size_t kMaximumRobloxLaunchUriBytes = 64 * 1024;
 Status ParseRobloxLaunchUri(std::string_view uri,
                             RobloxExperienceLaunchRequest* request);
 
+// Converts a WebView launchGame command
+// ({"functionName":"launchGame","params":{"request":{...}}}) into the same
+// contract. Returns kUnsupported for other commands and kInvalidArgument for
+// a malformed launchGame request.
+Status ParseRobloxWebViewLaunchGame(std::string_view command,
+                                    RobloxExperienceLaunchRequest* request);
+
 }  // namespace runtime
 }  // namespace mocktail
 

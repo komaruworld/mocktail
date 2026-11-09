@@ -2,6 +2,9 @@
 
 #include <curl/curl.h>
 
+// [patch.py] RequestFollowUser support
+#include "runtime/roblox_presence_resolver.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -541,13 +544,41 @@ Status ValidateSelector(const LaunchFields& fields) {
                ? Status::Ok()
                : Invalid("RequestPlayTogetherGame requires a conversation");
   }
+  // [patch.py] RequestFollowUser support
+  if (request == "requestfollowuser") {
+    // By the time ValidateSelector runs, MakeRequest has already
+    // resolved user_id -> place_id and cleared user_id, so check the
+    // resolved place_id here rather than the now-zeroed user_id.
+    return fields.place_id > 0
+               ? Status::Ok()
+               : Invalid("RequestFollowUser could not resolve a place");
+  }
   return Invalid("Roblox PlaceLauncher request type is unsupported");
 }
 
-Status MakeRequest(const LaunchFields& fields,
+// [patch.py] RequestFollowUser support
+Status MakeRequest(const LaunchFields& fields_in,
                    RobloxExperienceLaunchRequest* request) {
-  if (fields.place_id <= 0) {
+  LaunchFields fields = fields_in;
+  const bool is_follow_user =
+      AsciiLower(fields.request_type) == "requestfollowuser";
+  if (fields.place_id <= 0 && !is_follow_user) {
     return Invalid("Roblox launch URI requires a positive placeId");
+  }
+  if (fields.place_id <= 0 && is_follow_user) {
+    ResolvedFollowUserPlace resolved;
+    const Status resolve_status = ResolveFollowUserPlace(
+        fields.user_id, ReadStoredRoblosecurityCookie(), &resolved);
+    if (!resolve_status.ok()) {
+      return resolve_status;
+    }
+    fields.place_id = resolved.place_id;
+    if (!resolved.game_instance_id.empty()) {
+      fields.game_instance_id = resolved.game_instance_id;
+    }
+    // user_id was only needed to resolve which place to join; clear
+    // it so ValidateSelector does not see two conflicting selectors.
+    fields.user_id = 0;
   }
   Status status = ValidateSelector(fields);
   if (!status.ok()) {
@@ -638,6 +669,65 @@ Status ParseRobloxLaunchUri(std::string_view uri,
     return status;
   }
   return MakeRequest(fields, request);
+}
+
+Status ParseRobloxWebViewLaunchGame(std::string_view command,
+                                    RobloxExperienceLaunchRequest* request) {
+  if (request == nullptr) {
+    return Invalid("Roblox launchGame output is null");
+  }
+  *request = {};
+  const nlohmann::json document =
+      command.size() <= kMaximumRobloxLaunchUriBytes
+          ? nlohmann::json::parse(command, nullptr, false)
+          : nlohmann::json();
+  const auto function_name = document.is_object()
+                                 ? document.find("functionName")
+                                 : document.end();
+  if (!document.is_object() || function_name == document.end() ||
+      *function_name != "launchGame") {
+    return Status::Error(StatusCode::kUnsupported,
+                         "WebView command is not launchGame");
+  }
+  const auto params = document.find("params");
+  if (params == document.end() || !params->is_object()) {
+    return Invalid("Roblox launchGame has no params");
+  }
+  const auto launch = params->find("request");
+  if (launch == params->end() || !launch->is_object()) {
+    return Invalid("Roblox launchGame has no request");
+  }
+  if (launch->size() > kMaximumParameterCount) {
+    return Invalid("Roblox launchGame request has too many fields");
+  }
+  LaunchFields fields;
+  for (const auto& [key, value] : launch->items()) {
+    std::string text;
+    if (value.is_string()) {
+      text = value.get<std::string>();
+    } else if (value.is_number_unsigned()) {
+      text = std::to_string(value.get<uint64_t>());
+    } else {
+      continue;
+    }
+    if (text.size() > kMaximumParameterValueBytes ||
+        ContainsControlBytes(text)) {
+      return Invalid("Roblox launchGame field is invalid");
+    }
+    Status status = AssignField(key == "requestType" ? "request" : key,
+                                std::move(text), false, &fields);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  if (fields.request_type.empty()) {
+    return Invalid("Roblox launchGame request type is missing");
+  }
+  Status status = MakeRequest(fields, request);
+  if (!status.ok()) {
+    *request = {};
+  }
+  return status;
 }
 
 }  // namespace runtime

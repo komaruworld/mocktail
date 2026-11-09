@@ -167,12 +167,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "device.mouse",
       "device.keyboard",
       "runtime.headless",
+      "auth.use_libsecret",
       "runtime.roblox_library",
       "vr.enabled",
       "appearance.theme",
       "graphics.backend",
       "graphics.frame_rate_limit",
       "graphics.vsync",
+      "graphics.present_mode",
       "performance.multithreaded_rendering",
       "performance.physics_worker_mode",
       "performance.memory_limit_mb",
@@ -188,7 +190,14 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       "network.use_system_proxy",
       "network.proxy_host",
       "network.proxy_port",
+      "network.proxy_scheme",
+      "network.proxy_username",
+      "network.proxy_password",
       "network.ca_bundle",
+      "integrations.fleasion.enabled",
+      "integrations.fleasion.proxy_mode",
+      "integrations.fleasion.proxy_port",
+      "integrations.fleasion.ca_certificate",
       "integrations.discord_rpc.enabled",
       "integrations.discord_rpc.show_place_name",
       "integrations.discord_rpc.show_elapsed_time",
@@ -340,6 +349,13 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     }
     (*environment)["MOCKTAIL_VSYNC"] = *vsync;
   }
+  if (const auto mode = value("graphics.present_mode"); mode.has_value()) {
+    if (!RuntimeConfig::IsValidPresentMode(*mode)) {
+      *error = "graphics.present_mode must be auto, fifo, mailbox, or immediate";
+      return false;
+    }
+    (*environment)["MOCKTAIL_PRESENT_MODE"] = *mode;
+  }
   if (const auto multithreaded_rendering =
           value("performance.multithreaded_rendering");
       multithreaded_rendering.has_value()) {
@@ -450,6 +466,9 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
   }
   const auto proxy_host = value("network.proxy_host");
   const auto proxy_port = value("network.proxy_port");
+  const auto proxy_scheme = value("network.proxy_scheme");
+  const auto proxy_username = value("network.proxy_username");
+  const auto proxy_password = value("network.proxy_password");
   bool use_system_proxy = false;
   if (const auto system_proxy = value("network.use_system_proxy");
       system_proxy.has_value()) {
@@ -460,7 +479,8 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     (*environment)["MOCKTAIL_USE_SYSTEM_PROXY"] =
         use_system_proxy ? "1" : "0";
   }
-  if (proxy_host.has_value() != proxy_port.has_value()) {
+  if (proxy_host.has_value() != proxy_port.has_value() ||
+      (proxy_scheme.has_value() && !proxy_host.has_value())) {
     *error =
         "network.proxy_host and network.proxy_port must be configured together";
     return false;
@@ -469,15 +489,28 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
     *error = "network.use_system_proxy cannot be combined with a fixed proxy";
     return false;
   }
+  if (proxy_username.has_value() != proxy_password.has_value() ||
+      (proxy_username.has_value() &&
+       (!proxy_host.has_value() || proxy_username->empty()))) {
+    *error = "proxy_username and proxy_password require a fixed proxy "
+             "and must be configured together with a nonempty username";
+    return false;
+  }
   if (proxy_host.has_value()) {
-    if (!ParseNetworkProxyConfig(*proxy_host, *proxy_port).has_value()) {
+    const auto proxy = ParseNetworkProxyConfig(
+        *proxy_host, *proxy_port, proxy_scheme.value_or("http"),
+        proxy_username.value_or(""), proxy_password.value_or(""));
+    if (!proxy.has_value()) {
       *error =
-          "network proxy must use a valid host without a scheme and a port "
-          "from 1 to 65535";
+          "network proxy must use a valid host without a scheme, a port "
+          "from 1 to 65535, an HTTP or SOCKS5 scheme, and valid credentials";
       return false;
     }
     (*environment)["MOCKTAIL_HTTP_PROXY_HOST"] = *proxy_host;
     (*environment)["MOCKTAIL_HTTP_PROXY_PORT"] = *proxy_port;
+    (*environment)["MOCKTAIL_HTTP_PROXY_SCHEME"] = proxy->scheme;
+    (*environment)["MOCKTAIL_HTTP_PROXY_USERNAME"] = proxy->username;
+    (*environment)["MOCKTAIL_HTTP_PROXY_PASSWORD"] = proxy->password;
   }
   if (const auto ca_bundle = value("network.ca_bundle");
       ca_bundle.has_value()) {
@@ -492,6 +525,8 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
            std::pair<std::string_view, std::string_view>(
                "integrations.discord_rpc.enabled",
                "MOCKTAIL_DISCORD_RPC_ENABLED"),
+           {"integrations.fleasion.enabled", "MOCKTAIL_FLEASION_ENABLED"},
+           {"auth.use_libsecret", "MOCKTAIL_USE_LIBSECRET"},
            {"integrations.discord_rpc.show_place_name",
             "MOCKTAIL_DISCORD_RPC_SHOW_PLACE_NAME"},
            {"integrations.discord_rpc.show_elapsed_time",
@@ -511,6 +546,15 @@ bool ValidateAndMap(const ValueMap& yaml, ValueMap* environment,
       return false;
     }
     (*environment)[std::string(variable)] = parsed ? "1" : "0";
+  }
+  for (const auto& [key, variable] : {
+           std::pair<std::string_view, std::string_view>(
+               "integrations.fleasion.proxy_mode", "MOCKTAIL_FLEASION_PROXY_MODE"),
+           {"integrations.fleasion.proxy_port", "MOCKTAIL_FLEASION_PROXY_PORT"},
+           {"integrations.fleasion.ca_certificate", "MOCKTAIL_FLEASION_CA_CERTIFICATE"},
+       }) {
+    if (const auto configured = value(key))
+      (*environment)[std::string(variable)] = *configured;
   }
   if (const auto application_id =
           value("integrations.discord_rpc.application_id");
@@ -665,7 +709,7 @@ bool LoadYaml(const std::filesystem::path& path, ValueMap* values, bool* loaded,
           *error = "device must be a preset scalar or detailed mapping";
           valid = false;
         }
-      } else if (key == "runtime" || key == "appearance" || key == "vr" ||
+      } else if (key == "runtime" || key == "appearance" || key == "vr" || key == "auth" ||
                  key == "graphics" || key == "performance" ||
                  key == "audio" || key == "window" || key == "input" ||
                  key == "compatibility" || key == "network") {
@@ -753,6 +797,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
              result.config.vsync_mode() != "on" &&
              result.config.vsync_mode() != "off") {
     result.error = "VSync policy is invalid";
+  } else if (!RuntimeConfig::IsValidPresentMode(result.config.present_mode())) {
+    result.error = "graphics.present_mode must be auto, fifo, mailbox, or immediate";
   } else if (!result.config.audio_output_device_valid()) {
     result.error = "audio output device is invalid";
   } else if (!result.config.audio_input_device_valid()) {
@@ -763,6 +809,10 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
     result.error = "GameMode policy is invalid";
   } else if (!result.config.performance().physics_worker_mode_valid) {
     result.error = "physics worker policy is invalid";
+  } else if (!result.config.fleasion_valid()) {
+    result.error = "Fleasion configuration is invalid: use proxy_mode env or hosts, "
+                   "a port from 1 to 65535, an absolute CA certificate path, and "
+                   "no conflicting system/fixed proxy";
   } else if (!result.config.ca_bundle_valid()) {
     result.error = "CA bundle path is invalid";
   } else if (!result.config.discord_rpc_valid()) {
@@ -775,6 +825,14 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                                     std::string* error) {
   if (!config.vr_valid()) {
     if (error != nullptr) *error = "cannot export an invalid VR configuration";
+    return false;
+  }
+  if (!RuntimeConfig::IsValidPresentMode(config.present_mode())) {
+    if (error != nullptr) *error = "cannot export an invalid present mode";
+    return false;
+  }
+  if (!config.fleasion_valid()) {
+    if (error != nullptr) *error = "cannot export invalid Fleasion configuration";
     return false;
   }
   if (!config.device_profile_valid()) {
@@ -878,6 +936,7 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       SetEnvironmentValue("MOCKTAIL_FRAME_RATE_LIMIT",
                           FrameRateValue(config.frame_rate()), error) &&
       SetEnvironmentValue("MOCKTAIL_VSYNC", config.vsync_mode(), error) &&
+      SetEnvironmentValue("MOCKTAIL_PRESENT_MODE", config.present_mode(), error) &&
       SetEnvironmentValue(
           "MOCKTAIL_MULTITHREADED_RENDERING",
           config.performance().multithreaded_rendering ? "1" : "0", error) &&
@@ -928,6 +987,20 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
   if (!base_exported) {
     return false;
   }
+  if (!SetEnvironmentValue("MOCKTAIL_FLEASION_ENABLED",
+                           config.fleasion_enabled() ? "1" : "0", error) ||
+      !SetEnvironmentValue("MOCKTAIL_FLEASION_PROXY_MODE",
+                           config.fleasion_proxy_mode(), error) ||
+      !SetEnvironmentValue("MOCKTAIL_FLEASION_PROXY_PORT",
+                           std::to_string(config.fleasion_proxy_port()), error))
+    return false;
+  if (config.fleasion_ca_certificate()) {
+    if (!SetEnvironmentValue("MOCKTAIL_FLEASION_CA_CERTIFICATE",
+                             config.fleasion_ca_certificate()->string(), error))
+      return false;
+  } else if (!UnsetEnvironmentValue("MOCKTAIL_FLEASION_CA_CERTIFICATE", error)) {
+    return false;
+  }
   if (config.ca_bundle().has_value()) {
     if (!SetEnvironmentValue("MOCKTAIL_CA_BUNDLE",
                              config.ca_bundle()->string(), error)) {
@@ -945,9 +1018,16 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
       !UnsetEnvironmentValue("MOCKTAIL_USER_AGENT", error)) {
     return false;
   }
-  if (!config.network_proxy().has_value()) {
-    return base_exported;
-  }
+  return base_exported && ExportNetworkProxyEnvironment(config, error);
+}
+
+bool ExportNetworkProxyEnvironment(const RuntimeConfig& config,
+                                   std::string* error) {
+  if (!config.network_proxy().has_value()) return true;
+  const std::string proxy_url =
+      BuildNetworkProxyUrl(*config.network_proxy(), true);
+  const bool native_proxy = config.network_proxy()->scheme == "http" &&
+                            config.network_proxy()->username.empty();
   return SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_HOST",
                              config.network_proxy()->host, error) &&
          SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_PORT",
@@ -955,8 +1035,17 @@ bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                              error) &&
          SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_SCHEME",
                              config.network_proxy()->scheme, error) &&
-         SetEnvironmentValue("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY", "1",
-                             error);
+         SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_USERNAME",
+                             config.network_proxy()->username, error) &&
+         SetEnvironmentValue("MOCKTAIL_HTTP_PROXY_PASSWORD",
+                             config.network_proxy()->password, error) &&
+         SetEnvironmentValue("http_proxy", proxy_url, error) &&
+         SetEnvironmentValue("https_proxy", proxy_url, error) &&
+         SetEnvironmentValue("all_proxy", proxy_url, error) &&
+         SetEnvironmentValue("no_proxy", "", error) &&
+         SetEnvironmentValue("NO_PROXY", "", error) &&
+         SetEnvironmentValue("MOCKTAIL_NATIVE_SET_HTTP_CLIENT_PROXY",
+                             native_proxy ? "1" : "0", error);
 }
 
 }  // namespace runtime

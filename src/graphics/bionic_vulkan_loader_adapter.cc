@@ -1,3 +1,4 @@
+// Includes changes by vii from CoderDayton/nightcap.
 // Android Vulkan loader ABI -> host Vulkan loader + SDL3 WSI.
 
 #include <dlfcn.h>
@@ -20,6 +21,7 @@
 
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
 #include "mocktail/graphics/present_mode_policy.h"
+#include "mocktail/graphics/vulkan_etc2_emulation.h"
 #include "mocktail/graphics/vulkan_text_overlay_compositor.h"
 #include "mocktail/platform/platform_runtime.h"
 
@@ -273,6 +275,7 @@ struct AdapterState {
   VkInstance latest_instance = VK_NULL_HANDLE;
   size_t active_instance_count = 0;
   mocktail::graphics::VulkanTextOverlayCompositor text_overlay;
+  mocktail::graphics::VulkanEtc2Emulation etc2;
   std::atomic<NotePresentFn> note_present{nullptr};
   std::atomic<NoteHostPresentBeginFn> note_host_present_begin{nullptr};
   std::atomic<NoteHostPresentEndFn> note_host_present_end{nullptr};
@@ -1005,9 +1008,28 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_PROC(vkQueueWaitIdle)
   MOCKTAIL_VK_PROC(vkDeviceWaitIdle)
   MOCKTAIL_VK_PROC(vkQueuePresentKHR)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceFeatures)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceFeatures2)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceFormatProperties)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceFormatProperties2)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceImageFormatProperties)
+  MOCKTAIL_VK_PROC(vkGetPhysicalDeviceImageFormatProperties2)
   MOCKTAIL_VK_PROC(vkCreateImage)
   MOCKTAIL_VK_PROC(vkDestroyImage)
   MOCKTAIL_VK_PROC(vkCreateImageView)
+  MOCKTAIL_VK_PROC(vkBindBufferMemory)
+  MOCKTAIL_VK_PROC(vkBindBufferMemory2)
+  MOCKTAIL_VK_PROC(vkMapMemory)
+  MOCKTAIL_VK_PROC(vkMapMemory2)
+  MOCKTAIL_VK_PROC(vkUnmapMemory)
+  MOCKTAIL_VK_PROC(vkUnmapMemory2)
+  MOCKTAIL_VK_PROC(vkFreeMemory)
+  MOCKTAIL_VK_PROC(vkDestroyBuffer)
+  MOCKTAIL_VK_PROC(vkCmdCopyBufferToImage)
+  MOCKTAIL_VK_PROC(vkCmdCopyImage)
+  MOCKTAIL_VK_PROC(vkCmdCopyImage2)
+  MOCKTAIL_VK_PROC(vkCmdCopyBufferToImage2)
+  MOCKTAIL_VK_PROC(vkCmdExecuteCommands)
   MOCKTAIL_VK_PROC(vkDestroyImageView)
   MOCKTAIL_VK_PROC(vkCreateFramebuffer)
   MOCKTAIL_VK_PROC(vkDestroyFramebuffer)
@@ -1015,50 +1037,103 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_PROC(vkDestroyRenderPass)
   MOCKTAIL_VK_PROC(vkCmdBeginRenderPass)
 #undef MOCKTAIL_VK_PROC
+#define MOCKTAIL_VK_ALIAS(alias, function)                 \
+  if (std::strcmp(name, #alias) == 0) {                    \
+    return reinterpret_cast<PFN_vkVoidFunction>(function); \
+  }
+  MOCKTAIL_VK_ALIAS(vkGetPhysicalDeviceFeatures2KHR,
+                    vkGetPhysicalDeviceFeatures2)
+  MOCKTAIL_VK_ALIAS(vkGetPhysicalDeviceFormatProperties2KHR,
+                    vkGetPhysicalDeviceFormatProperties2)
+  MOCKTAIL_VK_ALIAS(vkGetPhysicalDeviceImageFormatProperties2KHR,
+                    vkGetPhysicalDeviceImageFormatProperties2)
+  MOCKTAIL_VK_ALIAS(vkBindBufferMemory2KHR, vkBindBufferMemory2)
+  MOCKTAIL_VK_ALIAS(vkCmdCopyImage2KHR, vkCmdCopyImage2)
+  MOCKTAIL_VK_ALIAS(vkMapMemory2KHR, vkMapMemory2)
+  MOCKTAIL_VK_ALIAS(vkUnmapMemory2KHR, vkUnmapMemory2)
+  MOCKTAIL_VK_ALIAS(vkCmdCopyBufferToImage2KHR, vkCmdCopyBufferToImage2)
+#undef MOCKTAIL_VK_ALIAS
   return nullptr;
 }
 
-bool IsDeviceAdapterProc(const char *name) {
+bool NameInList(const char* name, const char* const* names,
+                std::size_t count) {
   return name != nullptr &&
-         (std::strcmp(name, "vkDestroyDevice") == 0 ||
-          std::strcmp(name, "vkGetDeviceQueue") == 0 ||
-          std::strcmp(name, "vkGetDeviceQueue2") == 0 ||
-          std::strcmp(name, "vkCreateSwapchainKHR") == 0 ||
-          std::strcmp(name, "vkDestroySwapchainKHR") == 0 ||
-          std::strcmp(name, "vkAcquireNextImageKHR") == 0 ||
-          std::strcmp(name, "vkAcquireNextImage2KHR") == 0 ||
-          std::strcmp(name, "vkWaitForFences") == 0 ||
-          std::strcmp(name, "vkResetFences") == 0 ||
-          std::strcmp(name, "vkCreateCommandPool") == 0 ||
-          std::strcmp(name, "vkCmdPipelineBarrier") == 0 ||
-          std::strcmp(name, "vkCmdPipelineBarrier2") == 0 ||
-          std::strcmp(name, "vkCmdPipelineBarrier2KHR") == 0 ||
-          std::strcmp(name, "vkResetCommandPool") == 0 ||
-          std::strcmp(name, "vkGetQueryPoolResults") == 0 ||
-          std::strcmp(name, "vkAllocateCommandBuffers") == 0 ||
-          std::strcmp(name, "vkFreeCommandBuffers") == 0 ||
-          std::strcmp(name, "vkDestroyCommandPool") == 0 ||
-          std::strcmp(name, "vkBeginCommandBuffer") == 0 ||
-          std::strcmp(name, "vkEndCommandBuffer") == 0 ||
-          std::strcmp(name, "vkResetCommandBuffer") == 0 ||
-          std::strcmp(name, "vkWaitSemaphores") == 0 ||
-          std::strcmp(name, "vkWaitSemaphoresKHR") == 0 ||
-          std::strcmp(name, "vkQueueSubmit") == 0 ||
-          std::strcmp(name, "vkQueueSubmit2") == 0 ||
-          std::strcmp(name, "vkQueueSubmit2KHR") == 0 ||
-          std::strcmp(name, "vkQueueBindSparse") == 0 ||
-          std::strcmp(name, "vkQueueWaitIdle") == 0 ||
-          std::strcmp(name, "vkDeviceWaitIdle") == 0 ||
-          std::strcmp(name, "vkQueuePresentKHR") == 0 ||
-          std::strcmp(name, "vkCreateImage") == 0 ||
-          std::strcmp(name, "vkDestroyImage") == 0 ||
-          std::strcmp(name, "vkCreateImageView") == 0 ||
-          std::strcmp(name, "vkDestroyImageView") == 0 ||
-          std::strcmp(name, "vkCreateFramebuffer") == 0 ||
-          std::strcmp(name, "vkDestroyFramebuffer") == 0 ||
-          std::strcmp(name, "vkCreateRenderPass") == 0 ||
-          std::strcmp(name, "vkDestroyRenderPass") == 0 ||
-          std::strcmp(name, "vkCmdBeginRenderPass") == 0);
+         std::any_of(names, names + count, [name](const char* candidate) {
+           return std::strcmp(name, candidate) == 0;
+         });
+}
+
+bool IsEtc2DeviceProc(const char* name) {
+  static constexpr const char* kNames[] = {
+      "vkCreateImage",          "vkDestroyImage",
+      "vkCreateImageView",      "vkBindBufferMemory",
+      "vkBindBufferMemory2",    "vkBindBufferMemory2KHR",
+      "vkMapMemory",            "vkMapMemory2",
+      "vkMapMemory2KHR",        "vkUnmapMemory",
+      "vkUnmapMemory2",         "vkUnmapMemory2KHR",
+      "vkFreeMemory",           "vkDestroyBuffer",
+      "vkCmdCopyBufferToImage", "vkCmdCopyBufferToImage2",
+      "vkCmdCopyImage",         "vkCmdCopyImage2",
+      "vkCmdCopyImage2KHR",
+      "vkCmdCopyBufferToImage2KHR", "vkCmdExecuteCommands",
+  };
+  return NameInList(name, kNames, sizeof(kNames) / sizeof(kNames[0]));
+}
+
+bool IsEtc2PhysicalDeviceProc(const char* name) {
+  static constexpr const char* kNames[] = {
+      "vkGetPhysicalDeviceFeatures",
+      "vkGetPhysicalDeviceFeatures2",
+      "vkGetPhysicalDeviceFeatures2KHR",
+      "vkGetPhysicalDeviceFormatProperties",
+      "vkGetPhysicalDeviceFormatProperties2",
+      "vkGetPhysicalDeviceFormatProperties2KHR",
+      "vkGetPhysicalDeviceImageFormatProperties",
+      "vkGetPhysicalDeviceImageFormatProperties2",
+      "vkGetPhysicalDeviceImageFormatProperties2KHR",
+  };
+  return NameInList(name, kNames, sizeof(kNames) / sizeof(kNames[0]));
+}
+
+bool IsDeviceAdapterProc(const char* name) {
+  return name != nullptr && (IsEtc2DeviceProc(name) || std::strcmp(name, "vkDestroyDevice") == 0 ||
+                             std::strcmp(name, "vkGetDeviceQueue") == 0 ||
+                             std::strcmp(name, "vkGetDeviceQueue2") == 0 ||
+                             std::strcmp(name, "vkCreateSwapchainKHR") == 0 ||
+                             std::strcmp(name, "vkDestroySwapchainKHR") == 0 ||
+                             std::strcmp(name, "vkAcquireNextImageKHR") == 0 ||
+                             std::strcmp(name, "vkAcquireNextImage2KHR") == 0 ||
+                             std::strcmp(name, "vkWaitForFences") == 0 ||
+                             std::strcmp(name, "vkResetFences") == 0 ||
+                             std::strcmp(name, "vkResetCommandPool") == 0 ||
+                             std::strcmp(name, "vkGetQueryPoolResults") == 0 ||
+                             std::strcmp(name, "vkAllocateCommandBuffers") ==
+                                 0 ||
+                             std::strcmp(name, "vkFreeCommandBuffers") == 0 ||
+                             std::strcmp(name, "vkDestroyCommandPool") == 0 ||
+                             std::strcmp(name, "vkBeginCommandBuffer") == 0 ||
+                             std::strcmp(name, "vkEndCommandBuffer") == 0 ||
+                             std::strcmp(name, "vkResetCommandBuffer") == 0 ||
+                             std::strcmp(name, "vkWaitSemaphores") == 0 ||
+                             std::strcmp(name, "vkWaitSemaphoresKHR") == 0 ||
+                             std::strcmp(name, "vkQueueSubmit") == 0 ||
+                             std::strcmp(name, "vkQueueSubmit2") == 0 ||
+                             std::strcmp(name, "vkQueueSubmit2KHR") == 0 ||
+                             std::strcmp(name, "vkQueueBindSparse") == 0 ||
+                             std::strcmp(name, "vkQueueWaitIdle") == 0 ||
+                             std::strcmp(name, "vkDeviceWaitIdle") == 0 ||
+                             std::strcmp(name, "vkQueuePresentKHR") == 0 ||
+                             std::strcmp(name, "vkCreateCommandPool") == 0 ||
+                             std::strcmp(name, "vkCmdPipelineBarrier") == 0 ||
+                             std::strcmp(name, "vkCmdPipelineBarrier2") == 0 ||
+                             std::strcmp(name, "vkCmdPipelineBarrier2KHR") == 0 ||
+                             std::strcmp(name, "vkDestroyImageView") == 0 ||
+                             std::strcmp(name, "vkCreateFramebuffer") == 0 ||
+                             std::strcmp(name, "vkDestroyFramebuffer") == 0 ||
+                             std::strcmp(name, "vkCreateRenderPass") == 0 ||
+                             std::strcmp(name, "vkDestroyRenderPass") == 0 ||
+                             std::strcmp(name, "vkCmdBeginRenderPass") == 0);
 }
 
 bool IsGlobalAdapterProc(const char* name) {
@@ -1259,10 +1334,22 @@ struct FpsWaitTrace {
   std::atomic<std::uint64_t> total_ns{0};
   std::atomic<std::uint64_t> max_ns{0};
   std::atomic<std::uint64_t> window_start_ns{0};
+  std::atomic<std::uint64_t> max_gap_ns{0};
+  std::atomic<std::uint64_t> last_start_ns{0};
 
   void Record(std::uint64_t start_ns) {
     if (name == nullptr || start_ns == 0) {
       return;
+    }
+    const std::uint64_t previous_start =
+        last_start_ns.exchange(start_ns, std::memory_order_relaxed);
+    if (previous_start != 0 && start_ns > previous_start) {
+      const std::uint64_t gap_ns = start_ns - previous_start;
+      std::uint64_t max_gap = max_gap_ns.load(std::memory_order_relaxed);
+      while (gap_ns > max_gap &&
+             !max_gap_ns.compare_exchange_weak(max_gap, gap_ns,
+                                               std::memory_order_relaxed)) {
+      }
     }
     const std::uint64_t wait_ns = MonotonicNanos() - start_ns;
     total_ns.fetch_add(wait_ns, std::memory_order_relaxed);
@@ -1284,14 +1371,18 @@ struct FpsWaitTrace {
     const std::uint64_t total = total_ns.exchange(0, std::memory_order_relaxed);
     const std::uint64_t peak = max_ns.exchange(0, std::memory_order_relaxed);
     const std::uint64_t count = samples.exchange(0, std::memory_order_relaxed);
+    const std::uint64_t gap_peak =
+        max_gap_ns.exchange(0, std::memory_order_relaxed);
     window_start_ns.store(start_ns, std::memory_order_relaxed);
     if (count == 0) {
       return;
     }
-    std::fprintf(stderr, "  [fps] %s n=%llu avg=%llu us max=%llu us start_ns=%llu end_ns=%llu\n", name,
-                 static_cast<unsigned long long>(count),
+    std::fprintf(stderr,
+                 "  [fps] %s n=%llu avg=%llu us max=%llu us gap_max=%llu us start_ns=%llu end_ns=%llu\n",
+                 name, static_cast<unsigned long long>(count),
                  static_cast<unsigned long long>(total / count / 1000ULL),
                  static_cast<unsigned long long>(peak / 1000ULL),
+                 static_cast<unsigned long long>(gap_peak / 1000ULL),
                  static_cast<unsigned long long>(window),
                  static_cast<unsigned long long>(start_ns));
   }
@@ -1375,6 +1466,61 @@ ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
     note_end(static_cast<std::int32_t>(result));
   }
   return result;
+}
+
+template <typename Function>
+Function HostPhysicalDeviceProc(const char* name, const char* alias) {
+  VkInstance instance = VK_NULL_HANDLE;
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    instance = state.latest_instance;
+  }
+  PFN_vkVoidFunction proc = HostInstanceProc(instance, name);
+  if (proc == nullptr && alias != nullptr) {
+    proc = HostInstanceProc(instance, alias);
+  }
+  return reinterpret_cast<Function>(proc);
+}
+
+bool Etc2EmulatedPhysicalDevice(VkPhysicalDevice physical_device) {
+  return State().etc2.PhysicalDeviceNeedsEmulation(
+      physical_device, HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFeatures>(
+                           "vkGetPhysicalDeviceFeatures", nullptr));
+}
+
+void ReleaseEtc2PoolCommandBuffers(VkDevice device,
+                                   VkCommandPool command_pool) {
+  std::vector<VkCommandBuffer> command_buffers;
+  {
+    AdapterState& state = State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    for (const auto& binding : state.command_buffer_bindings) {
+      if (binding.device == device && binding.command_pool == command_pool) {
+        command_buffers.push_back(binding.command_buffer);
+      }
+    }
+  }
+  for (VkCommandBuffer command_buffer : command_buffers) {
+    State().etc2.ReleaseCommandBuffer(command_buffer);
+  }
+}
+
+void PrepareEtc2Submit2(std::uint32_t submit_count,
+                        const VkSubmitInfo2* submits) {
+  if (submits == nullptr || !State().etc2.HasPendingUploads()) {
+    return;
+  }
+  std::vector<VkCommandBuffer> command_buffers;
+  for (std::uint32_t index = 0; index < submit_count; ++index) {
+    for (std::uint32_t info = 0; info < submits[index].commandBufferInfoCount;
+         ++info) {
+      command_buffers.push_back(
+          submits[index].pCommandBufferInfos[info].commandBuffer);
+    }
+  }
+  State().etc2.PrepareSubmit(command_buffers.data(),
+                             static_cast<std::uint32_t>(command_buffers.size()));
 }
 
 }  // namespace
@@ -1614,7 +1760,7 @@ vkGetInstanceProcAddr(VkInstance instance, const char* name) {
   }
   if (const PFN_vkVoidFunction adapter = AdapterProc(name);
       adapter != nullptr) {
-    if (IsDeviceAdapterProc(name) &&
+    if ((IsDeviceAdapterProc(name) || IsEtc2PhysicalDeviceProc(name)) &&
         HostInstanceProc(instance, name) == nullptr) {
       return nullptr;
     }
@@ -1673,6 +1819,30 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
 
   VkDeviceCreateInfo host_info = *create_info;
   EnabledDeviceFeatures enabled = InspectEnabledFeatures(*create_info);
+  const bool etc2_emulated = State().etc2.PhysicalDeviceNeedsEmulation(
+      physical_device, reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
+                           HostInstanceProc(instance,
+                                            "vkGetPhysicalDeviceFeatures")));
+  VkPhysicalDeviceFeatures host_enabled_features{};
+  VkPhysicalDeviceFeatures2* requested_features2 = nullptr;
+  VkBool32 requested_features2_etc2 = VK_FALSE;
+  if (etc2_emulated) {
+    enabled.root.features.textureCompressionETC2 = VK_FALSE;
+    if (create_info->pEnabledFeatures != nullptr) {
+      host_enabled_features = *create_info->pEnabledFeatures;
+      host_enabled_features.textureCompressionETC2 = VK_FALSE;
+      host_info.pEnabledFeatures = &host_enabled_features;
+    }
+    // Restore the caller-owned feature bit after the host call.
+    requested_features2 = const_cast<VkPhysicalDeviceFeatures2*>(
+        reinterpret_cast<const VkPhysicalDeviceFeatures2*>(FindFeature(
+            create_info->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)));
+    if (requested_features2 != nullptr) {
+      requested_features2_etc2 =
+          requested_features2->features.textureCompressionETC2;
+      requested_features2->features.textureCompressionETC2 = VK_FALSE;
+    }
+  }
   enabled.root.pNext = &enabled.vulkan11;
   enabled.vulkan11.pNext = &enabled.vulkan12;
   enabled.vulkan12.pNext = nullptr;
@@ -1720,11 +1890,25 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   if (!vr_handled) {
     result = host_create(physical_device, &host_info, allocator, device);
   }
+  if (requested_features2 != nullptr) {
+    requested_features2->features.textureCompressionETC2 =
+        requested_features2_etc2;
+  }
   if (result != VK_SUCCESS) {
     return result;
   }
   RegisterHostDeviceDispatch(*device, physical_device,
                              host_get_device_proc_addr);
+  VkPhysicalDeviceMemoryProperties memory_properties{};
+  if (const auto host_memory_properties =
+          reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+              HostInstanceProc(instance,
+                               "vkGetPhysicalDeviceMemoryProperties"));
+      host_memory_properties != nullptr) {
+    host_memory_properties(physical_device, &memory_properties);
+  }
+  State().etc2.RegisterDevice(*device, physical_device, etc2_emulated,
+                              memory_properties, host_get_device_proc_addr);
 
   std::uint32_t queue_family_count = 0;
   const auto host_get_queue_families =
@@ -1789,6 +1973,7 @@ vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator) {
     vr_note_device_destroyed(device);
   }
   State().text_overlay.DestroyDevice(device);
+  State().etc2.DestroyDevice(device);
   if (host_destroy != nullptr) {
     host_destroy(device, allocator);
   }
@@ -1876,7 +2061,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
   }
   const mocktail::graphics::PresentModePolicy present_policy =
       mocktail::graphics::CachedPresentModePolicy();
+  const auto explicit_mode = mocktail::graphics::ExplicitPresentMode(present_policy);
+  auto image_count_policy = present_policy;
   if (present_policy != mocktail::graphics::PresentModePolicy::kHostDefault) {
+    bool mode_selected = false;
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR host_caps = nullptr;
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR host_modes_query = nullptr;
     {
@@ -1906,15 +2094,27 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
             if (!mode_logged.exchange(true, std::memory_order_relaxed)) {
               std::fprintf(
                   stderr,
-                  "  [vulkan] swapchain presentMode requested=%s applied=%s\n",
+                  "  [vulkan] present_mode=%s requested=%s applied=%s%s\n",
+                  mocktail::graphics::PresentModePolicyName(present_policy),
                   mocktail::graphics::PresentModeKhrName(
                       create_info->presentMode),
-                  mocktail::graphics::PresentModeKhrName(selected.front()));
+                  mocktail::graphics::PresentModeKhrName(selected.front()),
+                  explicit_mode && selected.front() != *explicit_mode
+                      ? " (requested mode unsupported; using FIFO)" : "");
             }
             host_info.presentMode = selected.front();
+            mode_selected = true;
+            if (explicit_mode && selected.front() != *explicit_mode) {
+              image_count_policy = mocktail::graphics::PresentModePolicy::kFifo;
+            }
           }
         }
       }
+    }
+    if (explicit_mode && !mode_selected) {
+      std::fprintf(stderr, "  [vulkan] cannot resolve present_mode=%s for surface\n",
+                   mocktail::graphics::PresentModePolicyName(present_policy));
+      return VK_ERROR_INITIALIZATION_FAILED;
     }
     VkSurfaceCapabilitiesKHR capabilities{};
     if (host_caps != nullptr && physical_device != VK_NULL_HANDLE &&
@@ -1922,7 +2122,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
             VK_SUCCESS) {
       const std::uint32_t preferred =
           mocktail::graphics::PreferSwapchainMinImageCount(
-              present_policy, create_info->minImageCount,
+              image_count_policy, create_info->minImageCount,
               capabilities.minImageCount, capabilities.maxImageCount);
       if (preferred != host_info.minImageCount) {
         host_info.minImageCount = preferred;
@@ -2083,6 +2283,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandPool(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  ReleaseEtc2PoolCommandBuffers(device, command_pool);
   const VkResult result = host_reset(device, command_pool, flags);
   static const auto note = ResolveProcessFunction<void (*)(VkCommandPool)>(
       "mocktail_vr_xr_reset_pool");
@@ -2154,6 +2355,11 @@ VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(
       "mocktail_vr_xr_command_buffers");
   if (note)
     note(device, VK_NULL_HANDLE, command_buffer_count, command_buffers);
+  if (command_buffers != nullptr) {
+    for (std::uint32_t index = 0; index < command_buffer_count; ++index) {
+      State().etc2.ReleaseCommandBuffer(command_buffers[index]);
+    }
+  }
   host_free(device, command_pool, command_buffer_count, command_buffers);
   RemoveHostCommandBuffers(device, command_pool, command_buffer_count,
                            command_buffers);
@@ -2175,6 +2381,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyCommandPool(
           "mocktail_vr_xr_command_pool");
   if (note)
     note(device, command_pool, UINT32_MAX);
+  ReleaseEtc2PoolCommandBuffers(device, command_pool);
   host_destroy(device, command_pool, allocator);
   RemoveHostCommandPoolBindings(device, command_pool);
   observation.SetResult(VK_SUCCESS);
@@ -2190,6 +2397,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  State().etc2.ReleaseCommandBuffer(command_buffer);
   const VkResult result = host_begin(command_buffer, begin_info);
   static const auto note = ResolveProcessFunction<void (*)(VkCommandBuffer)>(
       "mocktail_vr_xr_reset_command");
@@ -2222,6 +2430,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  State().etc2.ReleaseCommandBuffer(command_buffer);
   const VkResult result = host_reset(command_buffer, flags);
   static const auto note = ResolveProcessFunction<void (*)(VkCommandBuffer)>(
       "mocktail_vr_xr_reset_command");
@@ -2262,6 +2471,25 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  if (submits != nullptr && State().etc2.HasPendingUploads()) {
+    if (submit_count == 1) {
+      State().etc2.PrepareSubmit(submits->pCommandBuffers,
+                                 submits->commandBufferCount);
+    } else {
+      std::vector<VkCommandBuffer> command_buffers;
+      for (std::uint32_t index = 0; index < submit_count; ++index) {
+        if (submits[index].commandBufferCount != 0) {
+          command_buffers.insert(command_buffers.end(),
+                                   submits[index].pCommandBuffers,
+                                   submits[index].pCommandBuffers +
+                                       submits[index].commandBufferCount);
+        }
+      }
+      State().etc2.PrepareSubmit(
+          command_buffers.data(),
+          static_cast<std::uint32_t>(command_buffers.size()));
+    }
+  }
   const VkResult result = State().text_overlay.QueueSubmit(
       queue, submit_count, submits, fence, LockedHostSubmit);
   if (result == VK_SUCCESS)
@@ -2280,6 +2508,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  PrepareEtc2Submit2(submit_count, submits);
   const VkResult result = State().text_overlay.QueueSubmit2(
       queue, submit_count, submits, fence, LockedHostSubmit2);
   if (result == VK_SUCCESS)
@@ -2298,6 +2527,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  PrepareEtc2Submit2(submit_count, submits);
   const VkResult result = State().text_overlay.QueueSubmit2(
       queue, submit_count, submits, fence, LockedHostSubmit2KHR);
   if (result == VK_SUCCESS)
@@ -2504,6 +2734,143 @@ vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
   return normalized_result;
 }
 
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures(
+    VkPhysicalDevice physical_device, VkPhysicalDeviceFeatures* features) {
+  const auto host = HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFeatures>(
+      "vkGetPhysicalDeviceFeatures", nullptr);
+  if (host == nullptr || features == nullptr) {
+    return;
+  }
+  host(physical_device, features);
+  if (Etc2EmulatedPhysicalDevice(physical_device) &&
+      mocktail::graphics::Etc2SupportAdvertised()) {
+    features->textureCompressionETC2 = VK_TRUE;
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(
+    VkPhysicalDevice physical_device, VkPhysicalDeviceFeatures2* features) {
+  const auto host = HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFeatures2>(
+      "vkGetPhysicalDeviceFeatures2", "vkGetPhysicalDeviceFeatures2KHR");
+  if (host == nullptr || features == nullptr) {
+    return;
+  }
+  host(physical_device, features);
+  if (Etc2EmulatedPhysicalDevice(physical_device) &&
+      mocktail::graphics::Etc2SupportAdvertised()) {
+    features->features.textureCompressionETC2 = VK_TRUE;
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties(
+    VkPhysicalDevice physical_device, VkFormat format,
+    VkFormatProperties* properties) {
+  const auto host =
+      HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFormatProperties>(
+          "vkGetPhysicalDeviceFormatProperties", nullptr);
+  if (host == nullptr || properties == nullptr) {
+    return;
+  }
+  mocktail::graphics::Etc2EmulatedFormat mapped;
+  if (!mocktail::graphics::LookupEmulatedEtc2Format(format, &mapped) ||
+      !Etc2EmulatedPhysicalDevice(physical_device)) {
+    host(physical_device, format, properties);
+    return;
+  }
+  host(physical_device, mapped.host_format, properties);
+  properties->linearTilingFeatures = 0;
+  properties->optimalTilingFeatures =
+      mocktail::graphics::EmulatedEtc2FormatFeatures(
+          properties->optimalTilingFeatures);
+  properties->bufferFeatures = 0;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFormatProperties2(
+    VkPhysicalDevice physical_device, VkFormat format,
+    VkFormatProperties2* properties) {
+  const auto host =
+      HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceFormatProperties2>(
+          "vkGetPhysicalDeviceFormatProperties2",
+          "vkGetPhysicalDeviceFormatProperties2KHR");
+  if (host == nullptr || properties == nullptr) {
+    return;
+  }
+  mocktail::graphics::Etc2EmulatedFormat mapped;
+  if (!mocktail::graphics::LookupEmulatedEtc2Format(format, &mapped) ||
+      !Etc2EmulatedPhysicalDevice(physical_device)) {
+    host(physical_device, format, properties);
+    return;
+  }
+  host(physical_device, mapped.host_format, properties);
+  VkFormatProperties& base = properties->formatProperties;
+  base.linearTilingFeatures = 0;
+  base.optimalTilingFeatures =
+      mocktail::graphics::EmulatedEtc2FormatFeatures(base.optimalTilingFeatures);
+  base.bufferFeatures = 0;
+  if (auto* extended = const_cast<VkFormatProperties3*>(
+          reinterpret_cast<const VkFormatProperties3*>(FindFeature(
+              properties->pNext, VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3)));
+      extended != nullptr) {
+    extended->linearTilingFeatures = 0;
+    extended->optimalTilingFeatures =
+        mocktail::graphics::EmulatedEtc2FormatFeatures(
+            static_cast<VkFormatFeatureFlags>(
+                extended->optimalTilingFeatures));
+    extended->bufferFeatures = 0;
+  }
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties(
+    VkPhysicalDevice physical_device, VkFormat format, VkImageType type,
+    VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags,
+    VkImageFormatProperties* properties) {
+  const auto host =
+      HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceImageFormatProperties>(
+          "vkGetPhysicalDeviceImageFormatProperties", nullptr);
+  if (host == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::Etc2EmulatedFormat mapped;
+  if (!mocktail::graphics::LookupEmulatedEtc2Format(format, &mapped) ||
+      !Etc2EmulatedPhysicalDevice(physical_device)) {
+    return host(physical_device, format, type, tiling, usage, flags,
+                properties);
+  }
+  if (tiling != VK_IMAGE_TILING_OPTIMAL || type != VK_IMAGE_TYPE_2D) {
+    return VK_ERROR_FORMAT_NOT_SUPPORTED;
+  }
+  return host(physical_device, mapped.host_format, type, tiling, usage,
+              flags & ~static_cast<VkImageCreateFlags>(
+                          VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT),
+              properties);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceImageFormatProperties2(
+    VkPhysicalDevice physical_device,
+    const VkPhysicalDeviceImageFormatInfo2* info,
+    VkImageFormatProperties2* properties) {
+  const auto host =
+      HostPhysicalDeviceProc<PFN_vkGetPhysicalDeviceImageFormatProperties2>(
+          "vkGetPhysicalDeviceImageFormatProperties2",
+          "vkGetPhysicalDeviceImageFormatProperties2KHR");
+  if (host == nullptr || info == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  mocktail::graphics::Etc2EmulatedFormat mapped;
+  if (!mocktail::graphics::LookupEmulatedEtc2Format(info->format, &mapped) ||
+      !Etc2EmulatedPhysicalDevice(physical_device)) {
+    return host(physical_device, info, properties);
+  }
+  if (info->tiling != VK_IMAGE_TILING_OPTIMAL ||
+      info->type != VK_IMAGE_TYPE_2D) {
+    return VK_ERROR_FORMAT_NOT_SUPPORTED;
+  }
+  VkPhysicalDeviceImageFormatInfo2 host_info = *info;
+  host_info.format = mapped.host_format;
+  host_info.flags &= ~static_cast<VkImageCreateFlags>(
+      VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
+  return host(physical_device, &host_info, properties);
+}
 // ---- VR backend resource provenance wrappers -------------------------------
 // Thin pass-throughs to the host dispatch with optional notifications for the
 // experimental OpenXR backend. Creation/destruction calls are rare; the only
@@ -2513,12 +2880,8 @@ vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(
     VkDevice device, const VkImageCreateInfo* create_info,
     const VkAllocationCallbacks* allocator, VkImage* image) {
-  const PFN_vkCreateImage host_create =
-      HostDispatchForDevice(device).create_image;
-  if (host_create == nullptr) {
-    return VK_ERROR_INITIALIZATION_FAILED;
-  }
-  const VkResult result = host_create(device, create_info, allocator, image);
+  const VkResult result =
+      State().etc2.CreateImage(device, create_info, allocator, image);
   const auto record = State().vr_record_image.load(std::memory_order_acquire);
   if (result == VK_SUCCESS && record != nullptr) {
     record(device, *image, create_info);
@@ -2532,22 +2895,14 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyImage(VkDevice device, VkImage image,
   if (note != nullptr && image != VK_NULL_HANDLE) {
     note(image);
   }
-  const PFN_vkDestroyImage host_destroy =
-      HostDispatchForDevice(device).destroy_image;
-  if (host_destroy != nullptr) {
-    host_destroy(device, image, allocator);
-  }
+  State().etc2.DestroyImage(device, image, allocator);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(
     VkDevice device, const VkImageViewCreateInfo* create_info,
     const VkAllocationCallbacks* allocator, VkImageView* view) {
-  const PFN_vkCreateImageView host_create =
-      HostDispatchForDevice(device).create_image_view;
-  if (host_create == nullptr) {
-    return VK_ERROR_INITIALIZATION_FAILED;
-  }
-  const VkResult result = host_create(device, create_info, allocator, view);
+  const VkResult result =
+      State().etc2.CreateImageView(device, create_info, allocator, view);
   const auto record =
       State().vr_record_image_view.load(std::memory_order_acquire);
   if (result == VK_SUCCESS && record != nullptr && create_info != nullptr) {
@@ -2742,4 +3097,95 @@ mocktail_vulkan_idle_synchronized(PFN_vkDeviceWaitIdle raw, VkDevice device) {
   return raw(device);
 }
 
-} // extern "C"
+VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice device,
+                                                  VkBuffer buffer,
+                                                  VkDeviceMemory memory,
+                                                  VkDeviceSize offset) {
+  return State().etc2.BindBufferMemory(device, buffer, memory, offset);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory2(
+    VkDevice device, std::uint32_t count,
+    const VkBindBufferMemoryInfo* infos) {
+  return State().etc2.BindBufferMemory2(device, count, infos);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkMapMemory(VkDevice device,
+                                           VkDeviceMemory memory,
+                                           VkDeviceSize offset,
+                                           VkDeviceSize size,
+                                           VkMemoryMapFlags flags,
+                                           void** data) {
+  return State().etc2.MapMemory(device, memory, offset, size, flags, data);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkMapMemory2(VkDevice device,
+                                            const VkMemoryMapInfo* info,
+                                            void** data) {
+  return State().etc2.MapMemory2(device, info, data);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkUnmapMemory(VkDevice device,
+                                         VkDeviceMemory memory) {
+  State().etc2.UnmapMemory(device, memory);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkUnmapMemory2(VkDevice device,
+                                              const VkMemoryUnmapInfo* info) {
+  return State().etc2.UnmapMemory2(device, info);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkFreeMemory(
+    VkDevice device, VkDeviceMemory memory,
+    const VkAllocationCallbacks* allocator) {
+  State().etc2.FreeMemory(device, memory, allocator);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkDestroyBuffer(
+    VkDevice device, VkBuffer buffer, const VkAllocationCallbacks* allocator) {
+  State().etc2.DestroyBuffer(device, buffer, allocator);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage(
+    VkCommandBuffer command_buffer, VkBuffer source, VkImage destination,
+    VkImageLayout layout, std::uint32_t region_count,
+    const VkBufferImageCopy* regions) {
+  State().etc2.CmdCopyBufferToImage(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      source, destination, layout, region_count, regions);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage2(
+    VkCommandBuffer command_buffer, const VkCopyBufferToImageInfo2* info) {
+  State().etc2.CmdCopyBufferToImage2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      info);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage(
+    VkCommandBuffer command_buffer, VkImage source,
+    VkImageLayout source_layout, VkImage destination,
+    VkImageLayout destination_layout, std::uint32_t region_count,
+    const VkImageCopy* regions) {
+  State().etc2.CmdCopyImage(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      source, source_layout, destination, destination_layout, region_count,
+      regions);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyImage2(VkCommandBuffer command_buffer,
+                                           const VkCopyImageInfo2* info) {
+  State().etc2.CmdCopyImage2(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      info);
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdExecuteCommands(
+    VkCommandBuffer command_buffer, std::uint32_t count,
+    const VkCommandBuffer* secondaries) {
+  State().etc2.CmdExecuteCommands(
+      HostDispatchForCommandBuffer(command_buffer).device, command_buffer,
+      count, secondaries);
+}
+
+}  // extern "C"

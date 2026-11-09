@@ -6,10 +6,11 @@ set -Eeuo pipefail
 umask 022
 
 readonly REPOSITORY="${1:?Flatpak repository path is required}"
-readonly BUNDLE="${2:?Flatpak bundle path is required}"
-readonly PUBLIC_KEY="${3:?GPG public key path is required}"
-readonly OUTPUT="${4:?Pages output path is required}"
-readonly NATIVE_REPOSITORIES="${5:?Native repositories path is required}"
+readonly X86_64_BUNDLE="${2:?x86_64 Flatpak bundle path is required}"
+readonly AARCH64_BUNDLE="${3:?aarch64 Flatpak bundle path is required}"
+readonly PUBLIC_KEY="${4:?GPG public key path is required}"
+readonly OUTPUT="${5:?Pages output path is required}"
+readonly NATIVE_REPOSITORIES="${6:?Native repositories path is required}"
 readonly BASE_URL="https://mocktail.bigrat.space"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PROJECT_DIR="$(dirname -- "${SCRIPT_DIR}")"
@@ -18,10 +19,12 @@ readonly PROJECT_DIR="$(dirname -- "${SCRIPT_DIR}")"
   printf 'Flatpak repository is missing or unsafe: %s\n' "${REPOSITORY}" >&2
   exit 1
 }
-[[ -f "${BUNDLE}" && ! -L "${BUNDLE}" ]] || {
-  printf 'Flatpak bundle is missing or unsafe: %s\n' "${BUNDLE}" >&2
-  exit 1
-}
+for bundle in "${X86_64_BUNDLE}" "${AARCH64_BUNDLE}"; do
+  [[ -f "${bundle}" && ! -L "${bundle}" ]] || {
+    printf 'Flatpak bundle is missing or unsafe: %s\n' "${bundle}" >&2
+    exit 1
+  }
+done
 [[ -s "${PUBLIC_KEY}" && ! -L "${PUBLIC_KEY}" ]] || {
   printf 'Flatpak public key is missing or unsafe: %s\n' "${PUBLIC_KEY}" >&2
   exit 1
@@ -40,7 +43,8 @@ readonly PROJECT_DIR="$(dirname -- "${SCRIPT_DIR}")"
 
 mkdir -p -- "${OUTPUT}"
 cp -a -- "${REPOSITORY}" "${OUTPUT}/repo"
-install -m 0644 -- "${BUNDLE}" "${OUTPUT}/Mocktail-x86_64.flatpak"
+install -m 0644 -- "${X86_64_BUNDLE}" "${OUTPUT}/Mocktail-x86_64.flatpak"
+install -m 0644 -- "${AARCH64_BUNDLE}" "${OUTPUT}/Mocktail-aarch64.flatpak"
 install -m 0644 -- "${PUBLIC_KEY}" "${OUTPUT}/mocktail-flatpak.gpg"
 install -m 0644 -- \
   "${PROJECT_DIR}/packaging/space.bigrat.mocktail.svg" \
@@ -69,7 +73,7 @@ Title=Mocktail Nightly
 Url=${BASE_URL}/repo/
 Homepage=https://github.com/komaruworld/mocktail
 Comment=Nightly builds of Mocktail
-Description=Signed x86_64 nightly builds published from the latest Mocktail main branch
+Description=Signed x86_64 and aarch64 nightly builds published from the latest Mocktail main branch
 Icon=${BASE_URL}/mocktail.svg
 GPGKey=${GPG_KEY}
 EOF

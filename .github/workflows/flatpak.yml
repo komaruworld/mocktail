@@ -38,15 +38,24 @@ concurrency:
 
 jobs:
   flatpak:
-    name: Flatpak build
+    name: Flatpak build (${{ matrix.arch }})
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event != 'pull_request' &&
       github.event.workflow_run.head_branch == 'main')
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
     env:
+      FLATPAK_ARCH: ${{ matrix.arch }}
       MOCKTAIL_PUBLISH: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request' && github.event.workflow_run.head_branch == 'main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
       MOCKTAIL_SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
@@ -57,8 +66,92 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           submodules: recursive
 
+      - name: Install Flatpak builder
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes flatpak flatpak-builder gnupg
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Build Flatpak bundle
+        shell: bash
+        env:
+          FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          FLATPAK_GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+        run: |
+          set -Eeuo pipefail
+          git update-ref refs/heads/main "$MOCKTAIL_SOURCE_SHA"
+          builder_signing=()
+          bundle_keys=()
+          if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
+            [[ -n "$FLATPAK_GPG_PRIVATE_KEY" && \
+               -n "$FLATPAK_GPG_KEY_ID" ]]
+            install -d -m 0700 "$RUNNER_TEMP/mocktail-gnupg"
+            printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | \
+              gpg --batch --homedir "$RUNNER_TEMP/mocktail-gnupg" --import
+            gpg --batch --homedir "$RUNNER_TEMP/mocktail-gnupg" \
+              --export "$FLATPAK_GPG_KEY_ID" >mocktail-flatpak.gpg
+            builder_signing=(
+              "--gpg-sign=$FLATPAK_GPG_KEY_ID"
+              "--gpg-homedir=$RUNNER_TEMP/mocktail-gnupg"
+            )
+            bundle_keys=(--gpg-keys=mocktail-flatpak.gpg)
+          fi
+          flatpak-builder \
+            --arch="$FLATPAK_ARCH" \
+            --jobs=4 \
+            --user \
+            --install-deps-from=flathub \
+            --disable-rofiles-fuse \
+            --force-clean \
+            --default-branch=stable \
+            --repo=repo \
+            "${builder_signing[@]}" \
+            build-flatpak-ci \
+            packaging/flatpak/space.bigrat.mocktail.json
+          flatpak build-bundle \
+            --arch="$FLATPAK_ARCH" \
+            "${bundle_keys[@]}" \
+            repo \
+            "Mocktail-${FLATPAK_ARCH}.flatpak" \
+            space.bigrat.mocktail \
+            stable
+
+      - name: Upload Flatpak
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Mocktail-${{ matrix.arch }}-flatpak
+          path: Mocktail-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Assemble multi-architecture Flatpak repository
+    if: >-
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event != 'pull_request' &&
+      github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main')
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Download both Flatpak bundles
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: Mocktail-*-flatpak
+          path: flatpak-bundles
+          merge-multiple: true
+
       - name: Download package repositories
-        if: env.MOCKTAIL_PUBLISH == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,86 +177,53 @@ jobs:
              -d native-repositories/downloads && \
              -s native-repositories/mocktail-packages.gpg ]]
 
-      - name: Install Flatpak builder
+      - name: Install Flatpak repository tools
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes flatpak flatpak-builder gnupg
-          flatpak remote-add --user --if-not-exists flathub \
-            https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo apt-get install --yes --no-install-recommends flatpak gnupg ostree
 
-      - name: Build Flatpak repository and bundle
+      - name: Sign and publish both architectures
         shell: bash
         env:
           FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
           FLATPAK_GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
         run: |
           set -Eeuo pipefail
-          git update-ref refs/heads/main "$MOCKTAIL_SOURCE_SHA"
-          builder_signing=()
-          bundle_keys=()
-          if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
-            [[ -n "$FLATPAK_GPG_PRIVATE_KEY" && \
-               -n "$FLATPAK_GPG_KEY_ID" ]]
-            install -d -m 0700 "$RUNNER_TEMP/mocktail-gnupg"
-            printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | \
-              gpg --batch --homedir "$RUNNER_TEMP/mocktail-gnupg" --import
-            gpg --batch --homedir "$RUNNER_TEMP/mocktail-gnupg" \
-              --export "$FLATPAK_GPG_KEY_ID" >mocktail-flatpak.gpg
-            builder_signing=(
-              "--gpg-sign=$FLATPAK_GPG_KEY_ID"
-              "--gpg-homedir=$RUNNER_TEMP/mocktail-gnupg"
-            )
-            bundle_keys=(--gpg-keys=mocktail-flatpak.gpg)
-          fi
-          flatpak-builder \
-            --arch=x86_64 \
-            --jobs=4 \
-            --user \
-            --install-deps-from=flathub \
-            --disable-rofiles-fuse \
-            --force-clean \
-            --default-branch=stable \
-            --repo=repo \
-            "${builder_signing[@]}" \
-            build-flatpak-ci \
-            packaging/flatpak/space.bigrat.mocktail.json
-          if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
-            flatpak build-update-repo \
-              --generate-static-deltas \
-              --static-delta-jobs=2 \
-              --prune \
+          [[ -n "$FLATPAK_GPG_PRIVATE_KEY" && -n "$FLATPAK_GPG_KEY_ID" ]]
+          [[ -s flatpak-bundles/Mocktail-x86_64.flatpak && \
+             -s flatpak-bundles/Mocktail-aarch64.flatpak ]]
+          install -d -m 0700 "$RUNNER_TEMP/mocktail-gnupg"
+          printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | \
+            gpg --batch --homedir "$RUNNER_TEMP/mocktail-gnupg" --import
+          gpg --batch --homedir "$RUNNER_TEMP/mocktail-gnupg" \
+            --export "$FLATPAK_GPG_KEY_ID" >mocktail-flatpak.gpg
+          ostree --repo=repo init --mode=archive
+          for arch in x86_64 aarch64; do
+            flatpak build-import-bundle \
               --gpg-sign="$FLATPAK_GPG_KEY_ID" \
               --gpg-homedir="$RUNNER_TEMP/mocktail-gnupg" \
-              repo
-          fi
-          flatpak build-bundle \
-            --arch=x86_64 \
-            "${bundle_keys[@]}" \
-            repo \
-            Mocktail-x86_64.flatpak \
-            space.bigrat.mocktail \
-            stable
-          if [[ "$MOCKTAIL_PUBLISH" == true ]]; then
-            ./scripts/assemble_flatpak_pages.sh \
-              repo Mocktail-x86_64.flatpak mocktail-flatpak.gpg \
-              public native-repositories
-          fi
-
-      - name: Upload Flatpak
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: Mocktail-x86_64-flatpak
-          path: Mocktail-x86_64.flatpak
-          if-no-files-found: error
-          retention-days: 14
+              --no-update-summary \
+              repo "flatpak-bundles/Mocktail-${arch}.flatpak"
+            ostree --repo=repo refs | \
+              grep -Fxq "app/space.bigrat.mocktail/${arch}/stable"
+          done
+          flatpak build-update-repo \
+            --generate-static-deltas \
+            --static-delta-jobs=2 \
+            --prune \
+            --gpg-sign="$FLATPAK_GPG_KEY_ID" \
+            --gpg-homedir="$RUNNER_TEMP/mocktail-gnupg" \
+            repo
+          ./scripts/assemble_flatpak_pages.sh \
+            repo flatpak-bundles/Mocktail-x86_64.flatpak \
+            flatpak-bundles/Mocktail-aarch64.flatpak \
+            mocktail-flatpak.gpg public native-repositories
 
       - name: Configure GitHub Pages
-        if: env.MOCKTAIL_PUBLISH == 'true'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload GitHub Pages repository
-        if: env.MOCKTAIL_PUBLISH == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: public
@@ -177,7 +237,7 @@ jobs:
       github.event.workflow_run.head_branch == 'main') ||
       (github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main')
-    needs: flatpak
+    needs: publish
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

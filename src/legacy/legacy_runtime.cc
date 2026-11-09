@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -29,13 +30,14 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
-#include <execinfo.h>
 #include <ucontext.h>
 #include <elf.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/prctl.h>
+#if defined(__x86_64__)
 #include <asm/prctl.h>
+#endif
 #include <sys/syscall.h>
 #include <vector>
 
@@ -48,6 +50,7 @@
 #include "compat/bionic_socket_runtime.h"
 #include "compat/build_profile.h"
 #include "compat/elf_build_id.h"
+#include "compat/guest_abi.h"
 #include "compat/host_abi_experiment.h"
 #include "compat/host_abi_profile.h"
 #include "compat/host_allocator_bridge.h"
@@ -57,6 +60,8 @@
 #include "linker/linker.h"
 #include "mocktail/graphics/bionic_egl_bridge.h"
 #include "mocktail/vr/roblox_vr_device_bridge.h"
+#include "runtime/device_memory_profile.h"
+#include "runtime/display_size.h"
 #include "runtime/environment.h"
 #include "runtime/discord_rpc.h"
 #include "runtime/jnivm_platform_web_callbacks.h"
@@ -71,6 +76,7 @@
 #include "runtime/roblox_text_input_jni_bridge.h"
 #include "runtime/runtime_config.h"
 #include "runtime/runtime_paths.h"
+#include "runtime/texture_memory_policy.h"
 #include "services/client_settings_service.h"
 #include "services/http_client.h"
 #include "window/window.h"
@@ -905,7 +911,7 @@ void PumpRobloxMainThreadMessagesOnce() {
   static const bool force_early =
       IsEnabled("MOCKTAIL_FORCE_EARLY_MAIN_THREAD_MESSAGE_PUMP");
   static const bool pump_disabled =
-      IsDisabled("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP");
+      !IsEnabled("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP");
   static const bool trace_pump =
       IsEnabled("MOCKTAIL_TRACE_MAIN_THREAD_PUMP");
   static const int pump_limit =
@@ -1003,7 +1009,7 @@ struct BionicAddrInfo {
 };
 
 static_assert(sizeof(BionicAddrInfo) == 48,
-              "unexpected x86_64 bionic addrinfo size");
+              "unexpected bionic addrinfo size");
 
 bool DnsTraceEnabled() {
   return IsEnabled("MOCKTAIL_DNS_TRACE");
@@ -1368,15 +1374,31 @@ bool IsUnsafeSoftTimeoutModule(void* rip) {
 void JniOnLoadTimeoutAlarm(int, siginfo_t* info, void* context) {
   static_cast<void>(info);
   auto* uc = static_cast<ucontext_t*>(context);
+#if defined(__x86_64__)
   auto rip = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]) : 0;
   auto rsp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RSP]) : 0;
   auto rbp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RBP]) : 0;
   auto rax = uc ? static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RAX]) : 0;
+  const char* regs_format =
+      "  [timeout] RIP=0x%016llx RSP=0x%016llx RBP=0x%016llx "
+      "RAX=0x%016llx\n";
+#elif defined(__aarch64__)
+  auto rip = uc ? static_cast<uintptr_t>(uc->uc_mcontext.pc) : 0;
+  auto rsp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.sp) : 0;
+  auto rbp = uc ? static_cast<uintptr_t>(uc->uc_mcontext.regs[29]) : 0;
+  auto rax = uc ? static_cast<uintptr_t>(uc->uc_mcontext.regs[0]) : 0;
+  const char* regs_format =
+      "  [timeout] PC=0x%016llx SP=0x%016llx FP=0x%016llx "
+      "X0=0x%016llx\n";
+#else
+  uintptr_t rip = 0, rsp = 0, rbp = 0, rax = 0;
+  const char* regs_format =
+      "  [timeout] PC=0x%016llx SP=0x%016llx FP=0x%016llx "
+      "X0=0x%016llx\n";
+#endif
   char regs_msg[192];
   int len = std::snprintf(
-      regs_msg, sizeof(regs_msg),
-      "  [timeout] RIP=0x%016llx RSP=0x%016llx RBP=0x%016llx "
-      "RAX=0x%016llx\n",
+      regs_msg, sizeof(regs_msg), regs_format,
       static_cast<unsigned long long>(rip), static_cast<unsigned long long>(rsp),
       static_cast<unsigned long long>(rbp), static_cast<unsigned long long>(rax));
   write(2, regs_msg, static_cast<size_t>(len));
@@ -2394,6 +2416,21 @@ void InstallNativeGlJavaImplementation(JNIEnv* env, jclass native_gl_java_class)
 
 jobject BuildPlatformParams(JNIEnv* env, jobject surface, bool is_headless);
 
+mocktail::runtime::DisplaySize HostDisplaySize() {
+  return mocktail::runtime::ParseDisplaySize(
+      std::getenv(mocktail::runtime::kDisplaySizeEnvironment));
+}
+
+mocktail::runtime::DisplaySize HostWindowPixelSize() {
+  const mocktail::window::WindowViewportSnapshot viewport =
+      mocktail::window::GetWindowViewportSnapshot();
+  if (viewport.valid()) {
+    return {viewport.pixel_width, viewport.pixel_height};
+  }
+  return mocktail::runtime::ParseDisplaySize(
+      std::getenv(mocktail::runtime::kWindowSizeEnvironment));
+}
+
 jobject BuildDeviceParams(JNIEnv* env) {
   jobject params = NewObject(env, "com/roblox/engine/jni/model/DeviceParams");
   if (!params) {
@@ -2404,10 +2441,12 @@ jobject BuildDeviceParams(JNIEnv* env) {
       GetEnvString("MOCKTAIL_DEVICE_NAME", "Mocktail Linux");
   const std::string manufacturer =
       GetEnvString("MOCKTAIL_DEVICE_MANUFACTURER", "Mocktail");
-  const std::string device_sku =
-      GetEnvString("MOCKTAIL_DEVICE_SKU", "mocktail-x86_64");
+  const std::string device_sku = GetEnvString(
+      "MOCKTAIL_DEVICE_SKU",
+      ("mocktail-" + std::string(mocktail::compat::kGuestCpuName)).c_str());
   const std::string soc_model =
-      GetEnvString("MOCKTAIL_DEVICE_SOC_MODEL", "x86_64");
+      GetEnvString("MOCKTAIL_DEVICE_SOC_MODEL",
+                   std::string(mocktail::compat::kGuestCpuName).c_str());
   SetStringField(env, params, "osVersion", "33");
   SetStringField(env, params, "deviceName", device_name.c_str());
   const std::string app_version =
@@ -2415,27 +2454,40 @@ jobject BuildDeviceParams(JNIEnv* env) {
   SetStringField(env, params, "appVersion", app_version.c_str());
   SetStringField(env, params, "country", "US");
   SetStringField(env, params, "manufacturer", manufacturer.c_str());
-  SetStringField(env, params, "displayResolution", "1280x720");
+  const mocktail::runtime::DisplaySize display_size =
+      mocktail::runtime::ParseDisplaySize(
+          std::getenv(mocktail::runtime::kDisplaySizeEnvironment));
+  const std::string display_resolution = std::to_string(display_size.width) +
+                                         "x" +
+                                         std::to_string(display_size.height);
+  SetStringField(env, params, "displayResolution", display_resolution.c_str());
   SetStringField(env, params, "networkType", "wifi");
   SetStringField(env, params, "deviceSku", device_sku.c_str());
   SetStringField(env, params, "socModel", soc_model.c_str());
   SetStringField(env, params, "appBuildVariant", "googleProdRelease");
   SetStringField(env, params, "testDeviceName", device_name.c_str());
 
-  const bool is_low_ram = !IsEnabled("MOCKTAIL_DISABLE_LOW_RAM_DEVICE");
-  SetIntField(env, params, "deviceTotalMemoryMB", is_low_ram ? 2048 : 4096);
-  SetIntField(env, params, "displayPhysicalWidthPixels", 1280);
-  SetIntField(env, params, "displayPhysicalHeightPixels", 720);
-  SetIntField(env, params, "memoryClass", is_low_ram ? 256 : 512);
-  SetIntField(env, params, "largeMemoryClass", is_low_ram ? 512 : 1024);
+  std::uint64_t host_memory_bytes = mocktail::runtime::DetectHostMemoryBytes();
+  if (IsEnabled("MOCKTAIL_DISABLE_LOW_RAM_DEVICE")) {
+    host_memory_bytes =
+        std::max<std::uint64_t>(host_memory_bytes, 4096ULL * 1024ULL * 1024ULL);
+  }
+  const mocktail::runtime::DeviceMemoryProfile memory =
+      mocktail::runtime::BuildDeviceMemoryProfile(host_memory_bytes);
+  SetIntField(env, params, "deviceTotalMemoryMB", memory.total_memory_mb);
+  SetIntField(env, params, "displayPhysicalWidthPixels", display_size.width);
+  SetIntField(env, params, "displayPhysicalHeightPixels",
+              display_size.height);
+  SetIntField(env, params, "memoryClass", memory.memory_class_mb);
+  SetIntField(env, params, "largeMemoryClass", memory.large_memory_class_mb);
   SetLongField(env, params, "lowMemoryKillerBackgroundAppThreshold",
-               is_low_ram ? 256 : 0);
+               memory.low_memory_killer_background_threshold);
   SetLongField(env, params, "lowMemoryKillerForegroundAppThreshold",
-               is_low_ram ? 512 : 0);
+               memory.low_memory_killer_foreground_threshold);
   SetBooleanField(env, params, "cpu64Bit", JNI_TRUE);
   SetBooleanField(env, params, "isChrome", JNI_FALSE);
   SetBooleanField(env, params, "isLowRamDevice",
-                  is_low_ram ? JNI_TRUE : JNI_FALSE);
+                  memory.low_ram_device ? JNI_TRUE : JNI_FALSE);
   return params;
 }
 
@@ -2536,8 +2588,9 @@ jobject BuildAppBridgeInitParams(JNIEnv* env, jstring client_settings,
   SetStringField(env, params, "locale", "en_us");
   SetRobloxServiceUrlFields(env, params);
 
-  SetIntField(env, params, "screenWidth", 1280);
-  SetIntField(env, params, "screenHeight", 720);
+  const mocktail::runtime::DisplaySize init_display = HostDisplaySize();
+  SetIntField(env, params, "screenWidth", init_display.width);
+  SetIntField(env, params, "screenHeight", init_display.height);
   SetIntField(env, params, "densityDpi", 160);
   SetIntField(env, params, "sdkVersion", 33);
   jboolean headless = is_headless ? JNI_TRUE : JNI_FALSE;
@@ -2574,13 +2627,19 @@ jobject BuildPlatformParams(JNIEnv* env, jobject surface, bool is_headless) {
                  GetEnvStringDefaultPath("MOCKTAIL_ASSET_PATH",
                                          DefaultAssetPath())
                      .c_str());
-  SetIntField(env, params, "width", 1280);
-  SetIntField(env, params, "height", 720);
-  SetIntField(env, params, "screenWidth", 1280);
-  SetIntField(env, params, "screenHeight", 720);
+  const mocktail::runtime::DisplaySize platform_window = HostWindowPixelSize();
+  const mocktail::runtime::DisplaySize platform_display = HostDisplaySize();
+  SetIntField(env, params, "width", platform_window.width);
+  SetIntField(env, params, "height", platform_window.height);
+  SetIntField(env, params, "screenWidth", platform_display.width);
+  SetIntField(env, params, "screenHeight", platform_display.height);
   SetIntField(env, params, "densityDpi", 160);
-  SetIntField(env, params, "viewportWidthMm", 203);
-  SetIntField(env, params, "viewportHeightMm", 114);
+  SetIntField(env, params, "viewportWidthMm",
+              mocktail::runtime::PixelsToMillimetersAt160Dpi(
+                  platform_window.width));
+  SetIntField(env, params, "viewportHeightMm",
+              mocktail::runtime::PixelsToMillimetersAt160Dpi(
+                  platform_window.height));
   const mocktail::window::WindowViewportSnapshot viewport =
       mocktail::window::GetWindowViewportSnapshot();
   SetFloatField(env, params, "dpiScale", viewport.dpi_scale);
@@ -2689,10 +2748,12 @@ jobject BuildStartAppParams(JNIEnv* env, jstring app_params,
   SetStringField(env, params, "deviceName", start_device_name.c_str());
   SetStringField(env, params, "locale", "en_us");
   SetRobloxServiceUrlFields(env, params);
-  SetIntField(env, params, "width", 1280);
-  SetIntField(env, params, "height", 720);
-  SetIntField(env, params, "screenWidth", 1280);
-  SetIntField(env, params, "screenHeight", 720);
+  const mocktail::runtime::DisplaySize start_window = HostWindowPixelSize();
+  const mocktail::runtime::DisplaySize start_display = HostDisplaySize();
+  SetIntField(env, params, "width", start_window.width);
+  SetIntField(env, params, "height", start_window.height);
+  SetIntField(env, params, "screenWidth", start_display.width);
+  SetIntField(env, params, "screenHeight", start_display.height);
   SetIntField(env, params, "densityDpi", 160);
   SetIntField(env, params, "sdkVersion", 33);
   SetIntField(env, params, "placeId", 0);
@@ -2820,8 +2881,9 @@ jobject BuildMockSurface(JNIEnv* env) {
   if (!surface) {
     return nullptr;
   }
-  SetIntField(env, surface, "width", 1280);
-  SetIntField(env, surface, "height", 720);
+  const mocktail::runtime::DisplaySize surface_size = HostWindowPixelSize();
+  SetIntField(env, surface, "width", surface_size.width);
+  SetIntField(env, surface, "height", surface_size.height);
   SetBooleanField(env, surface, "valid", JNI_TRUE);
   SetBooleanField(env, surface, "isValid", JNI_TRUE);
   return surface;
@@ -3918,7 +3980,10 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
         on_surface_created(env, game_activity, handle, surface);
       }
       if (run_lifecycle_callbacks && on_surface_changed) {
-        on_surface_changed(env, game_activity, handle, surface, 4, 1280, 720);
+        const mocktail::runtime::DisplaySize changed_size =
+            HostWindowPixelSize();
+        on_surface_changed(env, game_activity, handle, surface, 4,
+                           changed_size.width, changed_size.height);
       }
       if (run_lifecycle_callbacks && on_surface_redraw_needed) {
         on_surface_redraw_needed(env, game_activity, handle, surface);
@@ -4089,8 +4154,9 @@ std::cerr << "  [engine] nativeAppBridgeV2InitWithParams recovered\n"
       ShouldRunStartupStep("MOCKTAIL_UPDATE_APP_UI_SIZES", false)) {
     env = ensure_env();
     std::cout << "  [engine] updateAppUISizes\n" << std::flush;
-    context->native_update_app_ui_sizes(env, native_gl_class, 1280, 720, 0, 0,
-                                        0);
+    const mocktail::runtime::DisplaySize ui_size = HostWindowPixelSize();
+    context->native_update_app_ui_sizes(env, native_gl_class, ui_size.width,
+                                        ui_size.height, 0, 0, 0);
     std::cout << "  [engine] updateAppUISizes returned\n" << std::flush;
   }
 
@@ -4419,8 +4485,6 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       HasEnvValue("MOCKTAIL_CALL_REAL_APP_BRIDGE_START");
   const bool user_overrode_call_update_surface =
       HasEnvValue("MOCKTAIL_CALL_REAL_APP_BRIDGE_UPDATE_SURFACE");
-  const bool user_overrode_main_thread_message_pump =
-      HasEnvValue("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP");
 
   std::cout << "======================================================\n"
             << "  Mocktail Roblox Compatibility Layer\n"
@@ -4586,12 +4650,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
 
   // Roblox internal threads trigger SI_KERNEL traps from CET shadow-stack
   // return mismatches. Unsupported kernels ignore this request.
+#if defined(__x86_64__)
   {
     long r = syscall(SYS_arch_prctl, ARCH_SHSTK_DISABLE, ARCH_SHSTK_SHSTK);
     if (r == 0) {
       std::cout << "  [cet] shadow-stack (SHSTK) disabled\n";
     }
   }
+#endif
 
   if (build_profile.allow_legacy_binary_patches) {
     std::cerr
@@ -4737,6 +4803,37 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                 << std::flush;
     }
   }
+  if (window_initialised) {
+    auto* sdl_window =
+        static_cast<SDL_Window*>(mocktail::window::GetBackendWindow());
+    const SDL_DisplayID display =
+        sdl_window != nullptr ? SDL_GetDisplayForWindow(sdl_window) : 0;
+    const SDL_DisplayMode* mode =
+        display != 0 ? SDL_GetCurrentDisplayMode(display) : nullptr;
+    if (mode != nullptr && mode->w > 0 && mode->h > 0) {
+      // SDL mode dimensions need pixel_density to become physical pixels.
+      const float density = mode->pixel_density > 0.0f ? mode->pixel_density
+                                                       : 1.0f;
+      const std::string display_size =
+          std::to_string(std::lround(mode->w * density)) + "x" +
+          std::to_string(std::lround(mode->h * density));
+      setenv(mocktail::runtime::kDisplaySizeEnvironment, display_size.c_str(),
+             1);
+      std::cout << "  [window] host display " << display_size << " pixels\n"
+                << std::flush;
+    }
+  }
+  if (window_initialised) {
+    const mocktail::window::WindowViewportSnapshot viewport =
+        mocktail::window::GetWindowViewportSnapshot();
+    if (viewport.valid()) {
+      const std::string window_size = std::to_string(viewport.pixel_width) +
+                                      "x" +
+                                      std::to_string(viewport.pixel_height);
+      setenv(mocktail::runtime::kWindowSizeEnvironment, window_size.c_str(),
+             1);
+    }
+  }
   const SDL_SystemTheme system_theme =
       window_initialised ? SDL_GetSystemTheme() : SDL_SYSTEM_THEME_UNKNOWN;
   const bool system_dark_theme = system_theme == SDL_SYSTEM_THEME_DARK;
@@ -4752,9 +4849,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
         mocktail::runtime::ReadRobloxThemeCache(
             app_storage_file, dependencies.account_identity().user_id);
     if (!saved_theme) {
-      std::cerr << "[FATAL] Cannot read Roblox theme cache: "
+      std::cerr << "  [theme] Cannot read Roblox theme cache; using default: "
                 << saved_theme.error << '\n';
-      return EXIT_FAILURE;
     }
     if (saved_theme.dark_theme.has_value()) {
       dark_theme = *saved_theme.dark_theme;
@@ -4765,7 +4861,7 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   if (runtime_config.theme_mode() == "roblox") {
     std::cout << "  [theme] "
               << (roblox_theme_found ? "Roblox saved theme="
-                                     : "Roblox theme missing; default=")
+                                     : "Roblox theme unavailable; default=")
               << (dark_theme ? "dark" : "light") << '\n'
               << std::flush;
   } else if (app_storage_file != nullptr) {
@@ -4773,9 +4869,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     if (!mocktail::runtime::ApplyRobloxThemeCacheOverride(
             app_storage_file, dependencies.account_identity().user_id,
             dark_theme, &theme_error)) {
-      std::cerr << "[FATAL] Roblox theme cache override failed: " << theme_error
-                << '\n';
-      return EXIT_FAILURE;
+      std::cerr << "  [theme] Cannot persist Roblox theme override: "
+                << theme_error << '\n';
     }
     std::cout << "  [theme] Roblox local theme="
               << (dark_theme ? "dark" : "light") << '\n'
@@ -4791,12 +4886,6 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       setenv("MOCKTAIL_APP_LIFECYCLE_ACTIVE", "1", 1);
       std::cout << "  [window] windowed startup: auto-enabled "
                 << "AppLifecycleNativeAdapter.setActive\n"
-                << std::flush;
-    }
-    if (!user_overrode_main_thread_message_pump) {
-      setenv("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP", "1", 1);
-      std::cout << "  [window] windowed startup: auto-enabled main-thread "
-                << "message pump\n"
                 << std::flush;
     }
     if (!user_overrode_call_update_surface) {
@@ -5172,7 +5261,6 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       "pthread_kill",
       "pthread_exit",
       "pthread_getschedparam",
-      "pthread_setschedparam",
       "pthread_key_create",
       "pthread_key_delete",
       "pthread_getspecific",
@@ -5480,6 +5568,27 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
                          reinterpret_cast<void*>(mocktail_pthread_spin_trylock));
   linker::RegisterSymbol("pthread_spin_unlock",
                          reinterpret_cast<void*>(mocktail_pthread_spin_unlock));
+  linker::RegisterSymbol(
+      "pthread_attr_init",
+      reinterpret_cast<void*>(mocktail_pthread_attr_init));
+  linker::RegisterSymbol(
+      "pthread_attr_destroy",
+      reinterpret_cast<void*>(mocktail_pthread_attr_destroy));
+  linker::RegisterSymbol(
+      "pthread_attr_setstacksize",
+      reinterpret_cast<void*>(mocktail_pthread_attr_setstacksize));
+  linker::RegisterSymbol(
+      "pthread_attr_setdetachstate",
+      reinterpret_cast<void*>(mocktail_pthread_attr_setdetachstate));
+  linker::RegisterSymbol(
+      "pthread_attr_setschedparam",
+      reinterpret_cast<void*>(mocktail_pthread_attr_setschedparam));
+  linker::RegisterSymbol(
+      "pthread_getattr_np",
+      reinterpret_cast<void*>(mocktail_pthread_getattr_np));
+  linker::RegisterSymbol(
+      "pthread_attr_getstack",
+      reinterpret_cast<void*>(mocktail_pthread_attr_getstack));
   linker::RegisterSymbol("pthread_barrier_init",
                          reinterpret_cast<void*>(mocktail_pthread_barrier_init));
   linker::RegisterSymbol(
@@ -5490,6 +5599,12 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
   linker::RegisterSymbol(
       "pthread_create",
       reinterpret_cast<void*>(mocktail_bionic_pthread_create));
+  linker::RegisterSymbol(
+      "pthread_setschedparam",
+      reinterpret_cast<void*>(mocktail_bionic_pthread_setschedparam));
+  linker::RegisterSymbol(
+      "sched_setscheduler",
+      reinterpret_cast<void*>(mocktail_bionic_sched_setscheduler));
   linker::RegisterSymbol("abort", reinterpret_cast<void*>(mocktail_abort));
   linker::RegisterSymbol("__stack_chk_fail", reinterpret_cast<void*>(mocktail_recover_stack_chk_fail));
   (void)registered;
@@ -5593,7 +5708,8 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
 
   if (roblox_handle == nullptr) {
     std::cerr << "\n[FATAL] Could not load '" << library_path << "'.\n"
-              << "  Extract lib/x86_64/libroblox.so from a Roblox APK and\n"
+              << "  Extract lib/" << compat::kGuestAbi
+              << "/libroblox.so from a Roblox APK and\n"
               << "  place it at the path above (or set ROBLOX_LIB_PATH).\n";
     return EXIT_FAILURE;
   }
@@ -5794,6 +5910,10 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       experience_game_symbols;
   std::shared_ptr<mocktail::runtime::RobloxExperienceComposition>
       experience_composition;
+  std::unique_ptr<mocktail::runtime::RobloxPermissionsBridge>
+      eager_permissions_bridge;
+  std::unique_ptr<mocktail::runtime::RobloxCallProtocolBridge>
+      eager_call_protocol_bridge;
   std::shared_ptr<ExperienceLifecycleTarget> experience_lifecycle_target;
   std::shared_ptr<mocktail::runtime::RobloxWindowInputRuntime>
       window_input_runtime;
@@ -6453,6 +6573,75 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
               << " run_start_app_with_params="
               << (run_start_app_with_params ? 1 : 0) << '\n' << std::flush;
 
+    // The direct GAME path still runs CoreScripts that query app protocols.
+    // Install these independently of ExperienceProtocol's dynamic launch path.
+    if (game_session_runtime != nullptr) {
+      mocktail::runtime::JniEnvironmentProvider environment{
+          raw_vm, jni_vm.get(), &RestoreGameSessionJniEnvironment};
+      JNIEnv* env = nullptr;
+      auto status = environment.Acquire(&env);
+      if (!status.ok()) {
+        std::cerr << "[FATAL] GAME protocol JNI environment unavailable\n";
+        return EXIT_FAILURE;
+      }
+      const auto symbols = mocktail::runtime::ResolveRobloxPlatformWebSymbols(
+          roblox_handle,
+          reinterpret_cast<mocktail::runtime::SubscribeExperienceLaunchRawFn>(
+              linker::ResolveSymbol(roblox_handle,
+                                    "Java_com_roblox_universalapp_messagebus_"
+                                    "MessageBus_doSubscribeRaw")),
+          reinterpret_cast<mocktail::runtime::DeleteMessageBusConnectionFn>(
+              linker::ResolveSymbol(roblox_handle,
+                                    "Java_com_roblox_universalapp_messagebus_"
+                                    "Connection_deleteSharedPtr")));
+      jclass bus_class =
+          env->FindClass("com/roblox/universalapp/messagebus/MessageBus");
+      jmethodID singleton =
+          bus_class ? env->GetStaticMethodID(
+                          bus_class, "f",
+                          "()Lcom/roblox/universalapp/messagebus/MessageBus;")
+                    : nullptr;
+      jobject bus = singleton
+                        ? env->CallStaticObjectMethod(bus_class, singleton)
+                        : nullptr;
+      if (bus_class)
+        env->DeleteLocalRef(bus_class);
+      if (!bus || env->ExceptionCheck()) {
+        if (env->ExceptionCheck())
+          env->ExceptionClear();
+        if (bus)
+          env->DeleteLocalRef(bus);
+        std::cerr << "[FATAL] GAME platform MessageBus is unavailable\n";
+        return EXIT_FAILURE;
+      }
+      const mocktail::runtime::RobloxMessageBusObjects objects{
+          bus,
+          jni_vm.get(),
+          &CreateExperienceRawCallback,
+          &ClearExperienceRawCallback,
+          &CreateAsyncMessageBusRequestHandler,
+          &ClearAsyncMessageBusRequestHandler};
+      eager_permissions_bridge =
+          std::make_unique<mocktail::runtime::RobloxPermissionsBridge>(
+              environment, symbols.permissions, objects,
+              runtime_config.microphone_enabled());
+      eager_call_protocol_bridge =
+          std::make_unique<mocktail::runtime::RobloxCallProtocolBridge>(
+              environment, symbols.permissions, objects);
+      status = eager_permissions_bridge->Initialize();
+      if (status.ok())
+        status = eager_call_protocol_bridge->Initialize();
+      env->DeleteLocalRef(bus);
+      if (!status.ok()) {
+        std::cerr << "[FATAL] GAME platform protocols did not initialize: "
+                  << status.message() << '\n';
+        return EXIT_FAILURE;
+      }
+      std::cout << "  [platform] direct GAME PermissionsProtocol and "
+                   "CallProtocol ready\n"
+                << std::flush;
+    }
+
     if (experience_game_symbols != nullptr) {
       mocktail::runtime::RobloxExperienceMessageBusSymbols message_bus_symbols;
       message_bus_symbols.get_launch_id =
@@ -6936,6 +7125,14 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
     if (window_input_runtime != nullptr) {
       input_shutdown_completed = window_input_runtime->Shutdown().ok() &&
                                  input_shutdown_completed;
+    }
+    if (eager_call_protocol_bridge != nullptr) {
+      (void)eager_call_protocol_bridge->Shutdown();
+      eager_call_protocol_bridge.reset();
+    }
+    if (eager_permissions_bridge != nullptr) {
+      (void)eager_permissions_bridge->Shutdown();
+      eager_permissions_bridge.reset();
     }
     bool experience_destroyed_app = false;
     if (experience_composition != nullptr) {

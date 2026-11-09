@@ -36,6 +36,8 @@ jobs:
     name: AppImage (AnyLinux)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|continuous|mocktail-nightly.AppImage.zsync
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,16 +47,20 @@ jobs:
 
       - name: Build AppImage
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
+            --env GH_TOKEN \
+            --env UPINFO \
             ghcr.io/archlinux/archlinux:base-devel@sha256:c3953446016873a756fb7814f10087cac1634c127f7302e80c81c512da796d05 bash -Eeuo pipefail -c '
               pacman -Syu --noconfirm --needed \
                 cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
                 nlohmann-json libyaml libelf minizip minizip-ng capstone gtk4 \
-                libadwaita webkitgtk-6.0 libutf8proc fontconfig libglvnd \
-                vulkan-headers zlib libplacebo bubblewrap xdg-dbus-proxy \
+                libadwaita libsecret webkitgtk-6.0 libutf8proc fontconfig libglvnd \
+                vulkan-headers zlib libplacebo libpng bubblewrap xdg-dbus-proxy \
                 patchelf jq unzip file ca-certificates dbus zsync
 
               # Reduced ABI-compatible packages belong only in this builder.
@@ -112,11 +118,12 @@ jobs:
               export RUNTIME=/tmp/uruntime
               export DWARFS_CMD=/tmp/mkdwarfs
               make appimage BUILD_DIR=build-appimage JOBS=4 \
-                APPIMAGE=dist/Mocktail-x86_64.AppImage \
+                APPIMAGE=dist/mocktail-nightly.AppImage \
                 PORTABLE_MODE=standalone APPIMAGE_FORMAT=anylinux \
                 ANYLINUX_PACKAGER=/tmp/quick-sharun \
                 ANYLINUX_APPIMAGETOOL=/tmp/appimagetool
-              test -x dist/Mocktail-x86_64.AppImage
+              test -x dist/mocktail-nightly.AppImage
+              test -s dist/mocktail-nightly.AppImage.zsync
             '
 
       - name: Smoke-test AppImage without FUSE
@@ -129,14 +136,135 @@ jobs:
           export XDG_CACHE_HOME="$smoke_dir/cache"
           export XDG_STATE_HOME="$smoke_dir/state"
           mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
-          timeout 60s dist/Mocktail-x86_64.AppImage --appimage-extract-and-run --help
-          timeout 60s dist/Mocktail-x86_64.AppImage --appimage-extract-and-run mocktail_updater status
+          test "$(dist/mocktail-nightly.AppImage --appimage-updateinformation)" = "$UPINFO"
+          timeout 60s dist/mocktail-nightly.AppImage --appimage-extract-and-run --help
+          timeout 60s dist/mocktail-nightly.AppImage --appimage-extract-and-run mocktail_updater status
 
       - name: Upload AppImage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Mocktail-AppImage
-          path: dist/Mocktail-x86_64.AppImage
+          path: |
+            dist/mocktail-nightly.AppImage
+            dist/mocktail-nightly.AppImage.zsync
+          if-no-files-found: error
+          retention-days: 14
+
+  appimage-aarch64:
+    name: AppImage (AnyLinux aarch64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|continuous|mocktail-nightly-aarch64.AppImage.zsync
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Build aarch64 AppImage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          docker run --rm --platform linux/arm64 \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            --env GH_TOKEN \
+            --env UPINFO \
+            ghcr.io/pkgforge-dev/archlinux:latest@sha256:b2507f1964270cab3cc190aa8df858521f6a7e45e969146a012877891d5dfc9b bash -Eeuo pipefail -c '
+              test "$(uname -m)" = aarch64
+              pacman-key --init
+              pacman -Syy --noconfirm archlinux-keyring
+              pacman -Syu --noconfirm --needed \
+                base-devel cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
+                nlohmann-json libyaml libelf minizip minizip-ng capstone gtk4 \
+                libadwaita libsecret webkitgtk-6.0 libutf8proc fontconfig libglvnd \
+                vulkan-headers zlib libplacebo libpng bubblewrap xdg-dbus-proxy \
+                patchelf jq unzip file ca-certificates dbus zsync
+
+              ./scripts/install_anylinux_dependencies.sh
+
+              curl --fail --location --retry 3 \
+                --output /tmp/quick-sharun \
+                https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/2a025cef14483c5bc2a75b479071f4d5c58a906f/useful-tools/quick-sharun.sh
+              echo "fa66d0189e1e87df781c049dfb23cbb1e753786056f693a4483d6d3af61e7ee1  /tmp/quick-sharun" | \
+                sha256sum --check --strict
+              chmod 0755 /tmp/quick-sharun
+
+              curl --fail --location --retry 3 \
+                --output /tmp/sharun \
+                https://github.com/pkgforge-dev/Anylinux-sharun/releases/download/2.2.6/sharun-aarch64
+              echo "3b64db0727a9d5c8212c4b2342770583ce552deac0644d2d6033e9ec280f7635  /tmp/sharun" | \
+                sha256sum --check --strict
+              chmod 0755 /tmp/sharun
+
+              curl --fail --location --retry 3 \
+                --output /tmp/anylinux.c \
+                https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/2a025cef14483c5bc2a75b479071f4d5c58a906f/useful-tools/lib/anylinux.c
+              echo "f50650ad96d177559bdd0737df509fa20bd4af08887631c738fc1f31bfac185f  /tmp/anylinux.c" | \
+                sha256sum --check --strict
+
+              curl --fail --location --retry 3 \
+                --output /tmp/appimagetool \
+                https://github.com/pkgforge-dev/appimagetool/releases/download/0.3.3/appimagetool-aarch64-linux
+              echo "298f5293c41f9b2b46290b246e6419783940824ce20b98775a5a153b18fe8422  /tmp/appimagetool" | \
+                sha256sum --check --strict
+              chmod 0755 /tmp/appimagetool
+
+              curl --fail --location --retry 3 \
+                --output /tmp/uruntime \
+                https://github.com/VHSgunzo/uruntime/releases/download/v0.5.9/uruntime-appimage-dwarfs-lite-aarch64
+              echo "5686f126b22d944b2b9c862ee004b4c590b5a5e5215d8790cc0420f1fbbea942  /tmp/uruntime" | \
+                sha256sum --check --strict
+              chmod 0755 /tmp/uruntime
+
+              curl --fail --location --retry 3 \
+                --output /tmp/mkdwarfs \
+                https://github.com/mhx/dwarfs/releases/download/v0.15.6/dwarfs-universal-0.15.6-Linux-aarch64
+              echo "2d513c43ad652163e5e31c1a96f3c736e7e188e661ff62fc9143ea7147bd936b  /tmp/mkdwarfs" | \
+                sha256sum --check --strict
+              chmod 0755 /tmp/mkdwarfs
+
+              git config --global --add safe.directory /workspace
+              git config --global --add safe.directory /workspace/third_party/Vulkan-Headers
+              git config --global --add safe.directory /workspace/third_party/libjnivm
+              export MOCKTAIL_ANYLINUX_SYSTEM_INSTALL=1
+              export MOCKTAIL_ANYLINUX_SHARUN=/tmp/sharun
+              export MOCKTAIL_ANYLINUX_C_SOURCE=/tmp/anylinux.c
+              export RUNTIME=/tmp/uruntime
+              export DWARFS_CMD=/tmp/mkdwarfs
+              make appimage BUILD_DIR=build-appimage-aarch64 JOBS=4 \
+                APPIMAGE=dist/mocktail-nightly-aarch64.AppImage \
+                PORTABLE_MODE=standalone APPIMAGE_FORMAT=anylinux \
+                ANYLINUX_PACKAGER=/tmp/quick-sharun \
+                ANYLINUX_APPIMAGETOOL=/tmp/appimagetool
+              test -x dist/mocktail-nightly-aarch64.AppImage
+              test -s dist/mocktail-nightly-aarch64.AppImage.zsync
+            '
+
+      - name: Smoke-test aarch64 AppImage without FUSE
+        shell: bash
+        run: |
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$smoke_dir"' EXIT
+          export XDG_DATA_HOME="$smoke_dir/data"
+          export XDG_CONFIG_HOME="$smoke_dir/config"
+          export XDG_CACHE_HOME="$smoke_dir/cache"
+          export XDG_STATE_HOME="$smoke_dir/state"
+          mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+          test "$(dist/mocktail-nightly-aarch64.AppImage --appimage-updateinformation)" = "$UPINFO"
+          timeout 60s dist/mocktail-nightly-aarch64.AppImage --appimage-extract-and-run --help
+          timeout 60s dist/mocktail-nightly-aarch64.AppImage --appimage-extract-and-run mocktail_updater status
+
+      - name: Upload aarch64 AppImage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Mocktail-AppImage-aarch64
+          path: |
+            dist/mocktail-nightly-aarch64.AppImage
+            dist/mocktail-nightly-aarch64.AppImage.zsync
           if-no-files-found: error
           retention-days: 14
 
@@ -167,9 +295,9 @@ jobs:
                 dpkg-dev file libsdl3-dev libsdl3-ttf-dev \
                 libcurl4-openssl-dev libssl-dev nlohmann-json3-dev \
                 libyaml-dev libelf-dev libminizip-dev libcapstone-dev \
-                libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+                libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev libsecret-1-dev \
                 libutf8proc-dev libfontconfig1-dev libegl-dev \
-                libvulkan-dev libplacebo-dev zlib1g-dev
+                libvulkan-dev libplacebo-dev libpng-dev zlib1g-dev
               cmake -S . -B build-deb -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX=/usr \
@@ -215,9 +343,9 @@ jobs:
                 SDL3-devel SDL3_ttf-devel libcurl-devel openssl-devel \
                 nlohmann-json-devel libyaml-devel elfutils-libelf-devel \
                 minizip-ng-compat-devel capstone-devel gtk4-devel libadwaita-devel \
-                webkitgtk6.0-devel utf8proc-devel fontconfig-devel \
+                webkitgtk6.0-devel libsecret-devel utf8proc-devel fontconfig-devel \
                 libglvnd-devel vulkan-headers vulkan-loader-devel \
-                libplacebo-devel zlib-ng-compat-devel
+                libplacebo-devel libpng-devel zlib-ng-compat-devel
               cmake -S . -B build-rpm -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX=/usr \
@@ -260,8 +388,8 @@ jobs:
               pacman -Syu --needed --noconfirm \
                 cmake git ninja pkgconf lld sdl3 sdl3_ttf curl openssl \
                 nlohmann-json libyaml libelf minizip capstone gtk4 \
-                libadwaita webkitgtk-6.0 libutf8proc fontconfig \
-                libplacebo vulkan-headers vulkan-icd-loader libglvnd zlib
+                libadwaita libsecret webkitgtk-6.0 libutf8proc fontconfig \
+                libplacebo libpng vulkan-headers vulkan-icd-loader libglvnd zlib
               useradd --create-home builder
               chown -R builder:builder /workspace
               runuser -u builder -- env MOCKTAIL_SOURCE_DIR=/workspace \
@@ -283,7 +411,7 @@ jobs:
   publish:
     name: Publish continuous packages
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [appimage, deb, rpm, arch]
+    needs: [appimage, appimage-aarch64, deb, rpm, arch]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -305,7 +433,10 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          mv -- release/*.AppImage release/mocktail-nightly.AppImage
+          for appimage in mocktail-nightly.AppImage mocktail-nightly-aarch64.AppImage; do
+            test -s "release/$appimage"
+            test -s "release/$appimage.zsync"
+          done
           mv -- release/*.deb release/mocktail-nightly.deb
           mv -- release/*.rpm release/mocktail-nightly.rpm
           mv -- release/*.pkg.tar.zst release/mocktail-nightly.pkg.tar.zst
@@ -360,9 +491,9 @@ jobs:
           gh release upload continuous release/* --clobber
           while IFS= read -r asset; do
             case "$asset" in
-              mocktail-nightly.AppImage|mocktail-nightly.deb|mocktail-nightly.rpm|mocktail-nightly.pkg.tar.zst)
+              mocktail-nightly.AppImage|mocktail-nightly.AppImage.zsync|mocktail-nightly-aarch64.AppImage|mocktail-nightly-aarch64.AppImage.zsync|mocktail-nightly.deb|mocktail-nightly.rpm|mocktail-nightly.pkg.tar.zst)
                 ;;
-              Mocktail-*.AppImage|mocktail_*.deb|mocktail-*.deb|mocktail-*.rpm|mocktail-*.pkg.tar.zst)
+              Mocktail-*.AppImage|Mocktail-*.AppImage.zsync|mocktail_*.deb|mocktail-*.deb|mocktail-*.rpm|mocktail-*.pkg.tar.zst)
                 gh release delete-asset continuous "$asset" --yes
                 ;;
             esac

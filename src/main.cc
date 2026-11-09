@@ -32,12 +32,16 @@
 #include "runtime/environment.h"
 #include "runtime/external_launch_broker.h"
 #include "runtime/failure_dialog.h"
+#include "runtime/fleasion.h"
 #include "runtime/game_mode.h"
 #include "runtime/graphics_launch_policy.h"
 #include "runtime/memory_limit.h"
 #include "runtime/payload_update_preflight.h"
 #include "runtime/performance_policy.h"
 #include "runtime/platform_cache_migration.h"
+#include "runtime/process_diagnostics.h"
+#include "runtime/process_launch_policy.h"
+#include "runtime/roblox_cookie_store.h"
 #include "runtime/roblox_desktop_app_policy.h"
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_fullscreen_runtime_bridge.h"
@@ -126,6 +130,10 @@ void PromptFirstLaunchSignIn(
       environment.Get("MOCKTAIL_SKIP_FIRST_LAUNCH_LOGIN") == "1") {
     return;
   }
+  if (environment.Get("MOCKTAIL_NATIVE_LOGIN") != "0") {
+    std::cout << "  [auth] native sign-in selected; opening Roblox welcome screen\n";
+    return;
+  }
 
   std::filesystem::path helper;
   const char* helper_override = std::getenv("MOCKTAIL_WEBVIEW_HELPER");
@@ -139,7 +147,8 @@ void PromptFirstLaunchSignIn(
       helper = executable.parent_path() / "mocktail_webview_helper";
     }
   }
-  if (helper.empty() || !std::filesystem::exists(helper)) {
+  std::error_code exists_error;
+  if (helper.empty() || !std::filesystem::exists(helper, exists_error)) {
     return;
   }
 
@@ -254,6 +263,12 @@ int main(int argc, char* argv[]) {
         command_line.options.program_name);
     return EXIT_SUCCESS;
   }
+  // Normalize inherited process state before bootstrap or helpers can create
+  // threads. Keep research/canary resource limits under their caller's control.
+  const std::string process_launch_diagnostics =
+      command_line.options.mode == mocktail::runtime::CommandMode::kRun
+          ? mocktail::runtime::ApplyInteractiveProcessLaunchPolicy()
+          : std::string{};
   std::string command_line_error;
   if (!mocktail::runtime::ApplySupportedLaunchPolicy(
           command_line.options.mode == mocktail::runtime::CommandMode::kRun,
@@ -269,6 +284,11 @@ int main(int argc, char* argv[]) {
 
   const mocktail::runtime::ProcessEnvironment environment;
   const bool vr_requested = environment.HasNonEmpty("MOCKTAIL_VR_ENABLED");
+  mocktail::runtime::SetRobloxCookieWarningHandler(
+      [](std::string_view message) {
+        (void)mocktail::runtime::ShowWarningDialog(
+            mocktail::runtime::ProcessEnvironment(), message);
+      });
   const std::string built_in_compatibility_manifest = environment.GetOr(
       "MOCKTAIL_UPDATE_COMPATIBILITY_PATH",
       environment.GetOr("MOCKTAIL_COMPATIBILITY_MANIFEST",
@@ -407,7 +427,9 @@ int main(int argc, char* argv[]) {
     if (!system_proxy ||
         setenv("MOCKTAIL_HTTP_PROXY_HOST", proxy_host.c_str(), 1) != 0 ||
         setenv("MOCKTAIL_HTTP_PROXY_PORT", proxy_port.c_str(), 1) != 0 ||
-        setenv("MOCKTAIL_HTTP_PROXY_SCHEME", proxy_scheme.c_str(), 1) != 0) {
+        setenv("MOCKTAIL_HTTP_PROXY_SCHEME", proxy_scheme.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_HTTP_PROXY_USERNAME", "", 1) != 0 ||
+        setenv("MOCKTAIL_HTTP_PROXY_PASSWORD", "", 1) != 0) {
       std::cerr << "[FATAL] Cannot resolve host system proxy";
       if (!system_proxy.error.empty()) {
         std::cerr << ": " << system_proxy.error;
@@ -470,6 +492,47 @@ int main(int argc, char* argv[]) {
       std::cerr << "  [session] automatic logging unavailable: "
                 << session_log.error() << '\n';
     }
+    std::cout << process_launch_diagnostics << std::flush;
+    mocktail::runtime::InstallCpuLimitDiagnostics();
+    mocktail::runtime::LogProcessDiagnostics(
+        mocktail::runtime::ProcessDiagnosticStage::kStartup);
+  }
+  if (runtime_config.config.fleasion_enabled()) {
+    const auto fleasion = mocktail::runtime::PrepareFleasion(
+        runtime_config.config, environment, paths);
+    if (!fleasion ||
+        setenv("MOCKTAIL_CA_BUNDLE", fleasion.bundle.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_FLEASION_BASE_CA_BUNDLE", fleasion.base_bundle.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_FLEASION_GENERATED_BUNDLE", fleasion.bundle.c_str(), 1) != 0 ||
+        setenv("MOCKTAIL_FLEASION_CA_CERTIFICATE", fleasion.certificate.c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot prepare Fleasion: "
+                << (!fleasion ? fleasion.error : "cannot export certificate paths") << '\n';
+      return EXIT_FAILURE;
+    }
+    if (const auto& proxy = runtime_config.config.network_proxy(); proxy &&
+        (setenv("MOCKTAIL_HTTP_PROXY_HOST", proxy->host.c_str(), 1) != 0 ||
+         setenv("MOCKTAIL_HTTP_PROXY_PORT", std::to_string(proxy->port).c_str(), 1) != 0 ||
+         setenv("MOCKTAIL_HTTP_PROXY_SCHEME", proxy->scheme.c_str(), 1) != 0)) {
+      std::cerr << "[FATAL] Cannot export Fleasion proxy\n";
+      return EXIT_FAILURE;
+    }
+    runtime_config = mocktail::runtime::LoadRuntimeConfig(environment, paths.config_file());
+    if (!runtime_config) {
+      std::cerr << "[FATAL] Cannot apply Fleasion: " << runtime_config.error << '\n';
+      return EXIT_FAILURE;
+    }
+    std::cout << "  [fleasion] mode=" << runtime_config.config.fleasion_proxy_mode()
+              << " certificate=" << fleasion.certificate
+              << " trust_bundle=" << fleasion.bundle << '\n';
+    if (runtime_config.config.network_proxy()) {
+      std::cout << "  [fleasion] proxy=" << mocktail::runtime::BuildNetworkProxyUrl(
+          *runtime_config.config.network_proxy()) << "; start Fleasion before Roblox\n";
+    }
+  }
+  if (!mocktail::runtime::ExportNetworkProxyEnvironment(
+          runtime_config.config, &command_line_error)) {
+    std::cerr << "[FATAL] " << command_line_error << '\n';
+    return EXIT_FAILURE;
   }
   if (config_bootstrap.created()) {
     std::cout << "  [runtime] created first-run configuration: "
@@ -599,8 +662,14 @@ int main(int argc, char* argv[]) {
                 << adjacent_assets << '\n';
     }
   }
+  mocktail::runtime::BackgroundPayloadUpdate background_update;
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun &&
       uses_managed_payload) {
+    if (setenv("MOCKTAIL_GRAPHICS_BACKEND",
+               runtime_config.config.graphics_backend_name().c_str(), 1) != 0) {
+      std::cerr << "[FATAL] Cannot configure the Roblox update graphics backend\n";
+      return EXIT_FAILURE;
+    }
     failure_dialog.SetMessage(
         "Mocktail could not update or verify the Roblox installation.");
     const mocktail::runtime::PayloadUpdatePreflightResult update_preflight =
@@ -608,21 +677,20 @@ int main(int argc, char* argv[]) {
     if (!update_preflight) {
       std::cerr << "[FATAL] " << update_preflight.error;
       if (!update_preflight.details.empty()) {
-        // Without this the dialog only ever said "could not update or verify",
-        // which is indistinguishable between a provider outage, a rejected
-        // signature, and a full disk.
         std::cerr << ": " << update_preflight.details;
-        failure_dialog.SetMessage(
-            "Mocktail could not update or verify the Roblox installation.\n\n" +
-            update_preflight.details + "\n\nSession log: " +
-            (paths.logs_root() / "sessions").string());
       }
+      failure_dialog.SetMessage(
+          "Mocktail could not update or verify the Roblox installation.\n\n" +
+          (update_preflight.details.empty() ? update_preflight.error
+                                           : update_preflight.details) +
+          "\n\nSession log: " + (paths.logs_root() / "sessions").string());
       std::cerr << '\n';
       return EXIT_FAILURE;
     }
     failure_dialog.SetMessage(
         "Mocktail could not finish starting Roblox because of an internal "
         "error.");
+    background_update.Start(environment, paths);
   }
   if (!mocktail::runtime::ExportRuntimePathEnvironment(paths,
                                                        &command_line_error)) {
@@ -930,6 +998,21 @@ int main(int argc, char* argv[]) {
                 << fullscreen_status.message() << '\n';
       return EXIT_FAILURE;
     }
+    if (compatibility.profile.fmod_output_device_bridge &&
+        compatibility.profile.fmod_output_device_bridge->has_input_devices()) {
+      std::string menu_settings;
+      const char *settings =
+          std::getenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON");
+      if (!mocktail::runtime::MergeAudioDeviceMenuClientSettingsOverrides(
+              settings ? settings : "{}", &menu_settings,
+              &command_line_error) ||
+          setenv("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
+                 menu_settings.c_str(), 1) != 0) {
+        std::cerr << "[FATAL] Cannot configure host audio device menu: "
+                  << command_line_error << '\n';
+        return EXIT_FAILURE;
+      }
+    }
     const mocktail::Status output_device_status =
         output_device_bridge.Install(compatibility.profile);
     if (!output_device_status.ok()) {
@@ -980,8 +1063,6 @@ int main(int argc, char* argv[]) {
     if (environment.HasNonEmpty("MOCKTAIL_COOKIE_FILE")) {
       tracker_cookie_file = environment.GetOr("MOCKTAIL_COOKIE_FILE", "");
       tracker_cookie_owned = false;
-    } else if (mocktail::runtime::RuntimePaths::Exists(paths.cookie_file())) {
-      tracker_cookie_file = paths.cookie_file();
     }
     const mocktail::services::BrowserTrackerResult browser_tracker_result =
         browser_tracker.EnsureInitialized(app_storage_file, tracker_cookie_file,
@@ -1165,8 +1246,19 @@ int main(int argc, char* argv[]) {
   }
   failure_dialog.SetMessage(
       "Roblox closed unexpectedly because of an internal error.");
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    mocktail::runtime::LogProcessDiagnostics(
+        mocktail::runtime::ProcessDiagnosticStage::kNativeRuntime);
+  }
   int runtime_status =
       mocktail::legacy::Run(command_line.options, std::move(dependencies));
+  background_update.Stop();
+  if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
+    mocktail::runtime::LogProcessDiagnostics(
+        mocktail::runtime::ProcessDiagnosticStage::kShutdown);
+    std::cerr << "[diagnostic] native runtime exit_status=" << runtime_status
+              << '\n';
+  }
   const mocktail::Status launch_broker_shutdown_status =
       external_launch_broker.Shutdown();
   if (!launch_broker_shutdown_status.ok()) {
@@ -1174,6 +1266,8 @@ int main(int argc, char* argv[]) {
               << launch_broker_shutdown_status.message() << '\n';
     runtime_status = EXIT_FAILURE;
   }
+  if (dependencies.jni_vm() != nullptr)
+    dependencies.jni_vm()->ClearRobloxCredentialSink();
   if (runtime_status != EXIT_SUCCESS) {
     failure_dialog.SetMessage("Roblox stopped with error code " +
                               std::to_string(runtime_status) + ".");

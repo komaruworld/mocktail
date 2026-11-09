@@ -16,11 +16,13 @@
 namespace mocktail::audio {
 namespace {
 
+class SdlAudioCapture;
+
 struct SdlRecordingSubsystemState {
   std::mutex mutex;
   std::uint32_t configured_device_id = 0;
   std::string configured_device_name = "default";
-  std::size_t live_captures = 0;
+  std::vector<SdlAudioCapture *> live_captures;
 };
 
 SdlRecordingSubsystemState& RecordingSubsystemState() {
@@ -61,42 +63,6 @@ SDL_AudioFormat ToSdlFormat(PcmSampleFormat format) {
       return SDL_AUDIO_F32LE;
   }
   return SDL_AUDIO_UNKNOWN;
-}
-
-Status ResolveConfiguredDevice(std::uint32_t requested_device_id,
-                               std::uint32_t* resolved_device_id) {
-  if (resolved_device_id == nullptr) {
-    return InvalidArgument("resolved SDL recording device pointer is null");
-  }
-  if (!AudioSubsystemInitialized()) {
-    return FailedPrecondition(
-        "SDL audio subsystem must be initialized before recording");
-  }
-  SdlRecordingSubsystemState& state = RecordingSubsystemState();
-  std::lock_guard<std::mutex> lock(state.mutex);
-  *resolved_device_id = requested_device_id == 0
-                            ? state.configured_device_id
-                            : requested_device_id;
-  return Status::Ok();
-}
-
-Status RegisterCapture() {
-  if (!AudioSubsystemInitialized()) {
-    return FailedPrecondition(
-        "SDL audio subsystem stopped while opening a capture");
-  }
-  SdlRecordingSubsystemState& state = RecordingSubsystemState();
-  std::lock_guard<std::mutex> lock(state.mutex);
-  ++state.live_captures;
-  return Status::Ok();
-}
-
-void ReleaseCapture() {
-  SdlRecordingSubsystemState& state = RecordingSubsystemState();
-  std::lock_guard<std::mutex> lock(state.mutex);
-  if (state.live_captures != 0) {
-    --state.live_captures;
-  }
 }
 
 class SdlAudioCapture final : public AudioCapture {
@@ -155,6 +121,8 @@ class SdlAudioCapture final : public AudioCapture {
   }
 
   void Shutdown() override {
+    auto &state = RecordingSubsystemState();
+    std::lock_guard<std::mutex> registry_lock(state.mutex);
     std::lock_guard<std::mutex> lock(operation_mutex_);
     if (stream_ == nullptr) {
       return;
@@ -166,8 +134,61 @@ class SdlAudioCapture final : public AudioCapture {
     stream_ = nullptr;
     if (registered_) {
       registered_ = false;
-      ReleaseCapture();
+      auto &captures = state.live_captures;
+      captures.erase(std::remove(captures.begin(), captures.end(), this),
+                     captures.end());
     }
+  }
+
+  std::mutex &operation_mutex() { return operation_mutex_; }
+
+  // The registry and operation mutexes are held throughout a migration.
+  Status PrepareSwitch(std::uint32_t id) {
+    SDL_AudioSpec spec{};
+    spec.format = ToSdlFormat(output_spec_.format);
+    spec.channels = output_spec_.channels;
+    spec.freq = output_spec_.sample_rate_hz;
+    replacement_ = SDL_OpenAudioDeviceStream(
+        id == 0 ? SDL_AUDIO_DEVICE_DEFAULT_RECORDING : id, &spec,
+        &OnAudioAvailable, this);
+    return replacement_ ? Status::Ok()
+                        : SdlError("open replacement microphone");
+  }
+
+  Status PauseForSwitch() {
+    if (!SDL_PauseAudioStreamDevice(stream_))
+      return SdlError("pause old microphone");
+    // Wait for an in-flight callback before the replacement can use buffer_.
+    if (!SDL_LockAudioStream(stream_))
+      return SdlError("lock old microphone");
+    SDL_UnlockAudioStream(stream_);
+    return Status::Ok();
+  }
+
+  Status StartReplacement() {
+    if (running_.load(std::memory_order_acquire) &&
+        !SDL_ResumeAudioStreamDevice(replacement_))
+      return SdlError("resume replacement microphone");
+    return Status::Ok();
+  }
+
+  void CancelReplacement() {
+    if (replacement_) {
+      SDL_DestroyAudioStream(replacement_);
+      replacement_ = nullptr;
+    }
+  }
+
+  Status RestoreAfterSwitch() {
+    if (running_.load(std::memory_order_acquire) &&
+        !SDL_ResumeAudioStreamDevice(stream_))
+      return SdlError("restore original microphone");
+    return Status::Ok();
+  }
+
+  void CommitSwitch() {
+    SDL_DestroyAudioStream(stream_);
+    stream_ = std::exchange(replacement_, nullptr);
   }
 
   static void SDLCALL OnAudioAvailable(void* userdata,
@@ -202,6 +223,7 @@ class SdlAudioCapture final : public AudioCapture {
   std::size_t frames_per_buffer_ = 0;
   std::vector<std::uint8_t> buffer_;
   SDL_AudioStream* stream_ = nullptr;
+  SDL_AudioStream *replacement_ = nullptr;
   AudioCaptureDataCallback callback_ = nullptr;
   void* callback_context_ = nullptr;
   std::mutex operation_mutex_;
@@ -335,7 +357,7 @@ Status ConfigureSdlRecordingDevice(
 
   SdlRecordingSubsystemState& state = RecordingSubsystemState();
   std::lock_guard<std::mutex> lock(state.mutex);
-  if (state.live_captures != 0) {
+  if (!state.live_captures.empty()) {
     return FailedPrecondition(
         "SDL recording device must be configured before opening a capture");
   }
@@ -391,12 +413,14 @@ Status CreateSdlAudioCapture(const SdlAudioCaptureOptions& options,
     return InvalidArgument("SDL capture frame size is invalid");
   }
 
-  std::uint32_t recording_device_id = 0;
-  status = ResolveConfiguredDevice(options.recording_device_id,
-                                   &recording_device_id);
-  if (!status.ok()) {
-    return status;
-  }
+  auto &state = RecordingSubsystemState();
+  std::unique_lock<std::mutex> registry_lock(state.mutex);
+  if (!AudioSubsystemInitialized())
+    return FailedPrecondition(
+        "SDL audio subsystem stopped while opening capture");
+  const std::uint32_t recording_device_id = options.recording_device_id == 0
+                                                ? state.configured_device_id
+                                                : options.recording_device_id;
   const SDL_AudioDeviceID device =
       recording_device_id == 0
           ? SDL_AUDIO_DEVICE_DEFAULT_RECORDING
@@ -417,25 +441,87 @@ Status CreateSdlAudioCapture(const SdlAudioCaptureOptions& options,
   SDL_AudioStream* stream = SDL_OpenAudioDeviceStream(
       device, &spec, &SdlAudioCapture::OnAudioAvailable, implementation);
   if (stream == nullptr) {
+    registry_lock.unlock();
     delete implementation;
     return SdlError("SDL_OpenAudioDeviceStream(recording)");
   }
 
   implementation->AdoptStream(stream);
-  status = RegisterCapture();
-  if (!status.ok()) {
-    delete implementation;
-    return status;
-  }
+  state.live_captures.push_back(implementation);
   implementation->MarkRegistered();
   capture->reset(implementation);
+  return Status::Ok();
+}
+
+Status SwitchSdlRecordingDevice(std::uint32_t recording_device_id,
+                                std::string *resolved_name) {
+  if (resolved_name == nullptr)
+    return InvalidArgument("microphone switch output is null");
+  resolved_name->clear();
+  std::vector<SdlRecordingDevice> devices;
+  Status status = ListSdlRecordingDevices(&devices);
+  if (!status.ok())
+    return status;
+  std::uint32_t resolved_id = 0;
+  std::string name;
+  status = ResolveSdlRecordingDevice(
+      recording_device_id == 0 ? "default"
+                               : "id:" + std::to_string(recording_device_id),
+      devices, &resolved_id, &name);
+  if (!status.ok())
+    return status;
+
+  auto &state = RecordingSubsystemState();
+  std::lock_guard<std::mutex> registry_lock(state.mutex);
+  if (!AudioSubsystemInitialized())
+    return FailedPrecondition(
+        "SDL audio subsystem stopped during microphone switch");
+  std::vector<std::unique_lock<std::mutex>> locks;
+  locks.reserve(state.live_captures.size());
+  for (auto *capture : state.live_captures)
+    locks.emplace_back(capture->operation_mutex());
+  // Keep the old streams alive until every replacement is ready and running.
+  for (auto *capture : state.live_captures) {
+    status = capture->PrepareSwitch(resolved_id);
+    if (!status.ok())
+      break;
+  }
+  if (status.ok()) {
+    for (auto *capture : state.live_captures) {
+      status = capture->PauseForSwitch();
+      if (!status.ok())
+        break;
+    }
+  }
+  if (status.ok()) {
+    for (auto *capture : state.live_captures) {
+      status = capture->StartReplacement();
+      if (!status.ok())
+        break;
+    }
+  }
+  if (!status.ok()) {
+    for (auto *capture : state.live_captures)
+      capture->CancelReplacement();
+    for (auto *capture : state.live_captures) {
+      const Status restored = capture->RestoreAfterSwitch();
+      if (!restored.ok())
+        return restored;
+    }
+    return status;
+  }
+  for (auto *capture : state.live_captures)
+    capture->CommitSwitch();
+  state.configured_device_id = resolved_id;
+  state.configured_device_name = name;
+  *resolved_name = name;
   return Status::Ok();
 }
 
 Status PrepareSdlAudioCaptureSubsystemShutdown() {
   SdlRecordingSubsystemState& state = RecordingSubsystemState();
   std::lock_guard<std::mutex> lock(state.mutex);
-  if (state.live_captures != 0) {
+  if (!state.live_captures.empty()) {
     return FailedPrecondition(
         "SDL audio shutdown requires every capture to close");
   }

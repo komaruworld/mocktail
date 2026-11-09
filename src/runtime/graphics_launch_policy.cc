@@ -18,11 +18,8 @@ namespace mocktail {
 namespace runtime {
 namespace {
 
-// TextureManager2 selects its mobile MipPackStream path on Android Vulkan and
-// can keep world textures at low-resolution mips. TM1 preserves full texture
-// fidelity until that path is compatible with the host Vulkan adapter.
 constexpr char kVulkanClientSettingsOverrides[] =
-    R"({"FStringGraphicsTextureManager2DenyPattern2":".*","FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*"})";
+    R"({"FStringGraphicsVulkanShaderMTDenyPattern":"4318:.*"})";
 
 constexpr const char* kIcdDirectories[] = {
     "/usr/share/vulkan/icd.d",
@@ -30,12 +27,21 @@ constexpr const char* kIcdDirectories[] = {
     "/usr/local/share/vulkan/icd.d",
 };
 
+#if defined(__aarch64__)
+constexpr char kNativeArchitecture[] = "aarch64";
+
+constexpr const char* kForeignArchitectures[] = {
+    "i686",  "i586", "i486",  "i386",    "x86_64",  "x86.",
+    "amd64", "armhf", "armv7", "ppc64", "riscv64", "s390x",
+};
+#else
 constexpr char kNativeArchitecture[] = "x86_64";
 
 constexpr const char* kForeignArchitectures[] = {
     "i686", "i586", "i486", "i386",   "x86.",   "aarch64",
     "arm64", "armhf", "armv7", "ppc64", "riscv64", "s390x",
 };
+#endif
 
 struct HostGpus {
   bool intel = false;
@@ -80,13 +86,6 @@ bool EnvIsOff(const char* name) {
   return value != nullptr &&
          (std::strcmp(value, "0") == 0 || std::strcmp(value, "off") == 0 ||
           std::strcmp(value, "igpu") == 0);
-}
-
-bool UnthrottledPresentation(const RuntimeConfig& config) {
-  if (config.vsync_mode() == "off" || config.vsync_mode() == "0") {
-    return true;
-  }
-  return config.frame_rate().mode == FrameRateLimitMode::kUnlimited;
 }
 
 bool ParsePciVendor(const std::string& raw, unsigned int* vendor) {
@@ -211,6 +210,43 @@ bool ApplyVulkanIcdPolicy(const HostGpus& gpus, std::string* error) {
          SetDefault("VK_ICD_FILENAMES", icd, error);
 }
 
+bool RadvIcdSelected() {
+  const char* manifests = std::getenv("VK_DRIVER_FILES");
+  if (manifests == nullptr || manifests[0] == '\0') {
+    manifests = std::getenv("VK_ICD_FILENAMES");
+  }
+  if (manifests == nullptr || manifests[0] == '\0') {
+    return false;
+  }
+  std::string_view remaining(manifests);
+  while (!remaining.empty()) {
+    const std::size_t separator = remaining.find(':');
+    const std::filesystem::path manifest{remaining.substr(0, separator)};
+    const std::string filename = manifest.filename().string();
+    if (filename.rfind("radeon_icd.", 0) != 0 || manifest.extension() != ".json") {
+      return false;
+    }
+    if (separator == std::string_view::npos) {
+      return true;
+    }
+    remaining.remove_prefix(separator + 1);
+  }
+  return false;
+}
+
+bool UsesCpuTextureOptions() {
+  for (const char* name : {"MOCKTAIL_TEXTURE_OVERRIDE_DIR",
+                            "MOCKTAIL_TEXTURE_DUMP_DIR",
+                            "MOCKTAIL_SMALL_TEXTURE_UPSCALE"}) {
+    const char* value = std::getenv(name);
+    if (value != nullptr && value[0] != '\0') {
+      return true;
+    }
+  }
+  const char* advertise = std::getenv("MOCKTAIL_ADVERTISE_ETC2");
+  return advertise != nullptr && std::strcmp(advertise, "0") == 0;
+}
+
 }  // namespace
 
 std::string SelectVulkanIcdManifest(
@@ -257,6 +293,15 @@ std::string SelectVulkanIcdManifest(
 
 bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
                                std::string* error) {
+  if (!RuntimeConfig::IsValidPresentMode(config.present_mode())) {
+    if (error != nullptr) *error = "cannot apply an invalid present mode";
+    return false;
+  }
+  if (config.present_mode() != "auto" &&
+      unsetenv("MESA_VK_WSI_PRESENT_MODE") != 0) {
+    if (error != nullptr) *error = "cannot clear Mesa present mode override";
+    return false;
+  }
   if (config.graphics_backend() == GraphicsBackend::kUnknown) {
     if (error != nullptr) {
       *error = "cannot apply an unknown graphics backend";
@@ -281,17 +326,19 @@ bool ApplyGraphicsLaunchPolicy(const RuntimeConfig& config,
   }
 
   if (direct_vulkan) {
-    const char* wsi_mode =
-        UnthrottledPresentation(config) ? "immediate" : "mailbox";
     const HostGpus gpus = DetectHostGpus();
     if (!SetDefault("MOCKTAIL_CLIENT_SETTINGS_OVERRIDES_JSON",
                     kVulkanClientSettingsOverrides, error) ||
         !SetDefault("ANV_SYS_MEM_LIMIT", AnvSysMemLimitPercent(), error) ||
-        !SetDefault("MESA_VK_WSI_PRESENT_MODE", wsi_mode, error) ||
         // Move GEM_EXECBUFFER2 off the application thread onto Mesa's submit
         // worker so the render thread is not stuck in i915 ioctl.
         !SetDefault("MESA_VK_ENABLE_SUBMIT_THREAD", "1", error) ||
         !ApplyVulkanIcdPolicy(gpus, error)) {
+      return false;
+    }
+    if (RadvIcdSelected() &&
+        !SetDefault("vk_require_etc2",
+                    UsesCpuTextureOptions() ? "false" : "true", error)) {
       return false;
     }
     // Low FRM only on Intel-only machines. Hybrid NVIDIA/AMD laptops should

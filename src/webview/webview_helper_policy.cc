@@ -123,6 +123,14 @@ bool ShouldDisableWebKitSandbox(std::string_view kernel_version,
           kernel_version.find("freebsd.org") != std::string_view::npos);
 }
 
+bool ShouldDisableWebViewHardwareAcceleration(
+    bool wayland_display, const char* compositing_override) {
+  if (compositing_override != nullptr) {
+    return std::string_view(compositing_override) != "0";
+  }
+  return wayland_display;
+}
+
 const char* AndroidBridgeSource() { return kBridgeSource; }
 
 std::string BuildRobloxAndroidUserAgent() {
@@ -134,7 +142,43 @@ std::string BuildRobloxAndroidUserAgent() {
   return "Mozilla/5.0 AppleWebKit/605.1.15 (KHTML, like Gecko)  ROBLOX "
          "Android App " +
          std::string(version) + " Tablet Hybrid()  GooglePlayStore RobloxApp/" +
-         std::string(version) + "(GlobalDist; GooglePlayStore)";
+         std::string(version) + " (GlobalDist; GooglePlayStore)";
+}
+
+bool IsBrowserLoginUrl(std::string_view url) {
+  GUri* parsed = g_uri_parse(std::string(url).c_str(), G_URI_FLAGS_NONE, nullptr);
+  if (parsed == nullptr) return false;
+  const char* host = g_uri_get_host(parsed);
+  const char* path = g_uri_get_path(parsed);
+  const bool browser_login =
+      EvaluateNavigationUri(std::string(url).c_str()).allowed && host != nullptr &&
+      (g_ascii_strcasecmp(host, "www.roblox.com") == 0 ||
+       g_ascii_strcasecmp(host, "roblox.com") == 0) && path != nullptr &&
+      (g_ascii_strcasecmp(path, "/login") == 0 ||
+       g_ascii_strcasecmp(path, "/login/") == 0);
+  g_uri_unref(parsed);
+  return browser_login;
+}
+
+bool IsEssentialWebResource(const char* uri) {
+  if (uri == nullptr) return false;
+  const UriPolicyResult policy = EvaluateNavigationUri(uri);
+  if (!policy.allowed) return false;
+  if (policy.host == "css.rbxcdn.com" || policy.host == "js.rbxcdn.com") {
+    return true;
+  }
+  if (policy.host != "arkoselabs.roblox.com" &&
+      policy.host != "apis.rbxcdn.com") return false;
+  GUri* parsed = g_uri_parse(uri, G_URI_FLAGS_NONE, nullptr);
+  if (parsed == nullptr) return false;
+  const char* path = g_uri_get_path(parsed);
+  const bool essential =
+      path != nullptr &&
+      (policy.host == "apis.rbxcdn.com"
+           ? std::string_view(path) == "/captcha/v1/metadata"
+           : g_str_has_prefix(path, "/v2/") || g_str_has_prefix(path, "/fc/"));
+  g_uri_unref(parsed);
+  return essential;
 }
 
 std::string BoundedLogToken(const char* value, std::string_view fallback) {

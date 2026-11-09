@@ -32,7 +32,7 @@
       "mode": "vendored-patched-snapshot",
       "url": "https://github.com/minecraft-linux/mcpelauncher-linker.git",
       "upstream_commit": "1ac3ea6c1cf4f73a84d73f0bff510fba94a7d0f2",
-      "vendor_tree": "fca44d85e3773c135ccfc603b14abdf6aeb8efd1",
+      "vendor_tree": "a6393296f3e4adb3460a3da51d82f7e51fa70116",
       "patch": "third_party/patches/mcpelauncher-linker.patch",
       "nested_sources": {
         "android_bionic": {

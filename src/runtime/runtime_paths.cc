@@ -1,3 +1,4 @@
+// Includes changes by vii from CoderDayton/nightcap.
 #include "runtime/runtime_paths.h"
 
 #define JSON_NOEXCEPTION 1
@@ -12,6 +13,8 @@
 #include <string>
 #include <unistd.h>
 #include <utility>
+
+#include "compat/guest_abi.h"
 
 namespace mocktail {
 namespace runtime {
@@ -437,8 +440,8 @@ ActivePayloadPaths RuntimePaths::ResolveActivePayload() const {
   const std::filesystem::path library = canonical_root / "libroblox.so";
   const std::filesystem::path package_root = canonical_root / "sober_apk";
   const std::filesystem::path base_apk = package_root / "base.apk";
-  const std::filesystem::path x86_64_split_apk =
-      package_root / "split_config.x86_64.apk";
+  const std::filesystem::path arch_split_apk =
+      package_root / compat::kGuestSplitApkFile;
   const std::filesystem::path assets_root = canonical_root / "assets";
   const std::filesystem::path assets = canonical_root / "assets/content";
   const std::filesystem::file_status library_status =
@@ -459,7 +462,8 @@ ActivePayloadPaths RuntimePaths::ResolveActivePayload() const {
   for (const auto& [path, name] :
        std::array<std::pair<std::filesystem::path, const char*>, 2>{
            std::pair{base_apk, "base.apk"},
-           std::pair{x86_64_split_apk, "split_config.x86_64.apk"}}) {
+           std::pair{arch_split_apk,
+                     compat::kGuestSplitApkFile.data()}}) {
     const std::filesystem::file_status status =
         std::filesystem::symlink_status(path, filesystem_error);
     if (filesystem_error || !std::filesystem::is_regular_file(status) ||
@@ -488,7 +492,7 @@ ActivePayloadPaths RuntimePaths::ResolveActivePayload() const {
   result.root = canonical_root;
   result.roblox_library = library;
   result.base_apk = base_apk;
-  result.x86_64_split_apk = x86_64_split_apk;
+  result.arch_split_apk = arch_split_apk;
   result.assets_content = assets;
 
   const auto compatibility_manifest =
@@ -603,7 +607,9 @@ bool ExportRuntimePathEnvironment(const RuntimePaths& paths,
          SetEnvironmentDefault("MOCKTAIL_ANDROID_CACHE_HOST_ROOT",
                                paths.android_cache_root(), error) &&
          SetEnvironmentDefault("MOCKTAIL_VULKAN_SHADER_CACHE_HOST_PATH",
-                               paths.vulkan_shader_cache_file(), error);
+                               paths.vulkan_shader_cache_file(), error) &&
+         SetEnvironmentDefault("MOCKTAIL_TEXTURE_OVERRIDE_DIR",
+                               paths.config_root() / "textures", error);
 }
 
 namespace {

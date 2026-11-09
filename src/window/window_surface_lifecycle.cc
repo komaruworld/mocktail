@@ -3,6 +3,8 @@
 #include <limits>
 #include <utility>
 
+#include "window/window_state_store.h"
+
 namespace mocktail {
 namespace window {
 namespace {
@@ -17,7 +19,8 @@ Status FailedPrecondition(std::string message) {
 
 bool ValidAvailableSurface(uintptr_t native_window, uint32_t width,
                            uint32_t height, float dpi_scale) {
-  return native_window != 0 && width != 0 && height != 0 && dpi_scale > 0.0f;
+  return native_window != 0 && width >= kMinimumWindowWidth &&
+         height >= kMinimumWindowHeight && dpi_scale > 0.0f;
 }
 
 }  // namespace
@@ -68,10 +71,11 @@ Status WindowSurfaceLifecycle::Observe(uintptr_t native_window, uint32_t width,
     return InvalidArgument("observed window surface requires a DPI scale");
   }
 
-  // A mapped handle with a temporarily zero pixel extent is not fabricated as
-  // Android surface destruction. Minimized Wayland/X11 windows can report this
-  // while their native surface lifetime remains intact.
-  if (width == 0 || height == 0) {
+  // Compositors can report extents below SDL's minimum size during resize
+  // and minimization. Retain the last usable extent: Roblox derives smaller
+  // render targets from it, and a one-pixel axis produces a zero-sized texture.
+  // The native surface lifetime is still tracked independently of its size.
+  if (width < kMinimumWindowWidth || height < kMinimumWindowHeight) {
     if (current_.available && native_window != current_.native_window) {
       WindowSurfaceSnapshot destroyed = current_;
       destroyed.available = false;

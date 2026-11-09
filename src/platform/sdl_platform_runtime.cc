@@ -119,7 +119,8 @@ class SdlPlatformRuntime final : public PlatformRuntime {
     *has_event = false;
     SDL_Event sdl_event;
     while (SDL_PollEvent(&sdl_event)) {
-      if (ConvertSdlEvent(window_, sdl_event, event)) {
+      if (ConvertSdlEvent(window_, sdl_event, event,
+                          SDL_GetWindowRelativeMouseMode(window_))) {
         *has_event = true;
         return Status::Ok();
       }

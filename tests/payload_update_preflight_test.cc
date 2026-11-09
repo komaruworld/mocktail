@@ -1,6 +1,8 @@
 #include "runtime/payload_update_preflight.h"
 
 #include <gtest/gtest.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <cstdlib>
@@ -79,6 +81,28 @@ class ScopedVariable final {
   std::optional<std::string> previous_;
 };
 
+class ReservedDescriptors final {
+ public:
+  explicit ReservedDescriptors(int first_available) {
+    while (true) {
+      const int descriptor = open("/dev/null", O_RDONLY | O_CLOEXEC);
+      if (descriptor < 0) break;
+      if (descriptor >= first_available) {
+        close(descriptor);
+        break;
+      }
+      descriptors_.push_back(descriptor);
+    }
+  }
+
+  ~ReservedDescriptors() {
+    for (const int descriptor : descriptors_) close(descriptor);
+  }
+
+ private:
+  std::vector<int> descriptors_;
+};
+
 std::vector<std::string> ReadLines(const std::filesystem::path& path) {
   std::ifstream input(path);
   std::vector<std::string> lines;
@@ -90,6 +114,54 @@ MapEnvironment NativeEnvironment(
     std::unordered_map<std::string, std::string> additions = {}) {
   additions["MOCKTAIL_UPDATE_HELPER"] = MOCKTAIL_TEST_UPDATE_HELPER;
   return MapEnvironment(std::move(additions));
+}
+
+TEST(BackgroundPayloadUpdateTest, DownloadsWithoutActivatingAndStopsItsChild) {
+  TemporaryDirectory temporary;
+  const auto capture = temporary.root() / "argument";
+  ScopedVariable captured("MOCKTAIL_TEST_UPDATE_ARGUMENT_CAPTURE",
+                          capture.string());
+  ScopedVariable delay("MOCKTAIL_TEST_UPDATE_SLEEP_MS", "5000");
+  const auto environment = NativeEnvironment();
+  BackgroundPayloadUpdate update;
+  update.Start(environment, RuntimePaths::FromEnvironment(environment),
+               std::chrono::milliseconds(10));
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (ReadLines(capture).empty() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(ReadLines(capture), std::vector<std::string>{"--download-only"});
+  const auto before = std::chrono::steady_clock::now();
+  update.Stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::seconds(1));
+}
+
+TEST(BackgroundPayloadUpdateTest, CancelsTheScheduledCheckImmediately) {
+  const auto environment = NativeEnvironment();
+  BackgroundPayloadUpdate update;
+  const auto before = std::chrono::steady_clock::now();
+  update.Start(environment, RuntimePaths::FromEnvironment(environment));
+  update.Stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::seconds(1));
+}
+
+TEST(BackgroundPayloadUpdateTest, SkipsExplicitPayloadsAndIsolatedCanaries) {
+  TemporaryDirectory temporary;
+  const auto capture = temporary.root() / "argument";
+  ScopedVariable captured("MOCKTAIL_TEST_UPDATE_ARGUMENT_CAPTURE",
+                          capture.string());
+  for (const char* name : {"ROBLOX_LIB_PATH", "MOCKTAIL_SKIP_UPDATE_CHECK",
+                           "MOCKTAIL_ISOLATED_CANARY"}) {
+    const auto environment = NativeEnvironment({{name, "1"}});
+    BackgroundPayloadUpdate update;
+    update.Start(environment, RuntimePaths::FromEnvironment(environment),
+                 std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    update.Stop();
+  }
+  EXPECT_FALSE(std::filesystem::exists(capture));
 }
 
 TEST(PayloadUpdatePreflightTest, RunsNativeUpdater) {
@@ -150,6 +222,66 @@ TEST(PayloadUpdatePreflightTest, StreamsUpdaterStagesToNativeDialog) {
   const RuntimePaths paths = RuntimePaths::FromEnvironment(environment);
   const auto result = RunPayloadUpdatePreflight(environment, paths);
   ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(ReadLines(capture),
+            std::vector<std::string>({"PDownloading Roblox...", "S"}));
+}
+
+class PayloadUpdateDescriptorTest : public testing::TestWithParam<int> {};
+
+TEST_P(PayloadUpdateDescriptorTest, KeepsErrorsSeparateFromProgress) {
+  TemporaryDirectory temporary;
+  const auto capture = temporary.root() / "progress";
+  ScopedVariable capture_variable("MOCKTAIL_TEST_PROGRESS_CAPTURE",
+                                  capture.string());
+  ScopedVariable exit_variable("MOCKTAIL_TEST_UPDATE_EXIT", "1");
+  ScopedVariable stderr_variable("MOCKTAIL_TEST_UPDATE_STDERR",
+                                  "[native-updater] cannot verify Roblox");
+  const auto environment = NativeEnvironment({
+      {"MOCKTAIL_UPDATE_PROGRESS_HELPER", MOCKTAIL_TEST_PROGRESS_HELPER},
+      {"DISPLAY", ":test"},
+  });
+  const auto paths = RuntimePaths::FromEnvironment(environment);
+  ReservedDescriptors reserved(GetParam());
+  for (int descriptor = GetParam(); descriptor < GetParam() + 3; ++descriptor) {
+    ASSERT_EQ(fcntl(descriptor, F_GETFD), -1)
+        << "unexpected open descriptor " << descriptor;
+  }
+
+  const auto result = RunPayloadUpdatePreflight(environment, paths);
+
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.details, "cannot verify Roblox");
+  EXPECT_EQ(ReadLines(capture),
+            std::vector<std::string>({"PDownloading Roblox...", "S"}));
+}
+
+INSTANTIATE_TEST_SUITE_P(ProgressChannel, PayloadUpdateDescriptorTest,
+                         testing::Values(7, 8, 9, 10, 11));
+
+TEST(PayloadUpdatePreflightTest, KeepsProgressWorkingWhenStderrWasClosed) {
+  TemporaryDirectory temporary;
+  const auto capture = temporary.root() / "progress";
+  ScopedVariable capture_variable("MOCKTAIL_TEST_PROGRESS_CAPTURE",
+                                  capture.string());
+  ScopedVariable exit_variable("MOCKTAIL_TEST_UPDATE_EXIT", "1");
+  ScopedVariable stderr_variable("MOCKTAIL_TEST_UPDATE_STDERR",
+                                  "[native-updater] cannot verify Roblox");
+  const auto environment = NativeEnvironment({
+      {"MOCKTAIL_UPDATE_PROGRESS_HELPER", MOCKTAIL_TEST_PROGRESS_HELPER},
+      {"DISPLAY", ":test"},
+  });
+  const auto paths = RuntimePaths::FromEnvironment(environment);
+  const int saved_stderr = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 3);
+  ASSERT_GE(saved_stderr, 0);
+  close(STDERR_FILENO);
+
+  const auto result = RunPayloadUpdatePreflight(environment, paths);
+
+  const int restored = dup2(saved_stderr, STDERR_FILENO);
+  close(saved_stderr);
+  ASSERT_EQ(restored, STDERR_FILENO);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.details, "cannot verify Roblox");
   EXPECT_EQ(ReadLines(capture),
             std::vector<std::string>({"PDownloading Roblox...", "S"}));
 }
@@ -263,6 +395,48 @@ TEST(PayloadUpdatePreflightTest, PropagatesUpdaterFailure) {
   EXPECT_FALSE(result);
   EXPECT_TRUE(result.attempted);
   EXPECT_EQ(result.error, "Roblox update preflight failed");
+  EXPECT_EQ(result.details,
+            "Roblox updater exited with code 7 without an error message.");
+}
+
+TEST(PayloadUpdatePreflightTest, ReportsSignalWhenUpdaterCrashesSilently) {
+  ScopedVariable signal_variable("MOCKTAIL_TEST_UPDATE_SIGNAL",
+                                  std::to_string(SIGTERM));
+  const auto environment = NativeEnvironment();
+  const auto result = RunPayloadUpdatePreflight(
+      environment, RuntimePaths::FromEnvironment(environment));
+
+  EXPECT_FALSE(result);
+  EXPECT_TRUE(result.attempted);
+  EXPECT_NE(result.details.find("terminated by signal " +
+                                std::to_string(SIGTERM)), std::string::npos);
+}
+
+TEST(PayloadUpdatePreflightTest, ReportsSilentForcedLatestFailure) {
+  ScopedVariable exit_variable("MOCKTAIL_TEST_UPDATE_EXIT", "127");
+  const auto environment = NativeEnvironment();
+  const auto result = RunPayloadUpdatePreflight(
+      environment, RuntimePaths::FromEnvironment(environment), true);
+
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.error, "forced latest Roblox run failed");
+  EXPECT_EQ(result.details,
+            "Roblox updater exited with code 127 without an error message.");
+}
+
+TEST(PayloadUpdatePreflightTest, ReportsSignalAlongsideLastUpdaterMessage) {
+  ScopedVariable signal_variable("MOCKTAIL_TEST_UPDATE_SIGNAL",
+                                  std::to_string(SIGTERM));
+  ScopedVariable stderr_variable("MOCKTAIL_TEST_UPDATE_STDERR",
+                                  "[native-updater] checking Roblox");
+  const auto environment = NativeEnvironment();
+  const auto result = RunPayloadUpdatePreflight(
+      environment, RuntimePaths::FromEnvironment(environment));
+
+  EXPECT_FALSE(result);
+  EXPECT_NE(result.details.find("terminated by signal " +
+                                std::to_string(SIGTERM)), std::string::npos);
+  EXPECT_NE(result.details.find("checking Roblox"), std::string::npos);
 }
 
 TEST(PayloadUpdatePreflightTest, ReportsUpdaterFailureDetails) {

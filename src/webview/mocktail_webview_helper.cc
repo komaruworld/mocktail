@@ -8,6 +8,10 @@
 #include <unistd.h>
 #include <webkit/webkit.h>
 
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/wayland/gdkwayland.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -17,6 +21,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -40,6 +45,8 @@ using mocktail::webview::CaptchaEventType;
 using mocktail::webview::EvaluateNavigationUri;
 using mocktail::webview::ExtractExecuteRobloxCommand;
 using mocktail::webview::ExtractRobloxWkHybridCommand;
+using mocktail::webview::IsBrowserLoginUrl;
+using mocktail::webview::IsEssentialWebResource;
 using mocktail::webview::ParseCaptchaEvent;
 using mocktail::webview::UriPolicyResult;
 
@@ -53,6 +60,7 @@ enum class PendingRobloxCookieOperation {
 struct AppState {
   GtkApplication* application = nullptr;
   WebKitNetworkSession* network_session = nullptr;
+  std::optional<mocktail::runtime::NetworkProxyConfig> proxy;
   std::string initial_url;
   std::string pending_navigation_url;
   std::string pending_roblox_cookie;
@@ -75,6 +83,7 @@ struct AppState {
   bool cookie_install_in_flight = false;
   bool browser_login_mode = false;
   bool initial_load_started = false;
+  bool disable_hardware_acceleration = false;
 };
 
 struct CookieInstallContext {
@@ -89,11 +98,16 @@ struct SurfaceState {
     g_weak_ref_init(&window, G_OBJECT(surface_window));
   }
 
-  ~SurfaceState() { g_weak_ref_clear(&window); }
+  ~SurfaceState() {
+    if (retry_source != 0) g_source_remove(retry_source);
+    g_weak_ref_clear(&window);
+  }
 
   AppState* app = nullptr;
   GWeakRef window;
   bool primary = false;
+  guint retry_source = 0;
+  unsigned int resource_retries = 0;
 };
 
 struct CallbackConfirmation {
@@ -228,19 +242,6 @@ bool EnsurePrivateDirectory(const char* path) {
   return g_chmod(path, 0700) == 0;
 }
 
-bool EnsurePrivateCookieDatabase(const char* path) {
-  const int descriptor =
-      open(path, O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_RDWR, 0600);
-  if (descriptor < 0) {
-    return false;
-  }
-  struct stat status = {};
-  const bool secured = fstat(descriptor, &status) == 0 &&
-                       S_ISREG(status.st_mode) && fchmod(descriptor, 0600) == 0;
-  close(descriptor);
-  return secured;
-}
-
 bool InitializeNetworkSession(AppState* state) {
   gchar* data_directory =
       g_build_filename(g_get_user_data_dir(), "mocktail", "webview", nullptr);
@@ -256,22 +257,11 @@ bool InitializeNetworkSession(AppState* state) {
     return false;
   }
 
-  gchar* cookie_database =
-      g_build_filename(data_directory, "cookies.sqlite", nullptr);
-  if (cookie_database == nullptr ||
-      !EnsurePrivateCookieDatabase(cookie_database)) {
-    std::cerr << "[webview] cannot secure persistent cookie database\n";
-    g_free(cookie_database);
-    g_free(data_directory);
-    g_free(cache_directory);
-    return false;
-  }
   state->network_session =
       webkit_network_session_new(data_directory, cache_directory);
   g_free(data_directory);
   g_free(cache_directory);
   if (state->network_session == nullptr) {
-    g_free(cookie_database);
     return false;
   }
 
@@ -279,51 +269,43 @@ bool InitializeNetworkSession(AppState* state) {
   const bool use_system_proxy =
       system_proxy != nullptr && system_proxy[0] != '\0' &&
       std::string_view(system_proxy) != "0";
-  const char* proxy_host = std::getenv("MOCKTAIL_HTTP_PROXY_HOST");
-  const char* proxy_port = std::getenv("MOCKTAIL_HTTP_PROXY_PORT");
-  const char* proxy_scheme = std::getenv("MOCKTAIL_HTTP_PROXY_SCHEME");
-  if (proxy_host != nullptr && proxy_port != nullptr) {
-    const std::optional<mocktail::runtime::NetworkProxyConfig> proxy =
-        mocktail::runtime::ParseNetworkProxyConfig(
-            proxy_host, proxy_port,
-            proxy_scheme != nullptr ? proxy_scheme : "http");
-    if (proxy.has_value()) {
-      const std::string proxy_url =
-          mocktail::runtime::BuildNetworkProxyUrl(*proxy);
-      WebKitNetworkProxySettings* settings =
-          webkit_network_proxy_settings_new(proxy_url.c_str(), nullptr);
-      if (settings == nullptr) {
-        g_object_unref(state->network_session);
-        state->network_session = nullptr;
-        g_free(cookie_database);
-        return false;
-      }
-      webkit_network_session_set_proxy_settings(
-          state->network_session, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, settings);
-      webkit_network_proxy_settings_free(settings);
-      std::cerr << "[webview] "
-                << (use_system_proxy ? "normalized system" : "configured")
-                << " proxy applied: " << proxy_url << '\n';
+  state->proxy = mocktail::runtime::ReadNetworkProxy(
+      mocktail::runtime::ProcessEnvironment());
+  if (state->proxy.has_value()) {
+    auto proxy = *state->proxy;
+    if (proxy.scheme == "socks5h") proxy.scheme = "socks5";
+    const std::string proxy_url =
+        mocktail::runtime::BuildNetworkProxyUrl(proxy, true);
+    WebKitNetworkProxySettings* settings =
+        webkit_network_proxy_settings_new(proxy_url.c_str(), nullptr);
+    if (settings == nullptr) {
+      g_object_unref(state->network_session);
+      state->network_session = nullptr;
+      return false;
     }
+    webkit_network_session_set_proxy_settings(
+        state->network_session, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, settings);
+    webkit_network_proxy_settings_free(settings);
+    std::cerr << "[webview] "
+              << (use_system_proxy ? "normalized system" : "configured")
+              << " proxy applied: "
+              << mocktail::runtime::BuildNetworkProxyUrl(proxy) << '\n';
   }
 
   WebKitCookieManager* cookies =
       webkit_network_session_get_cookie_manager(state->network_session);
-  webkit_cookie_manager_set_persistent_storage(
-      cookies, cookie_database, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
   webkit_cookie_manager_set_accept_policy(cookies,
                                           WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
   g_signal_connect(cookies, "changed", G_CALLBACK(OnCookiesChanged), state);
-  g_free(cookie_database);
 
   // Android WebView permits the third-party cookies used by Roblox login and
   // CAPTCHA providers. TLS failures remain fail-closed at the network layer.
   webkit_network_session_set_itp_enabled(state->network_session, FALSE);
   webkit_network_session_set_persistent_credential_storage_enabled(
-      state->network_session, TRUE);
+      state->network_session, FALSE);
   webkit_network_session_set_tls_errors_policy(state->network_session,
                                                WEBKIT_TLS_ERRORS_POLICY_FAIL);
-  std::cerr << "[webview] persistent XDG network session ready\n";
+  std::cerr << "[webview] network session ready; cookies stay in memory\n";
   return true;
 }
 
@@ -340,26 +322,6 @@ bool IsRobloxCookieDomain(const char* domain) {
   const std::string_view value(domain);
   return value == ".roblox.com" || value == "roblox.com" ||
          value == "www.roblox.com";
-}
-
-bool IsBrowserLoginUrl(std::string_view url) {
-  std::string_view normalized = url;
-  if (normalized.compare(0, 23, "https://www.roblox.com/") == 0) {
-    normalized.remove_prefix(23);
-  } else if (normalized.compare(0, 19, "https://roblox.com/") == 0) {
-    normalized.remove_prefix(19);
-  } else if (normalized.compare(0, 4, "www:") == 0) {
-    normalized.remove_prefix(4);
-  } else if (!normalized.empty() && normalized.front() == '/') {
-    normalized.remove_prefix(1);
-  }
-  constexpr std::string_view kLogin = "login";
-  return (normalized.compare(0, kLogin.size(), kLogin) == 0 ||
-          normalized.compare(0, kLogin.size(), "Login") == 0) &&
-         (normalized.size() == kLogin.size() ||
-          normalized[kLogin.size()] == '/' ||
-          normalized[kLogin.size()] == '?' ||
-          normalized[kLogin.size()] == '#');
 }
 
 void FinishRobloxCookieQuery(GObject* source, GAsyncResult* result,
@@ -523,7 +485,7 @@ void ApplyPendingRobloxCookie(AppState* state) {
   if (state->pending_cookie_operation ==
       PendingRobloxCookieOperation::kRetainPersistent) {
     state->pending_cookie_operation = PendingRobloxCookieOperation::kNone;
-    std::cerr << "[webview] persistent Roblox cookies retained before guest "
+    std::cerr << "[webview] in-memory Roblox cookies retained before guest "
                  "navigation\n";
     StartInitialLoad(state);
     return;
@@ -584,7 +546,7 @@ void BeginTermination(AppState* state, const char* reason) {
     g_object_ref(item->data);
   }
   for (GList* item = windows; item != nullptr; item = item->next) {
-    gtk_window_close(GTK_WINDOW(item->data));
+    gtk_window_destroy(GTK_WINDOW(item->data));
   }
   g_list_free_full(windows, g_object_unref);
   g_application_quit(G_APPLICATION(state->application));
@@ -831,12 +793,113 @@ void UpdateDomainTitle(WebKitWebView* web_view, SurfaceState* surface) {
   }
 }
 
+void SetLoadErrorVisible(WebKitWebView* web_view, bool visible) {
+  auto* banner = GTK_REVEALER(
+      g_object_get_data(G_OBJECT(web_view), "mocktail-load-error"));
+  if (banner != nullptr) {
+    if (visible && !gtk_revealer_get_reveal_child(banner)) {
+      std::cerr << "[webview] showing page load error with retry action\n";
+    }
+    gtk_revealer_set_reveal_child(banner, visible);
+  }
+}
+
+bool ScheduleResourceRetry(WebKitWebView* web_view, const char* uri,
+                            const GError* error) {
+  // Retry an interrupted verification resource load once, before Roblox's
+  // challenge timeout. Certificate failures and verification responses are
+  // left to the page and the user; every retry still validates TLS normally.
+  if (uri == nullptr ||
+      !(g_error_matches(error, G_TLS_ERROR, G_TLS_ERROR_NOT_TLS) ||
+        g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED) ||
+        g_error_matches(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT))) {
+    return false;
+  }
+  const std::string_view url(uri);
+  const std::string_view path = url.substr(0, url.find_first_of("?#"));
+  constexpr std::string_view kMetadataPath = "/captcha/v1/metadata";
+  const bool captcha_metadata =
+      path.size() >= kMetadataPath.size() &&
+      path.substr(path.size() - kMetadataPath.size()) == kMetadataPath;
+  if (!(path.size() >= 3 && path.substr(path.size() - 3) == ".js") &&
+      !(path.size() >= 4 && path.substr(path.size() - 4) == ".css") &&
+      !captcha_metadata) {
+    return false;
+  }
+  auto* surface = static_cast<SurfaceState*>(
+      g_object_get_data(G_OBJECT(web_view), "mocktail-surface-state"));
+  if (surface == nullptr || surface->app->terminating) return false;
+  if (surface->retry_source != 0) return true;
+  if (surface->resource_retries != 0) return false;
+  ++surface->resource_retries;
+  std::cerr << "[webview] interrupted page resource; retrying page once\n";
+  surface->retry_source = g_timeout_add(
+      500,
+      [](gpointer data) -> gboolean {
+        auto* view = WEBKIT_WEB_VIEW(data);
+        auto* surface = static_cast<SurfaceState*>(
+            g_object_get_data(G_OBJECT(view), "mocktail-surface-state"));
+        surface->retry_source = 0;
+        if (!surface->app->terminating) {
+          webkit_web_view_reload_bypass_cache(view);
+        }
+        return G_SOURCE_REMOVE;
+      },
+      web_view);
+  return surface->retry_source != 0;
+}
+
+void OnResourceFailed(WebKitWebResource* resource, GError* error,
+                       gpointer user_data) {
+  const auto policy = EvaluateNavigationUri(webkit_web_resource_get_uri(resource));
+  std::cerr << "[webview] resource failed host=" << policy.host
+            << " domain=" << BoundedLogToken(
+                   error ? g_quark_to_string(error->domain) : nullptr, "unknown")
+            << " code=" << (error ? error->code : 0) << '\n';
+  if (!g_error_matches(error, WEBKIT_NETWORK_ERROR,
+                        WEBKIT_NETWORK_ERROR_CANCELLED) &&
+      IsEssentialWebResource(webkit_web_resource_get_uri(resource))) {
+    auto* web_view = WEBKIT_WEB_VIEW(user_data);
+    if (!ScheduleResourceRetry(web_view, webkit_web_resource_get_uri(resource),
+                                error)) {
+      SetLoadErrorVisible(web_view, true);
+    }
+  }
+}
+
+void OnResourceFinished(WebKitWebResource* resource, gpointer user_data) {
+  auto* response = webkit_web_resource_get_response(resource);
+  if (!response || webkit_uri_response_get_status_code(response) < 400) return;
+  const auto policy = EvaluateNavigationUri(webkit_web_resource_get_uri(resource));
+  std::cerr << "[webview] resource HTTP error host=" << policy.host
+            << " status=" << webkit_uri_response_get_status_code(response) << '\n';
+  if (IsEssentialWebResource(webkit_web_resource_get_uri(resource))) {
+    SetLoadErrorVisible(WEBKIT_WEB_VIEW(user_data), true);
+  }
+}
+
+void OnResourceStarted(WebKitWebView* web_view, WebKitWebResource* resource,
+                       WebKitURIRequest*, gpointer) {
+  g_signal_connect_object(resource, "failed", G_CALLBACK(OnResourceFailed),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  g_signal_connect_object(resource, "finished", G_CALLBACK(OnResourceFinished),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+}
+
 void OnLoadChanged(WebKitWebView* web_view, WebKitLoadEvent event,
                    gpointer user_data) {
   const UriPolicyResult policy =
       EvaluateNavigationUri(webkit_web_view_get_uri(web_view));
   std::cerr << "[webview] load stage=" << LoadEventName(event)
             << " scheme=" << policy.scheme << " host=" << policy.host << '\n';
+  if (event == WEBKIT_LOAD_STARTED) {
+    auto* surface = static_cast<SurfaceState*>(user_data);
+    if (surface->retry_source != 0) {
+      g_source_remove(surface->retry_source);
+      surface->retry_source = 0;
+    }
+    SetLoadErrorVisible(web_view, false);
+  }
   if (event == WEBKIT_LOAD_COMMITTED || event == WEBKIT_LOAD_FINISHED) {
     UpdateDomainTitle(web_view, static_cast<SurfaceState*>(user_data));
     auto* surface = static_cast<SurfaceState*>(user_data);
@@ -858,6 +921,10 @@ gboolean OnLoadFailed(WebKitWebView* web_view, WebKitLoadEvent event,
                                    : g_quark_to_string(error->domain),
                                "unknown")
             << " code=" << (error == nullptr ? 0 : error->code) << '\n';
+  if (!g_error_matches(error, WEBKIT_NETWORK_ERROR,
+                        WEBKIT_NETWORK_ERROR_CANCELLED)) {
+    SetLoadErrorVisible(web_view, true);
+  }
   return FALSE;
 }
 
@@ -906,6 +973,10 @@ gboolean OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecision* decision,
 
 void ConfigureWebView(WebKitWebView* web_view, const AppState* app) {
   WebKitSettings* settings = webkit_web_view_get_settings(web_view);
+  if (app->disable_hardware_acceleration) {
+    webkit_settings_set_hardware_acceleration_policy(
+        settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+  }
   webkit_settings_set_enable_javascript(settings, TRUE);
   webkit_settings_set_enable_page_cache(settings, TRUE);
   webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
@@ -1130,6 +1201,14 @@ void OnReadyToShow(WebKitWebView* web_view, gpointer user_data) {
   }
 }
 
+void OnWindowMapped(GtkWidget*, gpointer) {
+  std::cerr << "[webview] window mapped\n";
+}
+
+void OnWindowUnmapped(GtkWidget*, gpointer) {
+  std::cerr << "[webview] window unmapped\n";
+}
+
 void OnWebViewClose(WebKitWebView* web_view, gpointer user_data) {
   auto* surface = static_cast<SurfaceState*>(user_data);
   if (surface->primary) {
@@ -1149,6 +1228,56 @@ gboolean OnWindowCloseRequest(GtkWindow* window, gpointer user_data) {
     BeginTermination(surface->app, "primary WebView window closed");
   }
   return FALSE;
+}
+
+void ReloadWebPage(WebKitWebView* web_view) {
+  if (webkit_web_view_get_uri(web_view) != nullptr) {
+    auto* surface = static_cast<SurfaceState*>(
+        g_object_get_data(G_OBJECT(web_view), "mocktail-surface-state"));
+    if (surface != nullptr) {
+      if (surface->retry_source != 0) {
+        g_source_remove(surface->retry_source);
+        surface->retry_source = 0;
+      }
+      surface->resource_retries = 0;
+    }
+    std::cerr << "[webview] page reload requested\n";
+    webkit_web_view_reload_bypass_cache(web_view);
+  }
+}
+
+void OnReloadClicked(GtkButton*, gpointer user_data) {
+  ReloadWebPage(WEBKIT_WEB_VIEW(user_data));
+}
+
+gboolean OnReloadKeyPressed(GtkEventControllerKey*, guint keyval, guint,
+                            GdkModifierType state, gpointer user_data) {
+  if (keyval == GDK_KEY_F5 ||
+      ((state & GDK_CONTROL_MASK) != 0 &&
+       (keyval == GDK_KEY_r || keyval == GDK_KEY_R))) {
+    ReloadWebPage(WEBKIT_WEB_VIEW(user_data));
+    return TRUE;
+  }
+  return FALSE;
+}
+
+gboolean OnProxyAuthenticate(WebKitWebView*, WebKitAuthenticationRequest* request,
+                             gpointer user_data) {
+  auto* app = static_cast<AppState*>(user_data);
+  if (!webkit_authentication_request_is_for_proxy(request) ||
+      !app->proxy.has_value() || app->proxy->username.empty()) {
+    return FALSE;
+  }
+  if (webkit_authentication_request_is_retry(request)) {
+    webkit_authentication_request_cancel(request);
+    return TRUE;
+  }
+  WebKitCredential* credential = webkit_credential_new(
+      app->proxy->username.c_str(), app->proxy->password.c_str(),
+      WEBKIT_CREDENTIAL_PERSISTENCE_NONE);
+  webkit_authentication_request_authenticate(request, credential);
+  webkit_credential_free(credential);
+  return TRUE;
 }
 
 WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
@@ -1173,8 +1302,24 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
     return nullptr;
   }
 
+  g_signal_connect(web_view, "authenticate", G_CALLBACK(OnProxyAuthenticate), app);
   GtkWidget* window = gtk_application_window_new(app->application);
   gtk_window_set_title(GTK_WINDOW(window), "Roblox");
+  GtkWidget* header = gtk_header_bar_new();
+  GtkWidget* reload = gtk_button_new_from_icon_name("view-refresh-symbolic");
+  gtk_widget_set_tooltip_text(reload, "Reload page (Ctrl+R or F5)");
+  gtk_accessible_update_property(GTK_ACCESSIBLE(reload),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                  "Reload page", -1);
+  gtk_header_bar_pack_start(GTK_HEADER_BAR(header), reload);
+  gtk_window_set_titlebar(GTK_WINDOW(window), header);
+  g_signal_connect_object(reload, "clicked", G_CALLBACK(OnReloadClicked),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  GtkEventController* keys = gtk_event_controller_key_new();
+  gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
+  g_signal_connect_object(keys, "key-pressed", G_CALLBACK(OnReloadKeyPressed),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  gtk_widget_add_controller(window, keys);
   gtk_window_set_default_size(GTK_WINDOW(window),
                               related_view == nullptr ? 1100 : 900,
                               related_view == nullptr ? 760 : 720);
@@ -1191,7 +1336,30 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
       }
     }
   }
-  gtk_window_set_child(GTK_WINDOW(window), GTK_WIDGET(web_view));
+  GtkWidget* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  GtkWidget* error_banner = gtk_revealer_new();
+  GtkWidget* error_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+  gtk_widget_set_margin_start(error_content, 12);
+  gtk_widget_set_margin_end(error_content, 12);
+  gtk_widget_set_margin_top(error_content, 8);
+  gtk_widget_set_margin_bottom(error_content, 8);
+  GtkWidget* error_message = gtk_label_new(
+      "Couldn't load the page. Check your connection and try again.");
+  gtk_label_set_wrap(GTK_LABEL(error_message), TRUE);
+  gtk_label_set_xalign(GTK_LABEL(error_message), 0);
+  gtk_widget_set_hexpand(error_message, TRUE);
+  GtkWidget* retry = gtk_button_new_with_label("Retry");
+  g_signal_connect_object(retry, "clicked", G_CALLBACK(OnReloadClicked),
+                           G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  gtk_box_append(GTK_BOX(error_content), error_message);
+  gtk_box_append(GTK_BOX(error_content), retry);
+  gtk_revealer_set_child(GTK_REVEALER(error_banner), error_content);
+  gtk_box_append(GTK_BOX(content), error_banner);
+  gtk_widget_set_vexpand(GTK_WIDGET(web_view), TRUE);
+  gtk_box_append(GTK_BOX(content), GTK_WIDGET(web_view));
+  gtk_window_set_child(GTK_WINDOW(window), content);
+  g_object_set_data_full(G_OBJECT(web_view), "mocktail-load-error",
+                         g_object_ref(error_banner), g_object_unref);
 
   auto* surface =
       new SurfaceState(app, GTK_WINDOW(window), related_view == nullptr);
@@ -1227,6 +1395,8 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
   webkit_user_script_unref(bridge_script);
 
   ConfigureWebView(web_view, app);
+  g_signal_connect(web_view, "resource-load-started",
+                   G_CALLBACK(OnResourceStarted), nullptr);
   g_signal_connect(web_view, "load-changed", G_CALLBACK(OnLoadChanged),
                    surface);
   g_signal_connect(web_view, "load-failed", G_CALLBACK(OnLoadFailed), surface);
@@ -1242,12 +1412,29 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
   g_signal_connect(web_view, "close", G_CALLBACK(OnWebViewClose), surface);
   g_signal_connect(window, "close-request", G_CALLBACK(OnWindowCloseRequest),
                    surface);
+  g_signal_connect(window, "map", G_CALLBACK(OnWindowMapped), nullptr);
+  g_signal_connect(window, "unmap", G_CALLBACK(OnWindowUnmapped), nullptr);
   return web_view;
 }
 
 void Activate(GtkApplication* application, gpointer user_data) {
   auto* state = static_cast<AppState*>(user_data);
   state->application = application;
+  bool wayland_display = false;
+#ifdef GDK_WINDOWING_WAYLAND
+  wayland_display = GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default());
+#endif
+  // Auth/challenge pages can finish loading while accelerated WebKit surfaces
+  // remain blank on wlroots/Mesa. Use software compositing for these small
+  // helper windows, including popups, without changing the game's renderer.
+  // Inspect GTK's actual display: an XWayland helper may inherit WAYLAND_DISPLAY.
+  state->disable_hardware_acceleration =
+      mocktail::webview::ShouldDisableWebViewHardwareAcceleration(
+          wayland_display, std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE"));
+  std::cerr << "[webview] display=" << (wayland_display ? "wayland" : "other")
+            << " compositing="
+            << (state->disable_hardware_acceleration ? "software" : "default")
+            << '\n';
   if (!InitializeNetworkSession(state)) {
     state->startup_failed = true;
     g_application_quit(G_APPLICATION(application));
@@ -1314,8 +1501,10 @@ int main(int argc, char *argv[]) {
   g_weak_ref_init(&state.primary_web_view, nullptr);
   g_weak_ref_init(&state.primary_window, nullptr);
 
+  const char* flatpak_id = std::getenv("FLATPAK_ID");
   GtkApplication *application = gtk_application_new(
-      "org.mocktail.WebViewHelper", G_APPLICATION_NON_UNIQUE);
+      flatpak_id != nullptr ? flatpak_id : "org.mocktail.WebViewHelper",
+      G_APPLICATION_NON_UNIQUE);
   state.application = application;
   g_signal_connect(application, "activate", G_CALLBACK(Activate), &state);
   state.termination_source =

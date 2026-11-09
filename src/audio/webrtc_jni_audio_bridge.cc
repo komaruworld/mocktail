@@ -30,6 +30,9 @@ struct CaptureSession {
   void* data_context = nullptr;
   std::unique_ptr<AudioCapture> capture;
   std::shared_ptr<std::atomic<bool>> microphone_muted;
+  std::atomic<std::uint64_t> delivered_buffers{0};
+  std::atomic<std::uint64_t> audible_buffers{0};
+  std::atomic<std::uint64_t> muted_buffers{0};
 };
 
 struct PlayoutSession {
@@ -112,22 +115,40 @@ void DisposeManager(void* opaque_context, const void* identity) {
 void SetMicrophoneMute(void* opaque_context, bool muted) {
   auto* context = static_cast<WebRtcJniAudioBridgeContext*>(opaque_context);
   if (context == nullptr) return;
-  context->microphone_muted->store(muted, std::memory_order_release);
+  if (context->microphone_muted->exchange(muted, std::memory_order_acq_rel) != muted) {
+    std::cerr << "  [mocktail][audio] WebRTC microphone muted=" << muted << '\n';
+  }
 }
 
 void OnCapturedAudio(void* opaque_session, std::size_t size_bytes) {
   auto* session = static_cast<CaptureSession*>(opaque_session);
   if (session != nullptr && session->data_callback != nullptr) {
+    if (session->capture == nullptr ||
+        size_bytes > session->capture->buffer_size_bytes()) {
+      return;
+    }
+    const auto* samples = static_cast<const unsigned char*>(
+        session->capture->buffer_data());
+    int peak = 0;
+    for (std::size_t i = 0; i + 1 < size_bytes; i += 2) {
+      const int word = samples[i] | (static_cast<int>(samples[i + 1]) << 8);
+      peak = std::max(peak, std::abs(word >= 32768 ? word - 65536 : word));
+    }
+    if (peak != 0 && session->audible_buffers.fetch_add(1) == 0) {
+      std::cerr << "  [mocktail][audio] WebRTC microphone first nonzero PCM"
+                << " peak=" << peak << "/32768\n";
+    }
     if (session->microphone_muted != nullptr &&
         session->microphone_muted->load(std::memory_order_acquire)) {
-      if (session->capture == nullptr ||
-          size_bytes > session->capture->buffer_size_bytes()) {
-        return;
-      }
+      session->muted_buffers.fetch_add(1, std::memory_order_relaxed);
       std::memset(session->capture->buffer_data(), 0, size_bytes);
     }
     session->data_callback(session->data_context, session->identity,
                            size_bytes);
+    if (session->delivered_buffers.fetch_add(1) == 0) {
+      std::cerr << "  [mocktail][audio] WebRTC microphone first JNI delivery"
+                << " bytes=" << size_bytes << '\n';
+    }
   }
 }
 
@@ -137,6 +158,10 @@ void CloseCaptureSession(const std::shared_ptr<CaptureSession>& session) {
   }
   (void)session->capture->Stop();
   session->capture->Shutdown();
+  std::cerr << "  [mocktail][audio] WebRTC microphone capture summary"
+            << " buffers=" << session->delivered_buffers.load()
+            << " nonzero=" << session->audible_buffers.load()
+            << " muted=" << session->muted_buffers.load() << '\n';
 }
 
 int Init(void* opaque_context, const void* identity, int sample_rate_hz,

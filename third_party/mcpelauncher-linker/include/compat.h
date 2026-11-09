@@ -15,8 +15,12 @@
 typedef std::atomic_int atomic_int;
 typedef std::atomic_uint atomic_uint;
 #endif
+#ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
+#endif
+#ifndef PAGE_MASK
 #define PAGE_MASK (~(PAGE_SIZE - 1))
+#endif
 #if !defined(__APPLE__) && !defined(__FreeBSD__)
 #define DEF_WEAK(a)
 #define __BIONIC_ALIGN(__value, __alignment) (((__value) + (__alignment)-1) & ~((__alignment)-1))

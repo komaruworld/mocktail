@@ -325,7 +325,7 @@ TEST_F(RobloxInputNativeAdapterTest, CallsExactExportedJniSignatures) {
             (std::vector<double>{90.0, 190.0, 4.0, -2.0}));
   EXPECT_EQ(probe_.calls[1].name, "mouse-button");
   EXPECT_EQ(probe_.calls[1].arguments,
-            (std::vector<double>{100.0, 200.0, JNI_TRUE, 3.0}));
+            (std::vector<double>{100.0, 200.0, JNI_TRUE, 2.0}));
   EXPECT_EQ(probe_.calls[2].name, "touch");
   EXPECT_EQ(probe_.calls[2].arguments,
             (std::vector<double>{0.0, 320.0, 360.0, 0.0, 1280.0, 720.0}));

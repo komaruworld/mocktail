@@ -10,6 +10,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -117,34 +118,90 @@ bool HasPositiveNumberAfter(std::string_view log, std::string_view marker) {
   return false;
 }
 
-bool ValidateAudio(std::string_view log, std::string* error) {
-  const bool opensl = HasPositiveNumberAfter(
-      log, "[mocktail][audio] OpenSL playback activity: submitted_buffers=");
-  const bool fmod = HasPositiveNumberAfter(
-      log, "[mocktail][audio] fmod_java first_submission submitted_buffers=");
+bool ValidateAudio(std::string_view log, bool require_clean_shutdown,
+                   std::string* error) {
   if (log.find("[mocktail][audio] fmod_java init_failed") != log.npos ||
       log.find("[mocktail][audio] fmod_java write_failed") != log.npos ||
       log.find("[mocktail][audio] fmod_java close_failed") != log.npos) {
     *error = "graphics canary observed an FMOD audio failure";
     return false;
   }
+  const bool opensl = HasPositiveNumberAfter(
+      log, "[mocktail][audio] OpenSL playback activity: submitted_buffers=");
+  const bool fmod = HasPositiveNumberAfter(
+      log, "[mocktail][audio] fmod_java first_submission submitted_buffers=");
   if (opensl &&
       (!HasPositiveNumberAfter(
            log,
            "[mocktail][audio] OpenSL playback evidence: consumed_buffers=") ||
-       log.find("[mocktail][audio] OpenSL player shutdown: submitted=") ==
-           log.npos ||
-       log.find("clean=true") == log.npos)) {
+       (require_clean_shutdown &&
+        (log.find("[mocktail][audio] OpenSL player shutdown: submitted=") ==
+             log.npos ||
+         log.find("clean=true") == log.npos)))) {
     *error =
         "graphics canary submitted OpenSL audio without clean consumption";
     return false;
   }
   if (fmod &&
       (!HasPositiveNumberAfter(log, "consumed_buffers=") ||
-       log.find("[mocktail][audio] fmod_java shutdown submitted_buffers=") ==
-           log.npos ||
-       log.find("pending_buffers=0") == log.npos)) {
+       (require_clean_shutdown &&
+        (log.find(
+             "[mocktail][audio] fmod_java shutdown submitted_buffers=") ==
+             log.npos ||
+         log.find("pending_buffers=0") == log.npos)))) {
     *error = "graphics canary submitted FMOD audio without clean consumption";
+    return false;
+  }
+  return true;
+}
+
+bool ValidatePresentEvidence(CanaryGraphicsBackend backend,
+                             std::string_view log, std::string* error) {
+  constexpr std::array<std::string_view, 3> kRequiredMarkers = {
+      "[compat] legacy binary patches: disabled",
+      "[compat] signal-recovery handler disabled",
+      "[compat] native allocator retained; host allocator bridges disabled",
+  };
+  for (const std::string_view marker : kRequiredMarkers) {
+    if (log.find(marker) == log.npos) {
+      *error = "graphics readiness marker is missing: " + std::string(marker);
+      return false;
+    }
+  }
+  if (backend == CanaryGraphicsBackend::kDirectVulkan) {
+    if (log.find("[window] first Roblox Vulkan frame presented") ==
+        log.npos) {
+      *error = "Vulkan readiness marker is missing: "
+               "[window] first Roblox Vulkan frame presented";
+      return false;
+    }
+    // A numbered queue observation proves that the candidate reached the real
+    // Vulkan queue instead of merely initializing a loader or window.
+    if (!HasPositiveNumberAfter(log, "[window] vkQueuePresentKHR #")) {
+      *error = "Vulkan readiness marker is missing: real queue present";
+      return false;
+    }
+  } else {
+    for (const std::string_view marker : {
+             std::string_view(
+                 "[window] EGL context and surface initialized via SDL3"),
+             std::string_view("[window] OpenGL ES context version=3."),
+             std::string_view("[window] first Roblox frame presented")}) {
+      if (log.find(marker) == log.npos) {
+        *error =
+            "OpenGL readiness marker is missing: " + std::string(marker);
+        return false;
+      }
+    }
+    if (!HasPositiveNumberAfter(log, "[window] SwapBuffers #")) {
+      *error = "OpenGL readiness marker is missing: real EGL swap";
+      return false;
+    }
+  }
+  if (log.find("[FATAL]") != log.npos ||
+      log.find("Segmentation fault") != log.npos ||
+      log.find("core dumped") != log.npos) {
+    *error = "graphics readiness log contains a fatal process failure";
     return false;
   }
   return true;
@@ -197,58 +254,40 @@ bool ParseCanaryGraphicsBackend(std::string_view name,
 
 bool ValidateReadinessLog(CanaryGraphicsBackend backend, std::string_view log,
                           std::string* error) {
-  constexpr std::array<std::string_view, 4> kRequiredMarkers = {
-      "[compat] legacy binary patches: disabled",
-      "[compat] signal-recovery handler disabled",
-      "[compat] native allocator retained; host allocator bridges disabled",
-      "[main] Roblox lifecycle shutdown: Stopped",
-  };
-  for (const std::string_view marker : kRequiredMarkers) {
+  if (!ValidatePresentEvidence(backend, log, error)) {
+    return false;
+  }
+  constexpr std::string_view kStoppedMarker =
+      "[main] Roblox lifecycle shutdown: Stopped";
+  if (log.find(kStoppedMarker) == log.npos) {
+    *error =
+        "graphics readiness marker is missing: " + std::string(kStoppedMarker);
+    return false;
+  }
+  if (backend == CanaryGraphicsBackend::kDirectVulkan &&
+      log.find("[vulkan] SDL WSI adapter shut down") == log.npos) {
+    *error = "Vulkan readiness marker is missing: "
+             "[vulkan] SDL WSI adapter shut down";
+    return false;
+  }
+  return ValidateAudio(log, true, error);
+}
+
+bool ValidateTeardownCrashLog(CanaryGraphicsBackend backend,
+                              std::string_view log, std::string* error) {
+  if (!ValidatePresentEvidence(backend, log, error)) {
+    return false;
+  }
+  for (const std::string_view marker : {
+           std::string_view("[window] automatic exit requested"),
+           std::string_view("[main] window closed, shutting down"),
+       }) {
     if (log.find(marker) == log.npos) {
       *error = "graphics readiness marker is missing: " + std::string(marker);
       return false;
     }
   }
-  if (backend == CanaryGraphicsBackend::kDirectVulkan) {
-    for (const std::string_view marker : {
-             std::string_view("[window] first Roblox Vulkan frame presented"),
-             std::string_view("[vulkan] SDL WSI adapter shut down")}) {
-      if (log.find(marker) == log.npos) {
-        *error =
-            "Vulkan readiness marker is missing: " + std::string(marker);
-        return false;
-      }
-    }
-    // A numbered queue observation proves that the candidate reached the real
-    // Vulkan queue instead of merely initializing a loader or window.
-    if (!HasPositiveNumberAfter(log, "[window] vkQueuePresentKHR #")) {
-      *error = "Vulkan readiness marker is missing: real queue present";
-      return false;
-    }
-  } else {
-    for (const std::string_view marker : {
-             std::string_view(
-                 "[window] EGL context and surface initialized via SDL3"),
-             std::string_view("[window] OpenGL ES context version=3."),
-             std::string_view("[window] first Roblox frame presented")}) {
-      if (log.find(marker) == log.npos) {
-        *error =
-            "OpenGL readiness marker is missing: " + std::string(marker);
-        return false;
-      }
-    }
-    if (!HasPositiveNumberAfter(log, "[window] SwapBuffers #")) {
-      *error = "OpenGL readiness marker is missing: real EGL swap";
-      return false;
-    }
-  }
-  if (log.find("[FATAL]") != log.npos ||
-      log.find("Segmentation fault") != log.npos ||
-      log.find("core dumped") != log.npos) {
-    *error = "graphics readiness log contains a fatal process failure";
-    return false;
-  }
-  return ValidateAudio(log, error);
+  return ValidateAudio(log, false, error);
 }
 
 CanaryResult RunReadinessCanary(const CanaryOptions& options) {
@@ -302,6 +341,13 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
            "DISPLAY",
            "WAYLAND_DISPLAY",
            "XDG_RUNTIME_DIR",
+           "XDG_SESSION_TYPE",
+           "SDL_VIDEO_DRIVER",
+           "SDL_VIDEODRIVER",
+           "MOCKTAIL_FORCE_WAYLAND",
+           "MOCKTAIL_FORCE_X11",
+           "MOCKTAIL_ANGLE_FORCE_X11",
+           "MOCKTAIL_PREFER_WAYLAND",
            "DBUS_SESSION_BUS_ADDRESS",
            "PULSE_SERVER",
            "PIPEWIRE_REMOTE",
@@ -313,7 +359,12 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
            "LOGNAME",
            "VK_DRIVER_FILES",
            "VK_ICD_FILENAMES",
+           "vk_require_etc2",
            "MESA_LOADER_DRIVER_OVERRIDE",
+           "LIBGL_ALWAYS_SOFTWARE",
+           "LIBGL_DRIVERS_PATH",
+           "GALLIUM_DRIVER",
+           "__EGL_VENDOR_LIBRARY_FILENAMES",
            "DRI_PRIME",
            "__NV_PRIME_RENDER_OFFLOAD",
            "__VK_LAYER_NV_optimus",
@@ -334,6 +385,11 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
            "GSETTINGS_SCHEMA_DIR",
            "GIO_EXTRA_MODULES",
            "GTK_PATH",
+           "http_proxy",
+           "https_proxy",
+           "all_proxy",
+           "no_proxy",
+           "NO_PROXY",
        }) {
     AddInherited(name, &environment);
   }
@@ -460,15 +516,34 @@ CanaryResult RunReadinessCanary(const CanaryOptions& options) {
   }
   std::filesystem::remove_all(isolated, filesystem_error);
   if (!result.error.empty()) return result;
-  result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+  result.exit_code = WIFEXITED(status)
+                         ? WEXITSTATUS(status)
+                         : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+  std::string log_error;
+  const std::string log = ReadLog(result.log_path, &log_error);
+  const bool driver_teardown_crash =
+      (WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV) ||
+      (WIFEXITED(status) && WEXITSTATUS(status) == 128);
   if (result.exit_code != 0) {
     result.error =
         "graphics canary exited with status " +
         std::to_string(result.exit_code);
+    if (driver_teardown_crash && log_error.empty() &&
+        ValidateTeardownCrashLog(options.graphics_backend, log,
+                                 &log_error)) {
+      std::fprintf(stderr,
+                   "  [update] graphics canary exited with status %d during "
+                   "teardown after proving readiness\n",
+                   result.exit_code);
+      result.error.clear();
+      result.teardown_crash = true;
+    }
     return result;
   }
-  const std::string log = ReadLog(result.log_path, &result.error);
-  if (!result.error.empty()) return result;
+  if (!log_error.empty()) {
+    result.error = log_error;
+    return result;
+  }
   if (!ValidateReadinessLog(options.graphics_backend, log, &result.error)) {
     return result;
   }

@@ -75,7 +75,8 @@ AnyLinuxVerifyInstalled() {
   for entry in /usr/bin/mocktail \
       /usr/lib/mocktail/mocktail_updater \
       /usr/lib/mocktail/mocktail_failure_dialog \
-      /usr/lib/mocktail/mocktail_webview_helper; do
+      /usr/lib/mocktail/mocktail_webview_helper \
+      /usr/lib/mocktail/mocktail_cookie_helper; do
     [[ -x "${entry}" ]] || AnyLinuxDie "missing installed executable: ${entry}"
   done
   for entry in libEGL.so libvulkan.so libmediandk.so; do
@@ -83,7 +84,8 @@ AnyLinuxVerifyInstalled() {
       AnyLinuxDie "missing installed Android adapter: ${entry}"
   done
   for entry in roblox_compatibility.json roblox_bootstrap_sources.json \
-      roblox_host_abi_reference.json roblox_signing_certificates.json; do
+      roblox_host_abi_reference.json roblox_signing_certificates.json \
+      roblox_download_sources.json; do
     [[ -r "/usr/share/mocktail/metadata/${entry}" ]] ||
       AnyLinuxDie "missing installed metadata: ${entry}"
   done
@@ -100,7 +102,7 @@ AnyLinuxVerifyAppDir() {
   [[ ! -e "${app_dir}/share/mocktail-bundle" ]] ||
     AnyLinuxDie "a portable bundle was embedded in AppDir"
   for entry in mocktail mocktail_updater mocktail_failure_dialog \
-      mocktail_webview_helper; do
+      mocktail_webview_helper mocktail_cookie_helper; do
     [[ -x "${app_dir}/bin/${entry}" ]] ||
       AnyLinuxDie "quick-sharun did not deploy ${entry}"
   done
@@ -117,7 +119,8 @@ AnyLinuxVerifyAppDir() {
       AnyLinuxDie "Android adapter was not deployed in its private directory: ${entry}"
   done
   for entry in roblox_compatibility.json roblox_bootstrap_sources.json \
-      roblox_host_abi_reference.json roblox_signing_certificates.json; do
+      roblox_host_abi_reference.json roblox_signing_certificates.json \
+      roblox_download_sources.json; do
     [[ -r "${app_dir}/share/mocktail/metadata/${entry}" ]] ||
       AnyLinuxDie "quick-sharun did not deploy metadata: ${entry}"
   done
@@ -194,7 +197,8 @@ EOF
     /usr/lib/mocktail/mocktail_webview_helper \
     /usr/lib/mocktail/mocktail_failure_dialog \
     /usr/lib/mocktail/mocktail_updater \
-    /usr/lib/mocktail /usr/share/mocktail /usr/bin/bash
+    /usr/lib/mocktail /usr/share/mocktail /usr/bin/bash \
+    /usr/lib/mocktail/mocktail_cookie_helper
   AnyLinuxVerifyAppDir "${app_dir}"
 
   # Use the upstream creation entry point, rather than maintaining a second
@@ -206,7 +210,13 @@ EOF
     "${ANYLINUX_TOOL}" --make-appimage
   local result="${ANYLINUX_WORK}/image/$(basename -- "${ANYLINUX_OUTPUT}")"
   [[ -x "${result}" ]] || AnyLinuxDie "quick-sharun did not create the requested AppImage"
+  if [[ -n "${UPINFO:-}" ]]; then
+    [[ -s "${result}.zsync" ]] || AnyLinuxDie "update information was set but no .zsync was generated"
+  fi
   mv -f -- "${result}" "${ANYLINUX_OUTPUT}"
+  if [[ -f "${result}.zsync" ]]; then
+    mv -fT -- "${result}.zsync" "${ANYLINUX_OUTPUT}.zsync"
+  fi
   printf '[anylinux] AppImage ready: %s\n' "${ANYLINUX_OUTPUT}" >&2
 }
 

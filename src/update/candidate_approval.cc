@@ -19,6 +19,7 @@
 #include <string_view>
 
 #include "compat/elf_build_id.h"
+#include "compat/guest_abi.h"
 #include "update/payload_integrity.h"
 
 namespace mocktail::update {
@@ -260,7 +261,7 @@ std::string PayloadRuntimeFingerprint(
   evidence.append("base_apk=")
       .append(payload.metadata.base_apk_sha256)
       .append("\n");
-  evidence.append("x86_64_split=")
+  evidence.append(std::string(compat::kGuestAbi) + "_split=")
       .append(payload.metadata.split_apk_sha256)
       .append("\n");
   evidence.append("assets=")

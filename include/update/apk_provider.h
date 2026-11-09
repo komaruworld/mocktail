@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -15,7 +16,9 @@ struct ProviderVersion {
   std::uint64_t version_code = 0;
   std::string error;
 
-  explicit operator bool() const { return error.empty(); }
+  explicit operator bool() const {
+    return error.empty() && !version_name.empty() && version_code > 0;
+  }
 };
 
 struct ProviderDownloadResult {
@@ -25,12 +28,12 @@ struct ProviderDownloadResult {
   std::string source;
   std::string error;
 
-  explicit operator bool() const { return error.empty(); }
+  explicit operator bool() const { return error.empty() && !archives.empty(); }
 };
 
-// A source of Roblox APK archives. Providers are interchangeable: whichever
-// one answers first wins, and every archive still passes the same signature,
-// Build-ID, and ABI verification afterwards.
+using ArchiveValidator =
+    std::function<std::string(const ProviderDownloadResult&)>;
+
 class ApkProvider {
  public:
   virtual ~ApkProvider() = default;
@@ -41,10 +44,16 @@ class ApkProvider {
   // Latest published version. A provider that only serves pinned versions
   // reports an error here and stays usable through DownloadExact.
   virtual ProviderVersion CheckLatest() const = 0;
+  virtual bool HasVersionDiscovery() const { return true; }
 
   virtual ProviderDownloadResult DownloadExact(
-      std::string_view version, const std::filesystem::path& output_directory,
-      int progress_fd) const = 0;
+      const ProviderVersion& version,
+      const std::filesystem::path& output_directory, int progress_fd) const = 0;
+
+  virtual ProviderDownloadResult DownloadVerified(
+      const ProviderVersion& version,
+      const std::filesystem::path& output_directory, int progress_fd,
+      const ArchiveValidator& validate) const;
 };
 
 // Tries every provider in order. One unreachable provider is the most common
@@ -57,8 +66,13 @@ class ProviderChain final : public ApkProvider {
   std::string_view name() const override { return "provider-chain"; }
   ProviderVersion CheckLatest() const override;
   ProviderDownloadResult DownloadExact(
-      std::string_view version, const std::filesystem::path& output_directory,
+      const ProviderVersion& version,
+      const std::filesystem::path& output_directory,
       int progress_fd) const override;
+  ProviderDownloadResult DownloadVerified(
+      const ProviderVersion& version,
+      const std::filesystem::path& output_directory, int progress_fd,
+      const ArchiveValidator& validate) const override;
 
  private:
   std::vector<std::unique_ptr<ApkProvider>> providers_;

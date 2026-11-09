@@ -141,6 +141,7 @@ TEST_F(LibcShimTest, ValidCaBundleOverrideMapsAndroidAliases) {
             static_cast<ssize_t>(sizeof(kTestCertificate) - 1));
   ASSERT_EQ(close(fd), 0);
   ASSERT_EQ(setenv("MOCKTAIL_CA_BUNDLE", temp_template, 1), 0);
+  ASSERT_EQ(setenv("MOCKTAIL_ASSET_PATH", "/payload/assets/content/", 1), 0);
 
   RegisterPathMapping("/data/user/0/com.roblox.client", "/host/sober");
   const HostCaBundleResolution resolution =
@@ -157,6 +158,14 @@ TEST_F(LibcShimTest, ValidCaBundleOverrideMapsAndroidAliases) {
             temp_template);
   EXPECT_EQ(TranslatePath("/data/user/0/com.roblox.client/files/other"),
             "/host/sober/files/other");
+  for (const char* alias : {
+           "ssl/cacert.pem", "content/ssl/cacert.pem",
+           "rbx_bin/assets/ssl/cacert.pem", "rbx_bin/assets/content/ssl/cacert.pem",
+           "/payload/assets/ssl/cacert.pem", "/payload/assets/content/ssl/cacert.pem",
+           "/data/user/0/com.roblox.client/files/exe/ssl/cacert.pem",
+           "/data/data/com.roblox.client/files/exe/ssl/cacert.pem"}) {
+    EXPECT_EQ(TranslatePath(alias), temp_template);
+  }
   FILE* mapped_file = mocktail_fopen(
       "/data/user/0/com.roblox.client/files/exe/cacert.pem", "r");
   ASSERT_NE(mapped_file, nullptr);

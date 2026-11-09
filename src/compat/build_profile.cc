@@ -119,20 +119,33 @@ bool ParseOptionalFmodOutputDeviceBridge(
     return false;
   }
 
-  std::uint32_t layout_version = 1;
-  const auto layout = field->find("vtable_layout_version");
-  if (layout != field->end()) {
-    if (!layout->is_number_integer() || (*layout != 1 && *layout != 2)) {
+  int layout = 1;
+  const auto layout_field = field->find("vtable_layout_version");
+  if (layout_field != field->end()) {
+    if (!layout_field->is_number_integer() ||
+        (*layout_field != 1 && *layout_field != 2)) {
       return false;
     }
-    layout_version = layout->get<std::uint32_t>();
+    layout = layout_field->get<int>();
   }
   *bridge_profile = FmodOutputDeviceBridgeProfile{
       *vtable_rva,      *string_constructor_rva, *count_method_rva,
-      *info_method_rva, *current_method_rva,     *select_method_rva,
-      layout_version,
+      *info_method_rva, *current_method_rva,     *select_method_rva, layout,
   };
-  return true;
+  constexpr const char *input_fields[] = {
+      "input_count_method_rva", "input_info_method_rva",
+      "input_current_method_rva", "input_select_method_rva"};
+  std::size_t input_fields_present = 0;
+  for (std::size_t i = 0; i < 4; ++i) {
+    std::optional<std::uintptr_t> rva;
+    if (!ParseOptionalRva(*field, input_fields[i], &rva))
+      return false;
+    if (rva) {
+      ++input_fields_present;
+      (*bridge_profile)->input_method_rvas[i] = *rva;
+    }
+  }
+  return input_fields_present == 0 || input_fields_present == 4;
 }
 
 bool ParseOptionalVrDebugDeviceBridge(
@@ -289,6 +302,27 @@ ProfileLookupResult FindBuildProfile(const std::string& manifest_path,
     if (matched_profile.has_value()) {
       return Failure("duplicate compatibility profile for Build ID " +
                      normalized_requested);
+    }
+
+    // Upgrade previously cached manifests for these exact, validated images.
+    // This adds input routes without changing the payload's approval status.
+    if (fmod_output_device_bridge &&
+        !fmod_output_device_bridge->has_input_devices()) {
+      auto &bridge = *fmod_output_device_bridge;
+      if (normalized_profile == "ade08266c67aee88ec9c1d00902150e1684dad3a" &&
+          bridge.vtable_rva == 0x6c58040 && bridge.vtable_layout_version == 1) {
+        bridge.input_method_rvas = {0x32d12dc, 0x32d12ea, 0x32d13a6, 0x32d0a56};
+      } else if (normalized_profile ==
+                     "5f0704edd9064f566ee3d6df2bd2fabbcc709f03" &&
+                 bridge.vtable_rva == 0x6cd3ce0 &&
+                 bridge.vtable_layout_version == 2) {
+        bridge.input_method_rvas = {0x320ccf6, 0x320cd04, 0x320d152, 0x320bd18};
+      } else if (normalized_profile ==
+                     "a67a91ef96c700c0730acd36a250c2f93cfafbc1" &&
+                 bridge.vtable_rva == 0x6e3d1d0 &&
+                 bridge.vtable_layout_version == 2) {
+        bridge.input_method_rvas = {0x2ee4f10, 0x2ee4f1e, 0x2ee536c, 0x2ee3f32};
+      }
     }
 
     matched_profile = BuildProfile{

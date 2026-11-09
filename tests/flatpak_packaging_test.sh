@@ -36,12 +36,14 @@ finish_args = set(manifest["finish-args"])
 required_permissions = {
     "--share=network",
     "--socket=wayland",
-    "--socket=fallback-x11",
+    "--socket=x11",
     "--socket=pulseaudio",
     "--device=dri",
     "--filesystem=xdg-run/discord-ipc-0:rw",
 }
 assert required_permissions <= finish_args
+# Keep NVIDIA's XWayland fallback available even when Wayland is present.
+assert "--socket=fallback-x11" not in finish_args
 assert not any(argument.startswith("--filesystem=host") for argument in finish_args)
 assert not any(argument == "--filesystem=home" for argument in finish_args)
 
@@ -161,6 +163,12 @@ grep -Fq -- '--default-branch=stable' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not produce the stable Flatpak branch'
 grep -Fq 'Mocktail-x86_64.flatpak' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not build the installable Flatpak bundle'
+grep -Fq 'Mocktail-aarch64.flatpak' "${GITHUB_CI}" ||
+  Fail 'GitHub Actions does not build the aarch64 Flatpak bundle'
+grep -Fq 'ubuntu-24.04-arm' "${GITHUB_CI}" ||
+  Fail 'GitHub Actions does not build Flatpak on an ARM64 runner'
+grep -Fq 'flatpak build-import-bundle' "${GITHUB_CI}" ||
+  Fail 'GitHub Actions does not merge both architectures into one repository'
 grep -Fq 'actions/upload-artifact@' "${GITHUB_CI}" ||
   Fail 'GitHub Actions does not publish the Flatpak artifact'
 grep -Fq 'actions/upload-pages-artifact@' "${GITHUB_CI}" ||
@@ -209,18 +217,35 @@ set -e
 grep -Fq 'flatpak-builder is unavailable' "${TEMP_DIR}/stderr" ||
   Fail 'helper did not explain how to install flatpak-builder'
 
+cat >"${TEMP_DIR}/bin/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'aarch64\n'
+EOF
+cat >"${TEMP_DIR}/bin/flatpak-builder" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"${MOCKTAIL_TEST_BUILDER_ARGS}"
+EOF
+chmod 0755 "${TEMP_DIR}/bin/flatpak-builder"
+PATH="${TEMP_DIR}/bin:/usr/bin:/bin" \
+  MOCKTAIL_TEST_BUILDER_ARGS="${TEMP_DIR}/builder-args" \
+  "${BUILD_HELPER}" --build-dir "${ROOT}/build-flatpak-test"
+grep -Fxq -- '--arch=aarch64' "${TEMP_DIR}/builder-args" ||
+  Fail 'local Flatpak helper did not select aarch64'
+
 mkdir -p -- "${TEMP_DIR}/repo/objects"
 mkdir -p -- \
   "${TEMP_DIR}/native-repositories/apt" \
   "${TEMP_DIR}/native-repositories/rpm" \
   "${TEMP_DIR}/native-repositories/downloads"
 printf 'bundle\n' >"${TEMP_DIR}/Mocktail-x86_64.flatpak"
+printf 'bundle\n' >"${TEMP_DIR}/Mocktail-aarch64.flatpak"
 printf 'public-key\n' >"${TEMP_DIR}/mocktail-flatpak.gpg"
 printf 'public-key\n' \
   >"${TEMP_DIR}/native-repositories/mocktail-packages.gpg"
 "${PAGES_HELPER}" \
   "${TEMP_DIR}/repo" \
   "${TEMP_DIR}/Mocktail-x86_64.flatpak" \
+  "${TEMP_DIR}/Mocktail-aarch64.flatpak" \
   "${TEMP_DIR}/mocktail-flatpak.gpg" \
   "${TEMP_DIR}/public" \
   "${TEMP_DIR}/native-repositories"
@@ -230,8 +255,13 @@ grep -Fq 'Url=https://mocktail.bigrat.space/repo/' \
 grep -Fq 'Name=space.bigrat.mocktail' \
   "${TEMP_DIR}/public/mocktail.flatpakref" ||
   Fail 'published Flatpak ref has the wrong application ID'
+[[ -f "${TEMP_DIR}/public/Mocktail-x86_64.flatpak" &&
+   -f "${TEMP_DIR}/public/Mocktail-aarch64.flatpak" ]] ||
+  Fail 'Pages output does not include both Flatpak bundles'
 grep -Fq 'flatpak install --user' "${TEMP_DIR}/public/index.html" ||
   Fail 'Pages landing page has no direct installation command'
+grep -Fq 'Mocktail-aarch64.flatpak' "${TEMP_DIR}/public/index.html" ||
+  Fail 'Pages landing page has no aarch64 Flatpak bundle link'
 grep -Fq 'roblox://experiences/start' "${TEMP_DIR}/public/join.html" ||
   Fail 'Pages output has no Discord join bridge'
 [[ -d "${TEMP_DIR}/public/apt" &&

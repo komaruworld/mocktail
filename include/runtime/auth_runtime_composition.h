@@ -19,6 +19,7 @@ namespace runtime {
 
 class Environment;
 class RuntimePaths;
+class RobloxSecretStore;
 
 enum class AuthRuntimeStatus {
   kAuthenticated,
@@ -97,11 +98,13 @@ AuthRuntimeComposition ComposeAuthRuntime(const Environment& environment,
 AuthRuntimeComposition ComposeAuthRuntime(
     const Environment& environment, const RuntimePaths& paths,
     services::AuthService& auth_service,
-    std::shared_ptr<services::HttpClient> live_auth_http_client);
+    std::shared_ptr<services::HttpClient> live_auth_http_client,
+    std::shared_ptr<RobloxSecretStore> secrets = nullptr);
 
-// Persists a raw or prefixed Roblox credential to the given cookie file atomically.
 bool PersistRobloxCookie(const std::filesystem::path& path,
-                         std::string_view cookie_value);
+                         std::string_view cookie_value,
+                         std::shared_ptr<RobloxSecretStore> secrets = nullptr,
+                         const std::filesystem::path& legacy_webview = {});
 
 }  // namespace runtime
 }  // namespace mocktail

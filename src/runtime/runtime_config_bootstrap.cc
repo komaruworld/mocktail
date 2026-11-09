@@ -49,6 +49,9 @@ runtime:
   # active verified payload.
   # roblox_library: /absolute/path/to/libroblox.so
 
+auth:
+  use_libsecret: false
+
 appearance:
   # String (default: roblox): use Roblox's saved account theme. Supported
   # overrides: dark, light, or system (follow the desktop color scheme).
@@ -104,6 +107,16 @@ audio:
   input_device: default
 
 integrations:
+  fleasion:
+    # Boolean (default: false): trust Fleasion's CA without editing Roblox files.
+    enabled: false
+    # String: match Fleasion's routing mode: env or hosts.
+    proxy_mode: env
+    # Integer: Fleasion's local HTTP proxy port in env mode.
+    proxy_port: 58443
+    # Optional absolute public CA path. Default: $XDG_CONFIG_HOME/Fleasion/proxy_ca/ca.crt
+    # or ~/.config/Fleasion/proxy_ca/ca.crt. Never select ca.key.
+    # ca_certificate: /home/user/.config/Fleasion/proxy_ca/ca.crt
   discord_rpc:
     # Boolean (default: false): publish Mocktail activity to Discord Desktop.
     # This never signs in to Discord and never reads an account token.
@@ -144,12 +157,15 @@ network:
   # Boolean (default: false): follow the host HTTP/SOCKS5 proxy and
   # automatically use its current port. Do not combine with a fixed proxy.
   use_system_proxy: false
-  # Optional fixed HTTP proxy. Uncomment both values together. The host must
-  # not contain a scheme such as http://.
+  # Optional fixed HTTP/SOCKS5 proxy. Uncomment host and port together.
+  # The host must not contain a scheme such as http://.
+  # proxy_scheme: http
   # String (optional, default: disabled): proxy host name or IP address.
   # proxy_host: 127.0.0.1
   # Integer (optional, default: disabled): proxy TCP port from 1 to 65535.
   # proxy_port: 8080
+  # proxy_username: "user"
+  # proxy_password: "password"
   # Absolute path (optional): custom PEM CA bundle. Mocktail reads this file
   # directly and does not replace it during Roblox payload updates.
   # ca_bundle: /home/user/.config/mocktail/cacert.pem

@@ -9,19 +9,22 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
-#include <cstdio>
+#include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "jnivm/jnivm.h"
 #include "runtime/environment.h"
+#include "runtime/roblox_cookie_store.h"
 #include "runtime/runtime_paths.h"
 #include "services/auth_service.h"
 
@@ -31,17 +34,14 @@ namespace {
 
 constexpr uintmax_t kMaximumCookieFileBytes = 1024 * 1024;
 
-enum class CookieLoadStatus {
-  kFound,
-  kMissing,
-  kUnavailable,
-};
+using CookieLoadStatus = StoredCookieStatus;
 
 enum class CookieSource {
   kNone,
   kEnvironment,
   kExplicitFile,
   kManagedFile,
+  kSecretStore,
 };
 
 struct CookieLoadResult {
@@ -59,14 +59,85 @@ struct CookieLoadResult {
   std::filesystem::path source_path;
 };
 
+void ClearSensitiveString(std::string* value);
+
 struct CookiePersistenceContext {
+  CookiePersistenceContext(std::filesystem::path path,
+                           std::shared_ptr<RobloxSecretStore> secrets,
+                           std::filesystem::path legacy_webview)
+      : path(std::move(path)),
+        secrets(std::move(secrets)),
+        legacy_webview(std::move(legacy_webview)),
+        worker([this] { Run(); }) {}
+
+  ~CookiePersistenceContext() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      stopping = true;
+    }
+    condition.notify_all();
+    worker.join();
+    ClearSensitiveString(&last_saved);
+  }
+
+  void Save(std::string_view credential) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (credential == pending ||
+        (!writing && pending.empty() && credential == last_saved))
+      return;
+    ClearSensitiveString(&pending);
+    pending.assign(credential);
+    condition.notify_all();
+  }
+
+  void Wait() {
+    std::unique_lock<std::mutex> lock(mutex);
+    condition.wait(lock, [this] { return pending.empty() && !writing; });
+  }
+
+  void Run() {
+    std::unique_lock<std::mutex> lock(mutex);
+    while (true) {
+      condition.wait(lock, [this] { return stopping || !pending.empty(); });
+      if (pending.empty() && stopping) break;
+      std::string credential = std::move(pending);
+      pending.clear();
+      writing = true;
+      lock.unlock();
+      const bool stored =
+          preserve_managed_file
+              ? (!secrets->enabled() || secrets->Store(path, credential))
+              : PersistRobloxCookie(path, credential, secrets, legacy_webview);
+      if (preserve_managed_file && !stored)
+        secrets->Warn(
+            "The updated Roblox session could not be saved securely. "
+            "The explicitly supplied cookie file was preserved.");
+      lock.lock();
+      if (stored) {
+        ClearSensitiveString(&last_saved);
+        last_saved = credential;
+      }
+      ClearSensitiveString(&credential);
+      writing = false;
+      condition.notify_all();
+    }
+  }
+
   std::filesystem::path path;
+  std::shared_ptr<RobloxSecretStore> secrets;
+  std::filesystem::path legacy_webview;
   std::weak_ptr<jnivm::VM> vm;
   std::shared_ptr<services::HttpClient> live_auth_http_client;
   std::mutex promotion_mutex;
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::string pending;
+  std::string last_saved;
+  bool preserve_managed_file = false;
+  bool writing = false;
+  bool stopping = false;
+  std::thread worker;
 };
-
-void ClearSensitiveString(std::string* value);
 
 class ScopedFileDescriptor final {
  public:
@@ -313,13 +384,11 @@ bool PersistRobloxCredential(void* opaque, const char* data, size_t size) {
     return false;
   }
 
-  std::string stored_credential(data, size);
-  stored_credential.push_back('\n');
-  const bool stored =
-      WritePrivateFileAtomically(context->path, stored_credential);
-  ClearSensitiveString(&stored_credential);
+  for (unsigned char ch : credential.substr(kPrefix.size()))
+    if (ch <= 0x20 || ch >= 0x7f || ch == ';') return false;
+  context->Save(credential);
   const std::shared_ptr<jnivm::VM> vm = context->vm.lock();
-  if (stored && vm != nullptr && context->live_auth_http_client != nullptr &&
+  if (vm != nullptr && context->live_auth_http_client != nullptr &&
       vm->GetRobloxAuthIdentitySnapshot().user_id <= 0) {
     std::lock_guard<std::mutex> lock(context->promotion_mutex);
     if (vm->GetRobloxAuthIdentitySnapshot().user_id <= 0) {
@@ -338,23 +407,31 @@ bool PersistRobloxCredential(void* opaque, const char* data, size_t size) {
       }
     }
   }
-  return stored;
+  return true;
 }
 
-void InstallCredentialPersistence(const std::shared_ptr<jnivm::VM>& vm,
-                                  const RuntimePaths& paths,
-                                  std::shared_ptr<services::HttpClient>
-                                      live_auth_http_client) {
-  if (vm == nullptr) {
-    return;
-  }
-  auto context = std::make_shared<CookiePersistenceContext>();
-  context->path = paths.cookie_file();
+std::shared_ptr<CookiePersistenceContext> InstallCredentialPersistence(
+    const std::shared_ptr<jnivm::VM>& vm, const RuntimePaths& paths,
+    const Environment& environment,
+    std::shared_ptr<services::HttpClient> live_auth_http_client,
+    std::shared_ptr<RobloxSecretStore> secrets) {
+  if (vm == nullptr) return nullptr;
+  const auto data =
+      environment.HasNonEmpty("XDG_DATA_HOME")
+          ? std::filesystem::path(environment.GetOr("XDG_DATA_HOME", ""))
+          : paths.home() / ".local/share";
+  auto context = std::make_shared<CookiePersistenceContext>(
+      paths.cookie_file(), std::move(secrets), data / "mocktail/webview");
+  std::error_code error;
+  if (environment.HasNonEmpty("MOCKTAIL_COOKIE_FILE"))
+    context->preserve_managed_file = std::filesystem::equivalent(
+        environment.GetOr("MOCKTAIL_COOKIE_FILE", ""), paths.cookie_file(),
+        error);
   context->vm = vm;
   context->live_auth_http_client = std::move(live_auth_http_client);
   vm->SetRobloxCredentialSink(
-      std::move(context),
-      jnivm::RobloxCredentialSinkCallbacks{&PersistRobloxCredential});
+      context, jnivm::RobloxCredentialSinkCallbacks{&PersistRobloxCredential});
+  return context;
 }
 
 bool Enabled(const Environment& environment, const char* name,
@@ -380,84 +457,8 @@ bool SameFileVersion(const struct stat& left, const struct stat& right) {
 
 CookieLoadResult ReadCookieFile(const std::filesystem::path& path,
                                 bool missing_is_unavailable) {
-  const int descriptor =
-      open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
-  if (descriptor < 0) {
-    if (errno == ENOENT && !missing_is_unavailable) {
-      return {};
-    }
-    return {CookieLoadStatus::kUnavailable,
-            {},
-            "configured Roblox cookie file is unavailable"};
-  }
-  const ScopedFileDescriptor file(descriptor);
-
-  struct stat metadata = {};
-  if (fstat(file.get(), &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
-      metadata.st_uid != geteuid()) {
-    return {CookieLoadStatus::kUnavailable,
-            {},
-            "Roblox cookie source is not a regular file"};
-  }
-  if ((metadata.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
-    return {CookieLoadStatus::kUnavailable,
-            {},
-            "Roblox cookie file permissions are not private"};
-  }
-  if (metadata.st_size < 0 ||
-      static_cast<uintmax_t>(metadata.st_size) > kMaximumCookieFileBytes) {
-    return {CookieLoadStatus::kUnavailable,
-            {},
-            "Roblox cookie file exceeds the safe read limit"};
-  }
-
-  std::string value;
-  value.reserve(static_cast<size_t>(metadata.st_size));
-  std::array<char, 4096> buffer = {};
-  while (true) {
-    const ssize_t bytes = read(file.get(), buffer.data(), buffer.size());
-    if (bytes == 0) {
-      break;
-    }
-    if (bytes < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      std::fill(buffer.begin(), buffer.end(), '\0');
-      ClearSensitiveString(&value);
-      return {CookieLoadStatus::kUnavailable,
-              {},
-              "Roblox cookie file could not be read"};
-    }
-    const size_t byte_count = static_cast<size_t>(bytes);
-    if (value.size() > kMaximumCookieFileBytes - byte_count) {
-      std::fill(buffer.begin(), buffer.end(), '\0');
-      ClearSensitiveString(&value);
-      return {CookieLoadStatus::kUnavailable,
-              {},
-              "Roblox cookie file exceeds the safe read limit"};
-    }
-    value.append(buffer.data(), byte_count);
-  }
-  std::fill(buffer.begin(), buffer.end(), '\0');
-  struct stat verification_metadata = {};
-  if (fstat(file.get(), &verification_metadata) != 0 ||
-      !SameFileVersion(metadata, verification_metadata) ||
-      static_cast<uintmax_t>(verification_metadata.st_size) != value.size()) {
-    ClearSensitiveString(&value);
-    return {CookieLoadStatus::kUnavailable,
-            {},
-            "Roblox cookie file changed while it was read"};
-  }
-  if (value.empty()) {
-    if (missing_is_unavailable) {
-      return {CookieLoadStatus::kUnavailable,
-              {},
-              "configured Roblox cookie file is empty"};
-    }
-    return {};
-  }
-  return {CookieLoadStatus::kFound, std::move(value), {}};
+  StoredCookie cookie = ReadRobloxCookieFile(path, missing_is_unavailable);
+  return {cookie.status, std::move(cookie.value), std::move(cookie.error)};
 }
 
 CookieLoadResult ReadCookieSource(const std::filesystem::path& path,
@@ -503,7 +504,8 @@ bool ReadDescriptorContents(int descriptor, std::string* contents) {
 }
 
 bool IsAutomaticallyRecoverableSource(CookieSource source) {
-  return source == CookieSource::kManagedFile;
+  return source == CookieSource::kManagedFile ||
+         source == CookieSource::kSecretStore;
 }
 
 bool IsCookieFileDelimiter(char character) {
@@ -724,7 +726,8 @@ bool ClearRejectedCookieFile(const std::filesystem::path& path,
 }
 
 CookieLoadResult LoadSavedCookie(const Environment& environment,
-                                 const RuntimePaths& paths) {
+                                 const RuntimePaths& paths,
+                                 RobloxSecretStore& secrets) {
   std::optional<std::string> environment_cookie =
       environment.Get("MOCKTAIL_ROBLOX_COOKIES");
   if (environment_cookie.has_value() && !environment_cookie->empty()) {
@@ -741,16 +744,61 @@ CookieLoadResult LoadSavedCookie(const Environment& environment,
     return ReadCookieSource(*explicit_file, true, CookieSource::kExplicitFile);
   }
 
-  CookieLoadResult result =
-      ReadCookieSource(paths.cookie_file(), false, CookieSource::kManagedFile);
-  if (result.status == CookieLoadStatus::kFound &&
-      !services::AuthService::HasRoblosecurityCookie(result.value)) {
-    ClearSensitiveString(&result.value);
-    result = {};
-  } else if (result.status != CookieLoadStatus::kMissing) {
-    return result;
+  StoredCookie saved = LoadManagedRobloxCookie(paths.cookie_file(), secrets);
+  if (saved.from_secret_store &&
+      saved.status == CookieLoadStatus::kUnavailable) {
+    secrets.Warn(
+        "Secure storage is unavailable. A saved Roblox session "
+        "could not be read. Unlock your keyring, or sign in again "
+        "to use an unencrypted private cookie file.");
+    return {};
+  }
+  CookieLoadResult result{saved.status, std::move(saved.value),
+                          std::move(saved.error)};
+  if (result.status == CookieLoadStatus::kFound) {
+    result.source = saved.from_secret_store ? CookieSource::kSecretStore
+                                            : CookieSource::kManagedFile;
+    result.source_path = paths.cookie_file();
+    if (!services::AuthService::HasRoblosecurityCookie(result.value)) {
+      ClearSensitiveString(&result.value);
+      result = {};
+    }
   }
   return result;
+}
+
+bool RemoveMigratedCookieFile(const std::filesystem::path& path,
+                              std::string_view expected) {
+  const auto parent = path.parent_path().empty() ? std::filesystem::path(".")
+                                                : path.parent_path();
+  const int directory_descriptor =
+      open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (directory_descriptor < 0) return errno == ENOENT;
+  const ScopedFileDescriptor directory(directory_descriptor);
+  const std::string filename = path.filename().string();
+  const ScopedFileDescriptor lock(
+      OpenCookieWriterLock(directory.get(), filename));
+  if (lock.get() < 0) return false;
+  const ScopedFileDescriptor file(
+      openat(directory.get(), filename.c_str(),
+             O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW));
+  if (file.get() < 0) return errno == ENOENT;
+  struct stat metadata{}, current{};
+  if (fstat(file.get(), &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+      metadata.st_uid != geteuid() || metadata.st_nlink != 1 ||
+      (metadata.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
+      flock(file.get(), LOCK_EX | LOCK_NB) != 0)
+    return false;
+  std::string contents;
+  const bool matches =
+      ReadDescriptorContents(file.get(), &contents) && contents == expected;
+  ClearSensitiveString(&contents);
+  return matches &&
+         fstatat(directory.get(), filename.c_str(), &current,
+                 AT_SYMLINK_NOFOLLOW) == 0 &&
+         SameFileVersion(metadata, current) &&
+         unlinkat(directory.get(), filename.c_str(), 0) == 0 &&
+         fsync(directory.get()) == 0;
 }
 
 void ClearSensitiveString(std::string* value) {
@@ -767,20 +815,57 @@ void ClearSensitiveString(std::string* value) {
 }  // namespace
 
 bool PersistRobloxCookie(const std::filesystem::path& path,
-                         std::string_view cookie_value) {
-  if (cookie_value.empty()) {
+                         std::string_view cookie_value,
+                         std::shared_ptr<RobloxSecretStore> secrets,
+                         const std::filesystem::path& legacy_webview) {
+  if (cookie_value.empty() || cookie_value.size() > kMaximumCookieFileBytes ||
+      cookie_value.find_first_of("\r\n") != cookie_value.npos ||
+      cookie_value.find('\0') != cookie_value.npos)
+    return false;
+  if (secrets == nullptr) secrets = OpenRobloxSecretStore();
+  constexpr std::string_view prefix = ".ROBLOSECURITY=";
+  std::string canonical;
+  if (cookie_value.substr(0, prefix.size()) != prefix) canonical = prefix;
+  canonical.append(cookie_value);
+  const std::string_view value(canonical.data() + prefix.size(),
+                               canonical.size() - prefix.size());
+  if (value.empty()) return false;
+  for (unsigned char ch : value) {
+    if (ch <= 0x20 || ch >= 0x7f || ch == ';') {
+      ClearSensitiveString(&canonical);
+      return false;
+    }
+  }
+
+  StoredCookie previous = ReadRobloxCookieFile(path);
+  if (previous.status == StoredCookieStatus::kUnavailable) {
+    ClearSensitiveString(&canonical);
+    secrets->Warn("The Roblox session could not be saved: the managed cookie "
+                  "file is unavailable or unsafe.");
     return false;
   }
-  std::string formatted;
-  constexpr std::string_view kPrefix = ".ROBLOSECURITY=";
-  if (cookie_value.compare(0, kPrefix.size(), kPrefix) != 0) {
-    formatted = std::string(kPrefix) + std::string(cookie_value) + "\n";
-  } else {
-    formatted = std::string(cookie_value) + "\n";
+  if (secrets->enabled() && secrets->Store(path, canonical)) {
+    const bool removed = RemoveLegacyWebViewCookies(legacy_webview) &&
+                         RemoveMigratedCookieFile(path, previous.value);
+    ClearSensitiveString(&previous.value);
+    ClearSensitiveString(&canonical);
+    if (!removed)
+      secrets->Warn(
+          "The Roblox session is in secure storage, but its old "
+          "unencrypted cookie files could not be removed.");
+    return removed;
   }
-  const bool result = WritePrivateFileAtomically(path, formatted);
-  ClearSensitiveString(&formatted);
-  return result;
+  ClearSensitiveString(&previous.value);
+  canonical.push_back('\n');
+  const bool stored = WritePrivateFileAtomically(path, canonical);
+  ClearSensitiveString(&canonical);
+  if (!stored)
+    secrets->Warn("The Roblox session could not be saved to its private cookie "
+                  "file. You may need to sign in again.");
+  else if (secrets->enabled())
+    secrets->Warn("Secure storage is unavailable. The Roblox cookie is stored "
+                  "unencrypted in Mocktail's private cookie file.");
+  return stored;
 }
 
 void SecurelyClearString(std::string* value) { ClearSensitiveString(value); }
@@ -849,9 +934,11 @@ AuthRuntimeComposition ComposeAuthRuntime(const Environment& environment,
 AuthRuntimeComposition ComposeAuthRuntime(
     const Environment& environment, const RuntimePaths& paths,
     services::AuthService& auth_service,
-    std::shared_ptr<services::HttpClient> live_auth_http_client) {
+    std::shared_ptr<services::HttpClient> live_auth_http_client,
+    std::shared_ptr<RobloxSecretStore> secrets) {
+  if (secrets == nullptr) secrets = OpenRobloxSecretStore(environment);
   AuthRuntimeComposition composition;
-  CookieLoadResult cookie = LoadSavedCookie(environment, paths);
+  CookieLoadResult cookie = LoadSavedCookie(environment, paths, *secrets);
   if (cookie.status == CookieLoadStatus::kUnavailable) {
     composition.error = std::move(cookie.error);
     return composition;
@@ -878,9 +965,21 @@ AuthRuntimeComposition ComposeAuthRuntime(
       (session.http_status == 401 || session.http_status == 403) &&
       IsAutomaticallyRecoverableSource(cookie.source)) {
     std::string reset_error;
-    if (cookie.source == CookieSource::kManagedFile &&
-        !ClearRejectedCookieFile(cookie.source_path, cookie.value,
-                                 &reset_error)) {
+    bool retired = true;
+    if (cookie.source == CookieSource::kManagedFile) {
+      retired = ClearRejectedCookieFile(cookie.source_path, cookie.value,
+                                        &reset_error);
+    } else {
+      StoredCookie current = secrets->Load(paths.cookie_file());
+      retired = current.status == StoredCookieStatus::kMissing ||
+                (current.status == StoredCookieStatus::kFound &&
+                 current.value == cookie.value &&
+                 secrets->Clear(paths.cookie_file()));
+      ClearSensitiveString(&current.value);
+      if (!retired)
+        reset_error = "rejected Roblox cookie could not be cleared safely";
+    }
+    if (!retired) {
       ClearSensitiveString(&cookie.value);
       credential.Clear();
       composition.status = AuthRuntimeStatus::kUnavailable;
@@ -900,8 +999,8 @@ AuthRuntimeComposition ComposeAuthRuntime(
     composition.status = AuthRuntimeStatus::kGuest;
     composition.http_status = session.http_status;
     composition.jni_vm = std::make_shared<jnivm::VM>();
-    InstallCredentialPersistence(composition.jni_vm, paths,
-                                 live_auth_http_client);
+    InstallCredentialPersistence(composition.jni_vm, paths, environment,
+                                 live_auth_http_client, secrets);
     return composition;
   }
   ClearSensitiveString(&cookie.value);
@@ -916,11 +1015,12 @@ AuthRuntimeComposition ComposeAuthRuntime(
       identity.username = session.identity.username;
       identity.display_name = session.identity.display_name;
       jni_vm->SetRobloxAuthIdentity(identity);
-      InstallCredentialPersistence(jni_vm, paths,
-                                   live_auth_http_client);
+      const auto persistence = InstallCredentialPersistence(
+          jni_vm, paths, environment, live_auth_http_client, secrets);
       if (!credential.empty()) {
         (void)jni_vm->DispatchRobloxCredential(credential.c_str(),
                                                credential.size());
+        persistence->Wait();
       }
       composition.status = AuthRuntimeStatus::kAuthenticated;
       composition.jni_vm = std::move(jni_vm);
@@ -931,8 +1031,8 @@ AuthRuntimeComposition ComposeAuthRuntime(
     case services::AuthSessionStatus::kGuest:
       composition.status = AuthRuntimeStatus::kGuest;
       composition.jni_vm = std::make_shared<jnivm::VM>();
-      InstallCredentialPersistence(composition.jni_vm, paths,
-                                   live_auth_http_client);
+      InstallCredentialPersistence(composition.jni_vm, paths, environment,
+                                   live_auth_http_client, secrets);
       break;
     case services::AuthSessionStatus::kInvalid:
       composition.status = AuthRuntimeStatus::kInvalidCredentials;

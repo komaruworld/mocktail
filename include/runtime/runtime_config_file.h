@@ -29,6 +29,8 @@ RuntimeConfigLoadResult LoadRuntimeConfig(
 // boundary.
 bool ExportRuntimeConfigEnvironment(const RuntimeConfig& config,
                                     std::string* error = nullptr);
+bool ExportNetworkProxyEnvironment(const RuntimeConfig& config,
+                                   std::string* error = nullptr);
 
 }  // namespace runtime
 }  // namespace mocktail

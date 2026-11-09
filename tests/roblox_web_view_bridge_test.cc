@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,6 +14,30 @@
 namespace mocktail {
 namespace runtime {
 namespace {
+
+class ScopedNativeLogin final {
+ public:
+  explicit ScopedNativeLogin(std::optional<bool> enabled) {
+    const char* previous = std::getenv("MOCKTAIL_NATIVE_LOGIN");
+    if (previous != nullptr) previous_ = previous;
+    if (enabled.has_value()) {
+      EXPECT_EQ(setenv("MOCKTAIL_NATIVE_LOGIN", *enabled ? "1" : "0", 1), 0);
+    } else {
+      EXPECT_EQ(unsetenv("MOCKTAIL_NATIVE_LOGIN"), 0);
+    }
+  }
+
+  ~ScopedNativeLogin() {
+    if (previous_.has_value()) {
+      (void)setenv("MOCKTAIL_NATIVE_LOGIN", previous_->c_str(), 1);
+    } else {
+      (void)unsetenv("MOCKTAIL_NATIVE_LOGIN");
+    }
+  }
+
+ private:
+  std::optional<std::string> previous_;
+};
 
 struct WebViewBridgeProbe {
   std::vector<jobject> subscribed_callbacks;
@@ -528,6 +554,7 @@ TEST(RobloxWebViewParserTest, RejectsMalformedMissingAndUnboundedPayloads) {
 
 TEST(RobloxWebViewBridgeTest,
      SubscribesDispatchesAndDeletesExactNativeConnection) {
+  const ScopedNativeLogin native_login(false);
   jnivm::VM vm;
   JNIEnv *env = vm.GetJNIEnv();
   jclass bus_class =
@@ -707,6 +734,7 @@ TEST(RobloxWebViewBridgeTest,
 
 TEST(RobloxWebViewBridgeTest,
      RoutesGenericChallengesAndApiChallengesToBrowserSignIn) {
+  const ScopedNativeLogin native_login(false);
   jnivm::VM vm;
   JNIEnv* env = vm.GetJNIEnv();
   jclass bus_class =
@@ -720,10 +748,11 @@ TEST(RobloxWebViewBridgeTest,
   ASSERT_TRUE(
       bridge
           .HandleOwnedMessage(
-              R"({"url":"https://www.roblox.com/view-generic-challenge?subdomain=login"})")
+              R"({"url":"https://www.roblox.com/view-generic-challenge?subdomain=login","isVisible":false})")
           .ok());
   EXPECT_EQ(probe.request.url, "https://www.roblox.com/login");
   EXPECT_EQ(probe.request.title, "Roblox sign in");
+  EXPECT_EQ(probe.request.is_visible, std::optional<bool>(true));
   EXPECT_TRUE(bridge.HandleCloseWindow().ok());
   EXPECT_EQ(probe.close_dispatches, 0);
   probe.exit_observer.on_exit(probe.exit_observer.context.get());
@@ -746,6 +775,95 @@ TEST(RobloxWebViewBridgeTest,
   EXPECT_TRUE(bridge.Shutdown().ok());
   g_web_view_probe = nullptr;
 }
+
+class RobloxNativeLoginTest
+    : public ::testing::TestWithParam<std::optional<bool>> {};
+
+TEST_P(RobloxNativeLoginTest,
+       NativeLoginPreservesChallengesAndReturnsControlToRoblox) {
+  const ScopedNativeLogin native_login(GetParam());
+  jnivm::VM vm;
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass bus_class =
+      env->FindClass("com/roblox/universalapp/messagebus/MessageBus");
+  jobject bus = env->AllocObject(bus_class);
+  WebViewBridgeProbe probe;
+  g_web_view_probe = &probe;
+  RobloxWebViewBridge bridge = MakeBridge(&vm, bus, &probe);
+  ASSERT_TRUE(bridge.Initialize().ok());
+
+  int closed_windows = 0;
+  for (const std::string url : {
+           "https://www.roblox.com/view-generic-challenge?subdomain=login",
+           "https://apis.roblox.com/challenge/v1/render?type=captcha",
+           "https://www.roblox.com/login/twostepverification?challengeId=test",
+           "www:captcha/app/login?hybrid-return-token=1",
+       }) {
+    SCOPED_TRACE(url);
+    ASSERT_TRUE(bridge.HandleOwnedMessage(
+                          "{\"url\":\"" + url +
+                          "\",\"title\":\"Verification\",\"isVisible\":false}")
+                    .ok());
+    EXPECT_EQ(probe.request.url, url);
+    EXPECT_EQ(probe.request.title, "Verification");
+    EXPECT_EQ(probe.request.is_visible, std::optional<bool>(true));
+    EXPECT_TRUE(bridge.HandleCloseWindow().ok());
+    EXPECT_EQ(probe.close_dispatches, ++closed_windows);
+    ASSERT_TRUE(probe.exit_observer.valid());
+    probe.exit_observer.on_exit(probe.exit_observer.context.get());
+    ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
+    EXPECT_EQ(probe.close_publications, closed_windows);
+  }
+
+  jstring notification = env->NewStringUTF(kRobloxOpenCaptchaViewNotification);
+  jstring payload = env->NewStringUTF(
+      R"({"captchaType":"login","cvalueType":"username","cvalue":"test user"})");
+  ASSERT_TRUE(vm.DispatchRobloxAppBridgeNotification(env, notification, payload));
+  EXPECT_EQ(probe.request.url,
+            "https://www.roblox.com/captcha/app/login?credentialsType="
+            "username&credentialsValue=test%20user&hybrid-return-token=1");
+  ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
+  EXPECT_EQ(probe.data_model_focus_states,
+            (std::vector<std::string>{"Unfocused"}));
+  EXPECT_TRUE(bridge.HandleCloseWindow().ok());
+  EXPECT_EQ(probe.close_dispatches, closed_windows + 1);
+  ASSERT_TRUE(probe.exit_observer.valid());
+  probe.exit_observer.on_exit(probe.exit_observer.context.get());
+  ASSERT_TRUE(bridge.DrainHostWindowEvents().ok());
+  EXPECT_EQ(probe.data_model_focus_states,
+            (std::vector<std::string>{"Unfocused", "Focused"}));
+  EXPECT_EQ(probe.close_publications, closed_windows);
+  env->DeleteLocalRef(payload);
+  env->DeleteLocalRef(notification);
+
+  EXPECT_TRUE(bridge.Shutdown().ok());
+  g_web_view_probe = nullptr;
+}
+
+TEST_P(RobloxNativeLoginTest, NativeLoginPreservesHiddenNonChallengeWindows) {
+  const ScopedNativeLogin native_login(GetParam());
+  jnivm::VM vm;
+  JNIEnv* env = vm.GetJNIEnv();
+  jclass bus_class =
+      env->FindClass("com/roblox/universalapp/messagebus/MessageBus");
+  jobject bus = env->AllocObject(bus_class);
+  WebViewBridgeProbe probe;
+  g_web_view_probe = &probe;
+  RobloxWebViewBridge bridge = MakeBridge(&vm, bus, &probe);
+  ASSERT_TRUE(bridge.Initialize().ok());
+
+  ASSERT_TRUE(bridge.HandleOwnedMessage(
+                        R"({"url":"https://www.roblox.com/games/1/servers","isVisible":false})")
+                  .ok());
+  EXPECT_EQ(probe.request.url, "https://www.roblox.com/games/1/servers");
+  EXPECT_EQ(probe.request.is_visible, std::optional<bool>(false));
+  EXPECT_TRUE(bridge.Shutdown().ok());
+  g_web_view_probe = nullptr;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DefaultAndExplicit, RobloxNativeLoginTest,
+    ::testing::Values(std::optional<bool>{}, std::optional<bool>{true}));
 
 TEST(RobloxWebViewBridgeTest, MainGameActivityOpensThroughHostSink) {
   jnivm::VM vm;

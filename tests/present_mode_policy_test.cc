@@ -33,6 +33,28 @@ TEST(PresentModePolicyTest, FiltersWithoutFabricatingHostModes) {
             (std::vector<VkPresentModeKHR>{VK_PRESENT_MODE_FIFO_KHR}));
 }
 
+TEST(PresentModePolicyTest, ExplicitModesOverrideVsyncAndUseSupportedFallbacks) {
+  const std::vector<VkPresentModeKHR> host = {
+      VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR,
+      VK_PRESENT_MODE_MAILBOX_KHR};
+  for (const char* mode : {"fifo", "mailbox", "immediate"}) {
+    SCOPED_TRACE(mode);
+    const auto policy = ResolvePresentModePolicy("on", "unlimited", mode);
+    ASSERT_TRUE(ExplicitPresentMode(policy).has_value());
+    EXPECT_EQ(policy, ResolvePresentModePolicy("off", "display", mode));
+    EXPECT_EQ(FilterPresentModes(policy, host),
+              (std::vector<VkPresentModeKHR>{*ExplicitPresentMode(policy)}));
+    EXPECT_EQ(FilterPresentModes(policy, {VK_PRESENT_MODE_FIFO_KHR}),
+              (std::vector<VkPresentModeKHR>{VK_PRESENT_MODE_FIFO_KHR}));
+    EXPECT_TRUE(FilterPresentModes(policy, {}).empty());
+    EXPECT_EQ(ResolveSwapInterval(policy, 0),
+              policy == PresentModePolicy::kImmediate ? 0 : 1);
+  }
+  EXPECT_EQ(ResolveSwapInterval(PresentModePolicy::kHostDefault, 2), 2);
+  EXPECT_EQ(ResolveSwapInterval(PresentModePolicy::kUnthrottled, 1), 0);
+  EXPECT_EQ(ResolveSwapInterval(PresentModePolicy::kVsync, 0), 1);
+}
+
 TEST(PresentModePolicyTest, PrefersMailboxForVsyncWhenHostExposesIt) {
   const std::vector<VkPresentModeKHR> host = {VK_PRESENT_MODE_IMMEDIATE_KHR,
                                               VK_PRESENT_MODE_MAILBOX_KHR,
@@ -56,6 +78,11 @@ TEST(PresentModePolicyTest, PrefersLatestReadyThenRelaxedOverFifo) {
 }
 
 TEST(PresentModePolicyTest, RequestsExtraSwapchainImagesWhenUnthrottled) {
+  EXPECT_EQ(PreferSwapchainMinImageCount(PresentModePolicy::kMailbox, 2, 2, 8),
+            3U);
+  EXPECT_EQ(PreferSwapchainMinImageCount(PresentModePolicy::kMailbox, 2, 2, 2),
+            2U);
+  EXPECT_EQ(PreferSwapchainMinImageCount(PresentModePolicy::kFifo, 2, 2, 8), 2U);
   EXPECT_EQ(PreferSwapchainMinImageCount(PresentModePolicy::kVsync, 2, 2, 8),
             4U);
   EXPECT_EQ(

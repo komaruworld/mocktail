@@ -8,16 +8,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <filesystem>
 #include <iostream>
 #include <limits.h>
 #include <unordered_map>
 #include <unistd.h>
+#include <vector>
 
 namespace libc_shim {
 
 namespace {
 
 std::unordered_map<std::string, std::string> g_path_mappings;
+std::vector<std::string> g_ca_bundle_aliases;
 
 bool g_installed = false;
 std::atomic<GuestAllocator> g_guest_allocator{nullptr};
@@ -27,9 +30,15 @@ constexpr std::array<const char*, 2> kDefaultCaBundles = {
     "/etc/ssl/cert.pem",
     "/etc/ssl/certs/ca-certificates.crt",
 };
-constexpr std::array<const char*, 2> kAndroidCaBundlePaths = {
+constexpr std::array<const char*, 8> kAndroidCaBundlePaths = {
     "/data/user/0/com.roblox.client/files/exe/cacert.pem",
     "/data/data/com.roblox.client/files/exe/cacert.pem",
+    "/data/user/0/com.roblox.client/files/exe/ssl/cacert.pem",
+    "/data/data/com.roblox.client/files/exe/ssl/cacert.pem",
+    "ssl/cacert.pem",
+    "content/ssl/cacert.pem",
+    "rbx_bin/assets/ssl/cacert.pem",
+    "rbx_bin/assets/content/ssl/cacert.pem",
 };
 
 bool IsEnabled(const char* name) {
@@ -192,17 +201,22 @@ HostCaBundleResolution ResolveHostCaBundle() {
 }
 
 HostCaBundleResolution ConfigureHostCaBundlePathMappings() {
-  for (const char* android_path : kAndroidCaBundlePaths) {
-    g_path_mappings.erase(android_path);
+  for (const auto& alias : g_ca_bundle_aliases) g_path_mappings.erase(alias);
+  g_ca_bundle_aliases.assign(kAndroidCaBundlePaths.begin(), kAndroidCaBundlePaths.end());
+  if (const char* content = GetEnvNonEmpty("MOCKTAIL_ASSET_PATH")) {
+    auto root = std::filesystem::path(content).lexically_normal();
+    if (root.filename().empty()) root = root.parent_path();
+    g_ca_bundle_aliases.push_back((root / "ssl/cacert.pem").string());
+    if (root.filename() == "content")
+      g_ca_bundle_aliases.push_back((root.parent_path() / "ssl/cacert.pem").string());
   }
 
   HostCaBundleResolution resolution = ResolveHostCaBundle();
   if (!resolution.ok()) {
     return resolution;
   }
-  for (const char* android_path : kAndroidCaBundlePaths) {
-    RegisterPathMapping(android_path, resolution.host_path);
-  }
+  for (const auto& alias : g_ca_bundle_aliases)
+    RegisterPathMapping(alias, resolution.host_path);
   return resolution;
 }
 
@@ -308,6 +322,7 @@ void RegisterPathMapping(const std::string& android_prefix,
 
 void ClearPathMappings() {
   g_path_mappings.clear();
+  g_ca_bundle_aliases.clear();
 }
 
 }  // namespace libc_shim

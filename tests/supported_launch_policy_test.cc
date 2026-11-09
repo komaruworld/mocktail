@@ -182,7 +182,7 @@ int RunGraphicsPolicyProbe(const char* backend) {
                  std::string(anv_memory_limit) == expected_anv_limit &&
                  std::string(submit_thread) == "1" &&
                  std::string(overrides).find(
-                     "\"FStringGraphicsTextureManager2DenyPattern2\":\".*\"") !=
+                     "FStringGraphicsTextureManager2DenyPattern2") ==
                      std::string::npos &&
                  std::string(overrides).find(
                      "FStringGraphicsVulkanShaderMTDenyPattern") !=
@@ -215,6 +215,94 @@ TEST(GraphicsLaunchPolicyTest, DefaultsToDirectVulkanAfterConfigResolution) {
 
 TEST(GraphicsLaunchPolicyTest, MakesOpenGlStrictAndVulkanIndependent) {
   ExpectGraphicsPolicyProbe("opengl");
+}
+
+TEST(GraphicsLaunchPolicyTest, DoesNotOverrideBackendPresentModeWithMesa) {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    setenv("MOCKTAIL_GRAPHICS_BACKEND", "direct-vulkan", 1);
+    setenv("MOCKTAIL_VSYNC", "on", 1);
+    setenv("MOCKTAIL_FRAME_RATE_LIMIT", "unlimited", 1);
+    const ProcessEnvironment environment;
+    for (const char* mode : {"auto", "fifo", "mailbox", "immediate"}) {
+      setenv("MOCKTAIL_PRESENT_MODE", mode, 1);
+      if (std::string(mode) == "auto") {
+        unsetenv("MESA_VK_WSI_PRESENT_MODE");
+      } else {
+        setenv("MESA_VK_WSI_PRESENT_MODE", "relaxed", 1);
+      }
+      if (!ApplyGraphicsLaunchPolicy(RuntimeConfig::FromEnvironment(environment)))
+        std::_Exit(40);
+      if (getenv("MESA_VK_WSI_PRESENT_MODE") != nullptr) std::_Exit(41);
+    }
+    std::_Exit(0);
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+void ExpectEtc2Policy(const char* drivers, const char* legacy,
+                      const char* override_value, const char* expected,
+                      const char* cpu_option = nullptr,
+                      const char* backend = "direct-vulkan") {
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    for (const char* name : {"VK_DRIVER_FILES", "VK_ICD_FILENAMES",
+                             "vk_require_etc2", "MOCKTAIL_ADVERTISE_ETC2",
+                             "MOCKTAIL_SMALL_TEXTURE_UPSCALE",
+                             "MOCKTAIL_TEXTURE_OVERRIDE_DIR",
+                             "MOCKTAIL_TEXTURE_DUMP_DIR"}) {
+      if (unsetenv(name) != 0) std::_Exit(30);
+    }
+    if (drivers != nullptr) setenv("VK_DRIVER_FILES", drivers, 1);
+    if (legacy != nullptr) setenv("VK_ICD_FILENAMES", legacy, 1);
+    if (override_value != nullptr) setenv("vk_require_etc2", override_value, 1);
+    if (cpu_option != nullptr) setenv(cpu_option, "0", 1);
+    setenv("MOCKTAIL_GRAPHICS_BACKEND", backend, 1);
+    const ProcessEnvironment environment;
+    const RuntimeConfig config = RuntimeConfig::FromEnvironment(environment);
+    if (!ApplyGraphicsLaunchPolicy(config)) std::_Exit(31);
+    const char* actual = getenv("vk_require_etc2");
+    std::_Exit(expected == nullptr ? (actual == nullptr ? 0 : 32)
+                                   : (actual != nullptr &&
+                                              std::string(actual) == expected
+                                          ? 0 : 33));
+  }
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(GraphicsLaunchPolicyTest, PrefersRadvEtc2WithEitherIcdVariable) {
+  ExpectEtc2Policy("/test/radeon_icd.x86_64.json", nullptr, nullptr, "true");
+  ExpectEtc2Policy(nullptr, "/test/radeon_icd.json", nullptr, "true");
+}
+
+TEST(GraphicsLaunchPolicyTest, RespectsExplicitDriverAndTextureOverrides) {
+  ExpectEtc2Policy("/test/radeon_icd.json", nullptr, "false", "false");
+  for (const char* option : {"MOCKTAIL_ADVERTISE_ETC2",
+                             "MOCKTAIL_SMALL_TEXTURE_UPSCALE",
+                             "MOCKTAIL_TEXTURE_OVERRIDE_DIR",
+                             "MOCKTAIL_TEXTURE_DUMP_DIR"}) {
+    SCOPED_TRACE(option);
+    ExpectEtc2Policy("/test/radeon_icd.json", nullptr, nullptr, "false", option);
+  }
+}
+
+TEST(GraphicsLaunchPolicyTest, LeavesOtherDriversAndBackendsAlone) {
+  ExpectEtc2Policy("/test/nvidia_icd.json", nullptr, nullptr, nullptr);
+  ExpectEtc2Policy("/test/intel_icd.json", nullptr, nullptr, nullptr);
+  ExpectEtc2Policy("/test/nvidia_icd.json", "/test/radeon_icd.json",
+                   nullptr, nullptr);
+  ExpectEtc2Policy("/test/radeon_icd.json:/test/intel_icd.json", nullptr,
+                   nullptr, nullptr);
+  ExpectEtc2Policy("/test/radeon_icd.json", nullptr, nullptr, nullptr,
+                   nullptr, "opengl");
 }
 
 }  // namespace

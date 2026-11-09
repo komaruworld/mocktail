@@ -118,6 +118,22 @@ TEST(WebViewHelperPolicyTest, HonorsExplicitSandboxEnvironment) {
   }
 }
 
+TEST(WebViewHelperPolicyTest, UsesSoftwareCompositingOnlyForWaylandByDefault) {
+  EXPECT_TRUE(ShouldDisableWebViewHardwareAcceleration(true, nullptr));
+  EXPECT_FALSE(ShouldDisableWebViewHardwareAcceleration(false, nullptr));
+}
+
+TEST(WebViewHelperPolicyTest, HonorsExplicitCompositingEnvironment) {
+  for (bool wayland_display : {false, true}) {
+    EXPECT_FALSE(
+        ShouldDisableWebViewHardwareAcceleration(wayland_display, "0"));
+    for (const char* value : {"1", "", "false"}) {
+      EXPECT_TRUE(
+          ShouldDisableWebViewHardwareAcceleration(wayland_display, value));
+    }
+  }
+}
+
 TEST(WebViewHelperPolicyTest, AllowsOnlyTlsTopLevelNavigation) {
   const UriPolicyResult roblox =
       EvaluateNavigationUri("https://www.roblox.com/login");
@@ -296,7 +312,48 @@ TEST(WebViewHelperPolicyTest, UserAgentTracksValidatedPayloadVersion) {
       user_agent,
       "Mozilla/5.0 AppleWebKit/605.1.15 (KHTML, like Gecko)  ROBLOX Android "
       "App 2.999.42 Tablet Hybrid()  GooglePlayStore RobloxApp/2.999.42"
-      "(GlobalDist; GooglePlayStore)");
+      " (GlobalDist; GooglePlayStore)");
+}
+
+TEST(WebViewHelperPolicyTest, KeepsNativeUserAgentForVerificationRoutes) {
+  for (const char* url : {
+           "https://www.roblox.com/login", "https://roblox.com/Login/",
+           "https://www.roblox.com/login?returnUrl=%2Fhome",
+       }) {
+    EXPECT_TRUE(IsBrowserLoginUrl(url)) << url;
+  }
+  for (const char* url : {
+           "https://www.roblox.com/login/twostepverification?challengeId=test",
+           "https://www.roblox.com/login/challenge",
+           "https://www.roblox.com/challenge/cdn/hybrid",
+           "https://www.roblox.com/captcha/app/login",
+           "https://example.org/login", "http://www.roblox.com/login",
+       }) {
+    EXPECT_FALSE(IsBrowserLoginUrl(url)) << url;
+  }
+}
+
+TEST(WebViewHelperPolicyTest, ShowsLoadErrorsForContentWithoutTelemetryNoise) {
+  for (const char* uri : {
+           "https://arkoselabs.roblox.com/v2/public-key/api.js",
+           "https://arkoselabs.roblox.com/fc/gt2/public_key/test",
+           "https://css.rbxcdn.com/styles.css", "https://js.rbxcdn.com/app.js",
+           "https://apis.rbxcdn.com/captcha/v1/metadata",
+       }) {
+    EXPECT_TRUE(IsEssentialWebResource(uri)) << uri;
+  }
+  for (const char* uri : {
+           "https://arkoselabs.roblox.com/metrics/ui",
+           "https://metrics.roblox.com/v1/batch",
+           "https://ecsv2.roblox.com/www/e.png",
+           "https://apis.roblox.com/some-guest-endpoint",
+           "https://apis.rbxcdn.com/some-guest-endpoint",
+           "https://arkoselabs.roblox.com.evil.example/v2/api.js",
+           "http://arkoselabs.roblox.com/v2/api.js", "about:blank", "",
+       }) {
+    EXPECT_FALSE(IsEssentialWebResource(uri)) << uri;
+  }
+  EXPECT_FALSE(IsEssentialWebResource(nullptr));
 }
 
 }  // namespace

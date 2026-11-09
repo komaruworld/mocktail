@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 #include <minizip/zip.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +15,7 @@
 #include <vector>
 
 #include "compat/build_profile.h"
+#include "compat/guest_abi.h"
 #include "compat/host_abi_profile.h"
 #include "update/apkpure_provider.h"
 #include "update/compatibility_catalog.h"
@@ -20,7 +23,9 @@
 #include "update/http_download.h"
 #include "update/payload_integrity.h"
 #include "update/payload_store.h"
+#include "update/pinned_apk_provider.h"
 #include "update/readiness_canary.h"
+#include "update/state_file.h"
 #include "update/unsafe_latest_runner.h"
 #include "update/update_config.h"
 #include "update/update_coordinator.h"
@@ -168,6 +173,115 @@ TEST(ApkPureProviderTest, ParsesExactVersionIdentityAndTrustedUrl) {
   EXPECT_EQ(urls.front(), "https://download.pureapk.com/b/XAPK/roblox");
 }
 
+TEST(ApkPureProviderTest, SelectsNewestDownloadableVersionRegardlessOfOrder) {
+  const std::string metadata =
+      MetadataRecord("2.727.1199", 2628, "XAPKJ",
+                     "https://download.pureapk.com/old.xapk") +
+      MetadataRecord("2.736.1408", 2998, "APKJ",
+                     "https://download.pureapk.com/new.apk") +
+      MetadataRecord("2.734.917", 2908, "APKJ",
+                     "https://download.pureapk.com/middle.apk") +
+      MetadataRecord("2.999.9999", 9999, "APKJ",
+                     "https://untrusted.example/bad.apk");
+  const auto latest = ParseApkPureLatestMetadata(metadata);
+  ASSERT_TRUE(latest) << latest.error;
+  EXPECT_EQ(latest.version_code, 2998);
+  EXPECT_EQ(latest.version_name, "2.736.1408");
+}
+
+TEST(ApkPureProviderTest, ExactDownloadDistinguishesVersionCodes) {
+  const std::string metadata =
+      MetadataRecord("2.736.1408", 2997, "APKJ",
+                     "https://download.pureapk.com/wrong.apk") +
+      MetadataRecord("2.736.1408", 2998, "APKJ",
+                     "https://download.pureapk.com/right.apk");
+  std::string error;
+  const auto urls =
+      ParseApkPureExactDownloadUrls(metadata, "2.736.1408", &error, 2998);
+  ASSERT_TRUE(error.empty()) << error;
+  ASSERT_EQ(urls.size(), 1U);
+  EXPECT_EQ(urls.front(), "https://download.pureapk.com/right.apk");
+}
+
+TEST(ApkPureProviderTest, RepairsCachedArchivesBeforeTryingAnotherSource) {
+  TemporaryDirectory temporary;
+  const std::string good = std::string("PK\003\004") + "verified";
+  const auto destination = temporary.root() / "candidate-1.apk";
+  Write(destination, std::string("PK\003\004") + "corrupt");
+  int downloads = 0;
+  int validations = 0;
+  ApkPureProvider provider(
+      [](std::string_view) {
+        HttpBytesResult result;
+        result.bytes = MetadataRecord("2.742.1059", 3222, "APKJ",
+                                       "https://download.pureapk.com/one.apk");
+        return result;
+      },
+      [&](const HttpTransferRequest&, const auto& path, int) {
+        ++downloads;
+        Write(path, good);
+        return HttpDownloadResult{};
+      });
+  const auto result = provider.DownloadVerified(
+      {"2.742.1059", 3222, {}}, temporary.root(), -1,
+      [&](const ProviderDownloadResult& archive) {
+        ++validations;
+        return ReadFile(archive.archives.front()) == good ? "" : "bad signature";
+      });
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(downloads, 1);
+  EXPECT_EQ(validations, 2);
+  EXPECT_EQ(ReadFile(destination), good);
+}
+
+TEST(ApkPureProviderTest, VerifiesAlternativeApksIndividually) {
+  TemporaryDirectory temporary;
+  int downloads = 0;
+  ApkPureProvider provider(
+      [](std::string_view) {
+        HttpBytesResult result;
+        result.bytes =
+            MetadataRecord("2.742.1059", 3222, "APKJ",
+                            "https://download.pureapk.com/one.apk") +
+            MetadataRecord("2.742.1059", 3222, "APKJ",
+                            "https://download.pureapk.com/two.apk");
+        return result;
+      },
+      [&](const HttpTransferRequest&, const auto& path, int) {
+        ++downloads;
+        Write(path, std::string("PK\003\004") + std::to_string(downloads));
+        return HttpDownloadResult{};
+      });
+  const auto result = provider.DownloadVerified(
+      {"2.742.1059", 3222, {}}, temporary.root(), -1,
+      [](const ProviderDownloadResult& archive) {
+        EXPECT_EQ(archive.archives.size(), 1U);
+        return archive.archives.front().filename() == "candidate-2.apk"
+                   ? "" : "wrong architecture";
+      });
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_EQ(downloads, 2);
+  EXPECT_FALSE(std::filesystem::exists(temporary.root() / "candidate-1.apk"));
+  EXPECT_EQ(result.archives.front().filename(), "candidate-2.apk");
+}
+
+TEST(UpdateStateFileTest, ReplacesStateAndRejectsMalformedOrIndirectFiles) {
+  TemporaryDirectory temporary;
+  const auto state = temporary.root() / "update.json";
+  EXPECT_TRUE(ReadStateFile(state).is_null());
+  ASSERT_TRUE(WriteStateFile(state, {{"phase", "downloading"}}));
+  ASSERT_TRUE(
+      WriteStateFile(state, {{"phase", "ready"}, {"version_code", 2998}}));
+  EXPECT_EQ(ReadStateFile(state)["phase"], "ready");
+  Write(state, "{broken");
+  EXPECT_TRUE(ReadStateFile(state).is_null());
+  std::filesystem::remove(state);
+  const auto target = temporary.root() / "target";
+  Write(target, "{}");
+  std::filesystem::create_symlink(target, state);
+  EXPECT_TRUE(ReadStateFile(state).is_null());
+}
+
 TEST(UnsafeLatestRunnerTest, LaunchesCandidateWithUnapprovedEnvironment) {
   TemporaryDirectory temporary;
   const std::filesystem::path output = temporary.root() / "environment.txt";
@@ -233,6 +347,200 @@ TEST(HttpDownloadPolicyTest, RejectsCredentialsAndHostSuffixTricks) {
   EXPECT_FALSE(IsTrustedHttpsUrl("http://download.pureapk.com/a", hosts));
   EXPECT_FALSE(IsTrustedHttpsUrl("https://pureapk.com.attacker.test/a", hosts));
   EXPECT_FALSE(IsTrustedHttpsUrl("https://user@pureapk.com/a", hosts));
+}
+
+TEST(ReadinessCanaryTest, PreservesEtc2DriverOverride) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\nprintf 'etc2=%s\\n' \"$vk_require_etc2\"\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+  for (const char* value : {"true", "false"}) {
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+      if (setenv("vk_require_etc2", value, 1) != 0) std::_Exit(1);
+      const auto result = RunReadinessCanary(options);
+      std::_Exit(result.exit_code == 0 &&
+                          ReadFile(result.log_path) ==
+                              std::string("etc2=") + value + "\n"
+                      ? 0 : 2);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+  }
+}
+
+TEST(ReadinessCanaryTest, ReportsTerminatingSignal) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary, "#!/bin/sh\nkill -TERM $$\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(result.exit_code, 128 + SIGTERM);
+  EXPECT_EQ(result.error, "graphics canary exited with status " +
+                             std::to_string(128 + SIGTERM));
+}
+
+TEST(ReadinessCanaryTest, AcceptsTeardownCrashAfterReadiness) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        "'[compat] legacy binary patches: disabled' "
+        "'[compat] signal-recovery handler disabled' "
+        "'[compat] native allocator retained; host allocator bridges "
+        "disabled' "
+        "'[window] first Roblox Vulkan frame presented' "
+        "'[window] vkQueuePresentKHR #240 window=0x1234' "
+        "'[window] automatic exit requested 5000 ms after first present' "
+        "'[main] window closed, shutting down' "
+        "'[FLog::Graphics] Vulkan: Saved pipeline cache (178167 bytes, "
+        "hash 1)'\n"
+        "kill -SEGV $$\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_TRUE(result.teardown_crash);
+  EXPECT_EQ(result.exit_code, 128 + SIGSEGV);
+}
+
+TEST(ReadinessCanaryTest, RejectsNonCrashExitAfterReadiness) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        "'[compat] legacy binary patches: disabled' "
+        "'[compat] signal-recovery handler disabled' "
+        "'[compat] native allocator retained; host allocator bridges "
+        "disabled' "
+        "'[window] first Roblox Vulkan frame presented' "
+        "'[window] vkQueuePresentKHR #240 window=0x1234' "
+        "'[window] automatic exit requested 5000 ms after first present' "
+        "'[main] window closed, shutting down'\n"
+        "exit 1\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_FALSE(result.teardown_crash);
+  EXPECT_EQ(result.exit_code, 1);
+}
+
+TEST(ReadinessCanaryTest, RejectsCrashBeforeReadinessCompletes) {
+  TemporaryDirectory temporary;
+  CanaryOptions options;
+  options.runtime_binary = temporary.root() / "runtime";
+  options.cache_root = temporary.root() / "cache";
+  options.state_root = temporary.root() / "state";
+  options.payload_directory = temporary.root() / "payload";
+  options.timeout_seconds = 5;
+  Write(options.runtime_binary,
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        "'[compat] legacy binary patches: disabled' "
+        "'[compat] signal-recovery handler disabled' "
+        "'[compat] native allocator retained; host allocator bridges "
+        "disabled' "
+        "'[window] first Roblox Vulkan frame presented' "
+        "'[window] vkQueuePresentKHR #12 window=0x1234'\n"
+        "kill -SEGV $$\n");
+  ASSERT_EQ(chmod(options.runtime_binary.c_str(), 0700), 0);
+
+  const auto result = RunReadinessCanary(options);
+  EXPECT_FALSE(result);
+  EXPECT_FALSE(result.teardown_crash);
+  EXPECT_EQ(result.exit_code, 128 + SIGSEGV);
+  EXPECT_EQ(result.error, "graphics canary exited with status " +
+                             std::to_string(128 + SIGSEGV));
+}
+
+TEST(ReadinessCanaryTest, TeardownCrashLogStillRequiresRealEvidence) {
+  const std::string crashed =
+      "[compat] legacy binary patches: disabled\n"
+      "[compat] signal-recovery handler disabled\n"
+      "[compat] native allocator retained; host allocator bridges disabled\n"
+      "[window] first Roblox Vulkan frame presented\n"
+      "[window] vkQueuePresentKHR #240 window=0x1234\n"
+      "[window] automatic exit requested 5000 ms after first present\n"
+      "[main] window closed, shutting down\n"
+      "[FLog::Graphics] Vulkan: Saved pipeline cache (178167 bytes, "
+      "hash 1)\n";
+  std::string error;
+  EXPECT_TRUE(ValidateTeardownCrashLog(CanaryGraphicsBackend::kDirectVulkan,
+                                       crashed, &error))
+      << error;
+  error.clear();
+  EXPECT_FALSE(ValidateReadinessLog(CanaryGraphicsBackend::kDirectVulkan,
+                                    crashed, &error));
+
+  std::string no_auto_exit = crashed;
+  const std::string exit_marker =
+      "[window] automatic exit requested 5000 ms after first present\n"
+      "[main] window closed, shutting down\n";
+  no_auto_exit.erase(no_auto_exit.find(exit_marker), exit_marker.size());
+  error.clear();
+  EXPECT_FALSE(ValidateTeardownCrashLog(CanaryGraphicsBackend::kDirectVulkan,
+                                        no_auto_exit, &error));
+
+  error.clear();
+  EXPECT_FALSE(ValidateTeardownCrashLog(
+      CanaryGraphicsBackend::kDirectVulkan, crashed + "[FATAL] boom\n",
+      &error));
+
+  const std::string fmod_submission =
+      "[mocktail][audio] fmod_java first_submission submitted_buffers=4 "
+      "submitted_bytes=16384 consumed_buffers=0 consumed_bytes=0 "
+      "discarded_buffers=0 discarded_bytes=0 pending_buffers=4\n";
+  error.clear();
+  EXPECT_FALSE(ValidateTeardownCrashLog(
+      CanaryGraphicsBackend::kDirectVulkan, crashed + fmod_submission,
+      &error));
+
+  const std::string fmod_consumed =
+      fmod_submission +
+      "[mocktail][audio] fmod_java first_consumption submitted_buffers=4 "
+      "submitted_bytes=16384 consumed_buffers=1 consumed_bytes=4096 "
+      "discarded_buffers=0 discarded_bytes=0 pending_buffers=3\n";
+  error.clear();
+  EXPECT_TRUE(ValidateTeardownCrashLog(
+      CanaryGraphicsBackend::kDirectVulkan, crashed + fmod_consumed,
+      &error))
+      << error;
+
+  error.clear();
+  EXPECT_FALSE(ValidateTeardownCrashLog(
+      CanaryGraphicsBackend::kDirectVulkan,
+      crashed + fmod_consumed +
+          "[mocktail][audio] fmod_java write_failed reason=test\n",
+      &error));
 }
 
 TEST(ReadinessCanaryTest, AcceptsRealPresentWithoutShaderPackSummary) {
@@ -343,6 +651,206 @@ PayloadStoreResult InstalledFixture(std::string_view version_name,
   installed.version_name = version_name;
   installed.version_code = version_code;
   return installed;
+}
+
+class CoordinatorProvider final : public ApkProvider {
+ public:
+  ProviderVersion latest{"2.200.0", 200, {}};
+  mutable int checks = 0;
+  mutable int downloads = 0;
+  mutable std::vector<std::uint64_t> requested_versions;
+  std::string_view name() const override { return "fixture"; }
+  ProviderVersion CheckLatest() const override {
+    ++checks;
+    return latest;
+  }
+  ProviderDownloadResult DownloadExact(const ProviderVersion& version,
+                                       const std::filesystem::path&,
+                                       int) const override {
+    ++downloads;
+    requested_versions.push_back(version.version_code);
+    return {{}, "fixture", "network unavailable"};
+  }
+};
+
+class UpdateCoordinatorTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    paths.data_root = temporary.root() / "store";
+    paths.cache_root = temporary.root() / "cache";
+    paths.state_root = temporary.root() / "state";
+    paths.config_file = temporary.root() / "config.yaml";
+    paths.compatibility_manifest = temporary.root() / "compatibility.json";
+    nlohmann::json profiles = nlohmann::json::array();
+    for (const unsigned code : {100U, 200U}) {
+      const std::string build_id(40, code == 100 ? 'a' : 'b');
+      profiles.push_back({{"version_name", "2." + std::to_string(code) + ".0"},
+                          {"version_code", code},
+                          {"abi", compat::kGuestAbi},
+                          {"elf_build_id", build_id},
+                          {"status", "supported"},
+                          {"default_allowed", true},
+                          {"allow_legacy_binary_patches", false}});
+      const auto prepared = temporary.root() / std::to_string(code);
+      Write(prepared / "libroblox.so", "library-" + std::to_string(code));
+      Write(prepared / "sober_apk/base.apk", "base");
+      Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "split");
+      Write(prepared / "assets/content/fixture", "asset");
+      std::size_t asset_count = 0;
+      const auto asset_hash = HashAssetTree(prepared / "assets", &asset_count);
+      const nlohmann::json metadata = {
+          {"schema_version", 1},
+          {"package", "com.roblox.client"},
+          {"version_name", "2." + std::to_string(code) + ".0"},
+          {"version_code", code},
+          {"elf_build_id", build_id},
+          {"sha256",
+           {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
+            {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
+            {std::string(compat::kGuestSplitApkHashKey),
+             HashRegularFile(prepared / "sober_apk" /
+                             compat::kGuestSplitApkFile)}}},
+          {"assets",
+           {{"file_count", asset_count}, {"sha256_tree", asset_hash}}}};
+      Write(prepared / "roblox_payload.json", metadata.dump());
+      PayloadStore store(paths.data_root, paths.compatibility_manifest);
+      const auto staged = store.Stage(prepared);
+      ASSERT_TRUE(staged) << staged.error;
+    }
+    Write(paths.compatibility_manifest,
+          nlohmann::json{{"schema_version", 1}, {"profiles", profiles}}.dump());
+    PayloadStore store(paths.data_root, paths.compatibility_manifest);
+    ASSERT_TRUE(store.Promote("100-" + std::string(40, 'a')));
+  }
+
+  TemporaryDirectory temporary;
+  UpdatePaths paths;
+  CoordinatorProvider provider;
+};
+
+TEST_F(UpdateCoordinatorTest, BackgroundDownloadNeverPromotesOrRunsCanaries) {
+  const auto original = ReadFile(paths.data_root / "current.json");
+  UpdateRequest request;
+  request.download_only = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_FALSE(result.changed);
+  EXPECT_TRUE(result.stale);
+  EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  EXPECT_EQ(provider.downloads, 0);
+  const auto state = ReadStateFile(paths.data_root / "update.json");
+  EXPECT_EQ(state["phase"], "ready");
+  EXPECT_EQ(state["latest_downloaded"]["version_code"], 200);
+  EXPECT_EQ(state["active"]["version_code"], 100);
+}
+
+TEST_F(UpdateCoordinatorTest, StartupRetriesStagedUpdatesWithoutRemoteDiscovery) {
+  const auto original = ReadFile(paths.data_root / "current.json");
+  const auto attempts = temporary.root() / "attempts";
+  paths.runtime_binary = std::filesystem::read_symlink("/proc/self/exe");
+  paths.runtime_launcher = temporary.root() / "canary.sh";
+  Write(paths.runtime_launcher,
+        "#!/bin/sh\nprintf x >> '" + attempts.string() + "'\nexit 1\n");
+  ASSERT_EQ(chmod(paths.runtime_launcher.c_str(), 0700), 0);
+  UpdateRequest request;
+  request.startup_preflight = true;
+  for (int launch = 1; launch <= 2; ++launch) {
+    const auto result = RunUpdate(paths, request, &provider);
+    ASSERT_TRUE(result) << result.error;
+    EXPECT_TRUE(result.stale);
+    EXPECT_EQ(provider.checks, 0);
+    EXPECT_EQ(ReadFile(attempts), std::string(launch, 'x'));
+    EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  }
+  EXPECT_FALSE(std::filesystem::is_empty(paths.data_root / "rejections"));
+}
+
+TEST_F(UpdateCoordinatorTest,
+       ActivatesDownloadedReleaseWhenMetadataIsUnavailable) {
+  UpdateRequest request;
+  request.download_only = true;
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  provider.latest.error = "offline";
+  request.download_only = false;
+  request.run_canary = false;
+  const auto result = RunUpdate(paths, request, &provider);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_TRUE(result.changed);
+  EXPECT_FALSE(result.stale);
+  EXPECT_EQ(provider.downloads, 0);
+  const auto state = ReadStateFile(paths.data_root / "update.json");
+  EXPECT_EQ(state["metadata_status"], "unavailable");
+  EXPECT_EQ(state["active"]["version_code"], 200);
+  EXPECT_TRUE(std::filesystem::exists(paths.data_root / "previous_good.json"));
+}
+
+TEST_F(UpdateCoordinatorTest, FreshStartupDownloadsTheSupportedVersionFirst) {
+  paths.data_root = temporary.root() / "fresh-store";
+  provider.latest = {"2.999.0", 999, {}};
+  UpdateRequest request;
+  request.startup_preflight = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(provider.checks, 0);
+  EXPECT_EQ(provider.requested_versions, std::vector<std::uint64_t>{200});
+  EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["metadata_status"],
+            "deferred");
+}
+
+TEST_F(UpdateCoordinatorTest, RunnableStartupDoesNotDependOnTheNetwork) {
+  PayloadStore store(paths.data_root, paths.compatibility_manifest);
+  ASSERT_TRUE(store.Promote("200-" + std::string(40, 'b')));
+  provider.latest = {{}, 0, "offline"};
+  UpdateRequest request;
+  request.startup_preflight = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  ASSERT_TRUE(result) << result.error;
+  EXPECT_FALSE(result.changed);
+  EXPECT_EQ(provider.checks, 0);
+  EXPECT_EQ(provider.downloads, 0);
+  EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["phase"], "current");
+}
+
+TEST_F(UpdateCoordinatorTest, DisabledAutomaticUpdatesDoNotDownloadOrActivate) {
+  Write(paths.config_file, "updates:\n  automatic: false\n");
+  const auto original = ReadFile(paths.data_root / "current.json");
+  UpdateRequest request;
+  request.download_only = true;
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  EXPECT_EQ(provider.downloads, 0);
+  EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["phase"],
+            "disabled");
+}
+
+TEST_F(UpdateCoordinatorTest, RedownloadsACorruptedStagedCandidate) {
+  const auto original = ReadFile(paths.data_root / "current.json");
+  const auto library = paths.data_root / "payloads" /
+                       ("200-" + std::string(40, 'b')) / "libroblox.so";
+  std::filesystem::permissions(library, std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::add);
+  Write(library, "corrupt");
+  UpdateRequest request;
+  request.download_only = true;
+  const auto result = RunUpdate(paths, request, &provider);
+  EXPECT_TRUE(result);
+  EXPECT_TRUE(result.stale);
+  EXPECT_EQ(provider.downloads, 1);
+  EXPECT_EQ(ReadFile(paths.data_root / "current.json"), original);
+  EXPECT_EQ(ReadStateFile(paths.data_root / "update.json")["phase"], "blocked");
+}
+
+TEST_F(UpdateCoordinatorTest, PreservesObservedVersionWhenProviderRegresses) {
+  UpdateRequest request;
+  request.download_only = true;
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  provider.latest = {"2.100.0", 100, {}};
+  ASSERT_TRUE(RunUpdate(paths, request, &provider));
+  const auto state = ReadStateFile(paths.data_root / "update.json");
+  EXPECT_EQ(state["latest_seen"]["version_code"], 200);
+  EXPECT_EQ(state["latest_downloaded"]["version_code"], 200);
+  EXPECT_EQ(state["active"]["version_code"], 100);
+  EXPECT_EQ(state["phase"], "ready");
 }
 
 // A rejected candidate used to end the update, leaving the user on whatever
@@ -518,6 +1026,18 @@ TEST(ShippedMetadataTest, ReferenceSidecarDescribesASupportedProfile) {
   const HostAbiSidecarIdentity identity = ReadHostAbiSidecarIdentity(
       root / "config/roblox_host_abi_reference.json");
   ASSERT_TRUE(identity) << identity.error;
+  std::string sidecar_abi = "x86_64";
+  for (const auto& entry :
+       nlohmann::json::parse(
+           ReadFile(root / "config/roblox_compatibility.json"))
+           .at("profiles")) {
+    if (entry.value("elf_build_id", "") == identity.elf_build_id) {
+      sidecar_abi = entry.value("abi", "x86_64");
+    }
+  }
+  if (sidecar_abi != compat::kGuestAbi) {
+    GTEST_SKIP() << "shipped reference sidecar targets " << sidecar_abi;
+  }
 
   const auto supported = std::find_if(
       catalog.profiles.begin(), catalog.profiles.end(),
@@ -543,7 +1063,57 @@ TEST(ShippedMetadataTest, ReferenceSidecarDescribesASupportedProfile) {
   ASSERT_TRUE(runtime.profile.has_value());
   EXPECT_TRUE(
       runtime.profile->user_game_settings_fullscreen_setter_rva.has_value());
-  EXPECT_TRUE(runtime.profile->fmod_output_device_bridge.has_value());
+  ASSERT_TRUE(runtime.profile->fmod_output_device_bridge.has_value());
+  EXPECT_TRUE(runtime.profile->fmod_output_device_bridge->has_input_devices());
+}
+
+TEST(ShippedMetadataTest, EveryArchitectureCanUpgradeToThePinnedRelease) {
+  const std::filesystem::path root = MOCKTAIL_TEST_SOURCE_DIR;
+  const auto catalog = nlohmann::json::parse(
+      ReadFile(root / "config/roblox_compatibility.json"));
+  const auto default_payload = nlohmann::json::parse(
+      ReadFile(root / "config/roblox_payload.json"));
+  for (const char* filename : {"roblox_payload.json",
+                               "roblox_payload.arm64-v8a.json"}) {
+    SCOPED_TRACE(filename);
+    const auto payload =
+        nlohmann::json::parse(ReadFile(root / "config" / filename));
+    std::vector<SupportedPayloadProfile> profiles;
+    for (const auto& entry : catalog.at("profiles")) {
+      if (entry.value("abi", "x86_64") == payload.at("abi") &&
+          entry.value("status", "") == "supported" &&
+          entry.value("default_allowed", false) &&
+          !entry.value("allow_legacy_binary_patches", true)) {
+        profiles.push_back({entry.at("version_name").get<std::string>(),
+                            entry.at("version_code").get<std::uint64_t>(),
+                            entry.at("elf_build_id").get<std::string>()});
+      }
+    }
+    const auto preferred = PreferredSupportedProfile(profiles);
+    ASSERT_TRUE(preferred.has_value());
+    EXPECT_EQ(preferred->version_name, payload.at("version_name"));
+    EXPECT_EQ(preferred->version_code, payload.at("version_code"));
+    EXPECT_EQ(preferred->elf_build_id, payload.at("elf_build_id"));
+    EXPECT_EQ(payload.at("version_name"), default_payload.at("version_name"));
+    const auto pinned = LoadPinnedApkSource(
+        root / "config/roblox_download_sources.json",
+        {preferred->version_name, preferred->version_code, {}},
+        payload.at("abi").get<std::string>());
+    ASSERT_TRUE(pinned) << pinned.error;
+    EXPECT_EQ(pinned.build_id, preferred->elf_build_id);
+    const auto* builtin = compat::FindHostAbiProfile(preferred->elf_build_id);
+    ASSERT_NE(builtin, nullptr);
+    EXPECT_TRUE(builtin->HasValidNativeMimallocConstructorRanges());
+    EXPECT_TRUE(builtin->HasValidNativePreJniBootstrap());
+
+    const auto installed = InstalledFixture("2.736.1408", 2998);
+    const auto plans = PlanUpdateCandidates(profiles, *preferred, nullptr,
+                                            installed, installed);
+    ASSERT_EQ(plans.size(), 1U);
+    EXPECT_TRUE(plans.front().exact_supported);
+    EXPECT_EQ(plans.front().identity.version_name, payload.at("version_name"));
+    EXPECT_EQ(plans.front().identity.exact_build_id, payload.at("elf_build_id"));
+  }
 }
 
 TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) {
@@ -553,11 +1123,13 @@ TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) 
   ASSERT_TRUE(catalog) << catalog.error;
   const auto preferred = PreferredSupportedProfile(catalog.profiles);
   ASSERT_TRUE(preferred.has_value());
-  EXPECT_EQ(preferred->version_name, "2.736.1408");
-  EXPECT_EQ(preferred->version_code, 2998U);
-
   const auto payload = nlohmann::json::parse(
       ReadFile(root / "config/roblox_payload.json"));
+  if (payload.at("abi").get_ref<const std::string&>() != compat::kGuestAbi) {
+    EXPECT_NE(compat::FindHostAbiProfile(preferred->elf_build_id), nullptr);
+    GTEST_SKIP() << "shipped default payload targets "
+                 << payload.at("abi").get<std::string>();
+  }
   EXPECT_EQ(payload.at("version_name"), preferred->version_name);
   EXPECT_EQ(payload.at("version_code"), preferred->version_code);
   EXPECT_EQ(payload.at("elf_build_id"), preferred->elf_build_id);
@@ -595,6 +1167,10 @@ TEST(ShippedMetadataTest, DefaultPayloadHasABuiltinProfileAndMatchingReference) 
             builtin->init_array_count);
   EXPECT_EQ(builtin->default_allocator_strategy,
             compat::HostAllocatorStrategy::kNativeMimalloc);
+  EXPECT_EQ(builtin->host_allocator_bridges_supported,
+            profile.value("host_allocator_bridges_supported", true));
+  EXPECT_EQ(builtin->native_mimalloc_thread_initializer_after_constructor,
+            profile.at("native_mimalloc_thread_initializer_after_constructor"));
 }
 
 std::string ActivationManifestFixture(const std::string& payload_id) {
@@ -643,7 +1219,7 @@ TEST(PayloadStoreTest, RestagingIdenticalBytesKeepsTheInstalledPayload) {
   const std::filesystem::path restaged = temporary.root() / "restaged";
   Write(prepared / "libroblox.so", "native-library");
   Write(prepared / "sober_apk/base.apk", "base-apk");
-  Write(prepared / "sober_apk/split_config.x86_64.apk", "split-apk");
+  Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "split-apk");
   Write(prepared / "assets/content/fixture", "asset");
   std::string error;
   std::size_t asset_count = 0;
@@ -659,8 +1235,8 @@ TEST(PayloadStoreTest, RestagingIdenticalBytesKeepsTheInstalledPayload) {
       {"sha256",
        {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
         {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
-        {"x86_64_split_apk",
-         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+        {std::string(compat::kGuestSplitApkHashKey),
+         HashRegularFile(prepared / "sober_apk" / compat::kGuestSplitApkFile)}}},
       {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
       {"source", "apk-pure-native"},
       {"imported_at", "2026-09-04T03:49:16Z"},
@@ -704,7 +1280,7 @@ TEST(PayloadStoreTest, StagesAndPromotesVerifiedExactPayload) {
   const std::filesystem::path prepared = temporary.root() / "prepared";
   Write(prepared / "libroblox.so", "native-library");
   Write(prepared / "sober_apk/base.apk", "base-apk");
-  Write(prepared / "sober_apk/split_config.x86_64.apk", "split-apk");
+  Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "split-apk");
   Write(prepared / "assets/content/fixture", "asset");
   std::string error;
   std::size_t asset_count = 0;
@@ -722,8 +1298,8 @@ TEST(PayloadStoreTest, StagesAndPromotesVerifiedExactPayload) {
       {"sha256",
        {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
         {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
-        {"x86_64_split_apk",
-         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+        {std::string(compat::kGuestSplitApkHashKey),
+         HashRegularFile(prepared / "sober_apk" / compat::kGuestSplitApkFile)}}},
       {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
   };
   Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");
@@ -731,6 +1307,7 @@ TEST(PayloadStoreTest, StagesAndPromotesVerifiedExactPayload) {
       temporary.root() / "compatibility.json";
   Write(compatibility,
         "{\"schema_version\":1,\"profiles\":[{"
+        "\"abi\":\"" + std::string(compat::kGuestAbi) + "\","
         "\"version_name\":\"2.727.1199\",\"version_code\":2628,"
         "\"elf_build_id\":\"1686400865ae0e408cd7bd67de7a439625c6fd13\","
         "\"status\":\"supported\",\"default_allowed\":true,"
@@ -767,7 +1344,7 @@ TEST(PayloadStoreTest, RestagesReadOnlyCorruptPayloadCollision) {
   const std::filesystem::path prepared = temporary.root() / "prepared";
   Write(prepared / "libroblox.so", "native-library");
   Write(prepared / "sober_apk/base.apk", "base-apk");
-  Write(prepared / "sober_apk/split_config.x86_64.apk", "split-apk");
+  Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "split-apk");
   Write(prepared / "assets/content/fixture", "asset");
   std::string error;
   std::size_t asset_count = 0;
@@ -785,8 +1362,8 @@ TEST(PayloadStoreTest, RestagesReadOnlyCorruptPayloadCollision) {
       {"sha256",
        {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
         {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
-        {"x86_64_split_apk",
-         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+        {std::string(compat::kGuestSplitApkHashKey),
+         HashRegularFile(prepared / "sober_apk" / compat::kGuestSplitApkFile)}}},
       {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
   };
   Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");
@@ -837,7 +1414,7 @@ TEST(PayloadStoreTest, PromoteRehashesBytesTamperedAfterStaging) {
   const std::filesystem::path prepared = temporary.root() / "prepared";
   Write(prepared / "libroblox.so", "native-library");
   Write(prepared / "sober_apk/base.apk", "base-apk");
-  Write(prepared / "sober_apk/split_config.x86_64.apk", "split-apk");
+  Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "split-apk");
   Write(prepared / "assets/content/fixture", "asset");
   std::string error;
   std::size_t asset_count = 0;
@@ -853,8 +1430,8 @@ TEST(PayloadStoreTest, PromoteRehashesBytesTamperedAfterStaging) {
       {"sha256",
        {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
         {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
-        {"x86_64_split_apk",
-         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+        {std::string(compat::kGuestSplitApkHashKey),
+         HashRegularFile(prepared / "sober_apk" / compat::kGuestSplitApkFile)}}},
       {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
   };
   Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");
@@ -897,7 +1474,7 @@ TEST(PayloadStoreTest, PromoteRejectsALibraryTamperedAfterStaging) {
   const std::filesystem::path prepared = temporary.root() / "prepared";
   Write(prepared / "libroblox.so", "native-library");
   Write(prepared / "sober_apk/base.apk", "base-apk");
-  Write(prepared / "sober_apk/split_config.x86_64.apk", "split-apk");
+  Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "split-apk");
   Write(prepared / "assets/content/fixture", "asset");
   std::string error;
   std::size_t asset_count = 0;
@@ -913,8 +1490,8 @@ TEST(PayloadStoreTest, PromoteRejectsALibraryTamperedAfterStaging) {
       {"sha256",
        {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
         {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
-        {"x86_64_split_apk",
-         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+        {std::string(compat::kGuestSplitApkHashKey),
+         HashRegularFile(prepared / "sober_apk" / compat::kGuestSplitApkFile)}}},
       {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
   };
   Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");
@@ -958,7 +1535,7 @@ TEST(PayloadStoreTest, RequiresTwoRuntimeBoundCanariesForLatestCandidate) {
   const std::filesystem::path prepared = temporary.root() / "prepared";
   Write(prepared / "libroblox.so", "new-native-library");
   Write(prepared / "sober_apk/base.apk", "new-base-apk");
-  Write(prepared / "sober_apk/split_config.x86_64.apk", "new-split-apk");
+  Write(prepared / "sober_apk" / compat::kGuestSplitApkFile, "new-split-apk");
   Write(prepared / "assets/content/fixture", "new-asset");
   std::string error;
   std::size_t asset_count = 0;
@@ -972,13 +1549,13 @@ TEST(PayloadStoreTest, RequiresTwoRuntimeBoundCanariesForLatestCandidate) {
       {"package", "com.roblox.client"},
       {"version_name", "2.732.1043"},
       {"version_code", 2814},
-      {"abi", "x86_64"},
+      {"abi", std::string(compat::kGuestAbi)},
       {"elf_build_id", kBuildId},
       {"sha256",
        {{"libroblox", HashRegularFile(prepared / "libroblox.so")},
         {"base_apk", HashRegularFile(prepared / "sober_apk/base.apk")},
-        {"x86_64_split_apk",
-         HashRegularFile(prepared / "sober_apk/split_config.x86_64.apk")}}},
+        {std::string(compat::kGuestSplitApkHashKey),
+         HashRegularFile(prepared / "sober_apk" / compat::kGuestSplitApkFile)}}},
       {"assets", {{"file_count", asset_count}, {"sha256_tree", asset_hash}}},
   };
   Write(prepared / "roblox_payload.json", metadata.dump(2) + "\n");

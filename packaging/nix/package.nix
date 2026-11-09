@@ -23,6 +23,8 @@
   elfutils,
   libglvnd,
   libplacebo,
+  libpng,
+  libsecret,
   libsoup_3,
   libutf8proc,
   libyaml,
@@ -92,6 +94,8 @@ stdenv.mkDerivation (finalAttrs: {
     elfutils
     libglvnd
     libplacebo
+    libpng
+    libsecret
     libsoup_3
     libutf8proc
     libyaml

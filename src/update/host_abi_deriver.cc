@@ -27,6 +27,8 @@
 #include <vector>
 
 #include "compat/elf_build_id.h"
+#include "compat/fmod_output_device_contract.h"
+#include "compat/guest_abi.h"
 #include "update/payload_integrity.h"
 
 namespace mocktail::update {
@@ -219,9 +221,10 @@ class ElfImage final {
     if (elf_ == nullptr || elf_kind(elf_) != ELF_K_ELF ||
         gelf_getehdr(elf_, &header) == nullptr ||
         gelf_getclass(elf_) != ELFCLASS64 || header.e_type != ET_DYN ||
-        header.e_machine != EM_X86_64 || header.e_version != EV_CURRENT ||
+        header.e_machine != compat::kGuestElfMachine ||
+        header.e_version != EV_CURRENT ||
         header.e_ident[EI_DATA] != ELFDATA2LSB) {
-      *error = "candidate must be a little-endian x86-64 ET_DYN ELF";
+      *error = "candidate must be a little-endian guest-abi ET_DYN ELF";
       return false;
     }
     std::size_t program_count = 0;
@@ -1054,11 +1057,6 @@ std::optional<std::vector<SignatureMatch>> FindSignatureMatches(
              "0 candidate locations";
     return std::nullopt;
   }
-  if (!allow_multiple_candidates && matches.size() != 1U) {
-    *error = "signature " + spec.name + " matched " +
-             std::to_string(matches.size()) + " candidate locations";
-    return std::nullopt;
-  }
   std::vector<SignatureMatch> semantic_matches;
   std::string first_semantic_error;
   for (const std::size_t match : matches) {
@@ -1080,6 +1078,12 @@ std::optional<std::vector<SignatureMatch>> FindSignatureMatches(
   if (semantic_matches.empty() && matches.size() == 1U &&
       !first_semantic_error.empty()) {
     *error = std::move(first_semantic_error);
+    return std::nullopt;
+  }
+  if (!allow_multiple_candidates && semantic_matches.size() != 1U) {
+    *error = "signature " + spec.name + " matched " +
+             std::to_string(semantic_matches.size()) +
+             " semantic candidate locations";
     return std::nullopt;
   }
   return semantic_matches;
@@ -1124,6 +1128,15 @@ struct FmodRuntimeAnchors {
   std::uint64_t info_method = 0;
   std::uint64_t current_method = 0;
   std::uint64_t select_method = 0;
+  int layout_version = 1;
+  std::array<std::uint64_t, 4> input_methods{};
+  std::array<std::size_t, 4> input_indexes() const {
+    return layout_version == 2 ? std::array<std::size_t, 4>{9, 10, 12, 18}
+                               : std::array<std::size_t, 4>{8, 9, 10, 16};
+  }
+
+  std::size_t current_index() const { return layout_version == 2 ? 8 : 7; }
+  std::size_t select_index() const { return layout_version == 2 ? 19 : 17; }
 
   bool operator==(const FmodRuntimeAnchors& other) const {
     return vtable == other.vtable &&
@@ -1131,7 +1144,9 @@ struct FmodRuntimeAnchors {
            count_method == other.count_method &&
            info_method == other.info_method &&
            current_method == other.current_method &&
-           select_method == other.select_method;
+           select_method == other.select_method &&
+           layout_version == other.layout_version &&
+           input_methods == other.input_methods;
   }
 };
 
@@ -1177,7 +1192,14 @@ std::optional<RuntimeCompatibilityAnchors> LoadRuntimeCompatibilityAnchors(
           "vtable_rva",       "string_constructor_rva", "count_method_rva",
           "info_method_rva", "current_method_rva",     "select_method_rva",
       };
-      if (!bridge.is_object() || bridge.size() != kFields.size() ||
+      constexpr std::array<std::string_view, 4> input_fields = {
+          "input_count_method_rva", "input_info_method_rva",
+          "input_current_method_rva", "input_select_method_rva"};
+      const bool has_input = bridge.contains(input_fields[0]);
+      const bool has_layout = bridge.contains("vtable_layout_version");
+      if (!bridge.is_object() ||
+          bridge.size() !=
+              kFields.size() + (has_layout ? 1U : 0U) + (has_input ? 4U : 0U) ||
           !profile.value("allow_host_abi_bridges", false)) {
         *error = "reference FMOD output-device profile is incomplete";
         return std::nullopt;
@@ -1193,9 +1215,39 @@ std::optional<RuntimeCompatibilityAnchors> LoadRuntimeCompatibilityAnchors(
         if (!value.has_value()) return std::nullopt;
         values[index] = *value;
       }
-      const FmodRuntimeAnchors discovered = {
-          values[0], values[1], values[2], values[3], values[4], values[5]};
-      if (result.fmod.has_value() && !(*result.fmod == discovered)) {
+      int layout = 1;
+      if (has_layout) {
+        const Json& value = bridge["vtable_layout_version"];
+        if (!value.is_number_integer() || (value != 1 && value != 2)) {
+          *error = "reference FMOD vtable layout is unsupported";
+          return std::nullopt;
+        }
+        layout = value.get<int>();
+      }
+      FmodRuntimeAnchors discovered = {values[0], values[1], values[2],
+                                       values[3], values[4], values[5],
+                                       layout};
+      if (has_input) {
+        for (std::size_t i = 0; i < input_fields.size(); ++i) {
+          if (!bridge.contains(input_fields[i])) {
+            *error = "reference FMOD input profile is incomplete";
+            return std::nullopt;
+          }
+          auto value =
+              ParseRva(bridge[input_fields[i]], input_fields[i], error);
+          if (!value)
+            return std::nullopt;
+          discovered.input_methods[i] = *value;
+        }
+      }
+      auto previous = result.fmod;
+      if (previous) {
+        if (previous->input_methods[0] == 0)
+          previous->input_methods = discovered.input_methods;
+        if (discovered.input_methods[0] == 0)
+          discovered.input_methods = previous->input_methods;
+      }
+      if (previous.has_value() && !(*previous == discovered)) {
         *error =
             "reference compatibility manifests disagree on FMOD anchors";
         return std::nullopt;
@@ -1247,6 +1299,18 @@ bool HasFmodStringConstructorContract(const ElfImage& image,
          local_error.empty();
 }
 
+bool HasFmodDeviceListsSelectContract(const ElfImage& image,
+                                      std::uint64_t rva) {
+  constexpr std::size_t kSize = compat::kFmodDeviceListsSelectContractSize;
+  std::string local_error;
+  if (!image.RequireCode(rva, kSize, &local_error)) return false;
+  const auto offset = image.OffsetForRva(rva, kSize, &local_error);
+  return offset.has_value() &&
+         compat::HasFmodDeviceListsSelectContract(
+             image.Bytes(*offset, kSize, &local_error)) &&
+         local_error.empty();
+}
+
 std::optional<Json> DeriveRuntimeCompatibility(
     const ElfImage& reference, const ElfImage& candidate,
     const Disassembler& disassembler,
@@ -1273,11 +1337,8 @@ std::optional<Json> DeriveRuntimeCompatibility(
 
   constexpr std::size_t kCountIndex = 5;
   constexpr std::size_t kInfoIndex = 6;
-  constexpr std::size_t kCurrentIndex = 7;
-  constexpr std::size_t kSelectIndex = 17;
-  constexpr std::size_t kVtableBytes = (kSelectIndex + 1) * 8;
   const FmodRuntimeAnchors& old = *source.fmod;
-  if (!reference.RequireRelro(old.vtable, kVtableBytes, error)) {
+  if (!reference.RequireRelro(old.vtable, (old.select_index() + 1) * 8, error)) {
     return std::nullopt;
   }
   const auto reference_relocations = reference.RelativeRelocations(error);
@@ -1285,8 +1346,8 @@ std::optional<Json> DeriveRuntimeCompatibility(
   for (const auto [index, method] :
        {std::pair{kCountIndex, old.count_method},
         std::pair{kInfoIndex, old.info_method},
-        std::pair{kCurrentIndex, old.current_method},
-        std::pair{kSelectIndex, old.select_method}}) {
+        std::pair{old.current_index(), old.current_method},
+        std::pair{old.select_index(), old.select_method}}) {
     const auto found = reference_relocations->find(old.vtable + index * 8);
     if (found == reference_relocations->end() || found->second != method ||
         !reference.RequireCode(method, 1, error)) {
@@ -1307,11 +1368,13 @@ std::optional<Json> DeriveRuntimeCompatibility(
   const auto info_method = FindUniqueSemanticSignatureMatch(
       reference, candidate, disassembler,
       {"fmod-output-info", old.info_method, 18, false, 3}, error);
+  // A missing legacy selector is expected at the device-list ABI transition.
+  // The new layout is accepted only with its own complete selector contract.
+  std::string select_error;
   const auto select_method = FindUniqueSemanticSignatureMatch(
       reference, candidate, disassembler,
-      {"fmod-output-select", old.select_method, 18, false, 3}, error);
-  if (!string_constructor.has_value() || !info_method.has_value() ||
-      !select_method.has_value()) {
+      {"fmod-output-select", old.select_method, 18, false, 3}, &select_error);
+  if (!string_constructor.has_value() || !info_method.has_value()) {
     return std::nullopt;
   }
   const auto count_matches = FindSignatureMatches(
@@ -1341,21 +1404,31 @@ std::optional<Json> DeriveRuntimeCompatibility(
     if (addend != info_method->rva || offset < kInfoIndex * 8) continue;
     const std::uint64_t vtable = offset - kInfoIndex * 8;
     const auto count = relocations->find(vtable + kCountIndex * 8);
-    const auto current = relocations->find(vtable + kCurrentIndex * 8);
-    const auto select = relocations->find(vtable + kSelectIndex * 8);
-    std::string relro_error;
-    if (vtable % 8 != 0 || count == relocations->end() ||
-        current == relocations->end() || select == relocations->end() ||
-        count_candidates.find(count->second) == count_candidates.end() ||
-        current_candidates.find(current->second) == current_candidates.end() ||
-        count->second == current->second ||
-        select->second != select_method->rva ||
-        !candidate.RequireRelro(vtable, kVtableBytes, &relro_error)) {
-      continue;
+    for (const int layout : {1, 2}) {
+      FmodRuntimeAnchors derived;
+      derived.layout_version = layout;
+      const auto current = relocations->find(vtable + derived.current_index() * 8);
+      const auto select = relocations->find(vtable + derived.select_index() * 8);
+      std::string relro_error;
+      if (vtable % 8 != 0 || count == relocations->end() ||
+          current == relocations->end() || select == relocations->end() ||
+          count_candidates.find(count->second) == count_candidates.end() ||
+          current_candidates.find(current->second) == current_candidates.end() ||
+          count->second == current->second ||
+          !candidate.RequireRelro(vtable, (derived.select_index() + 1) * 8,
+                                  &relro_error)) {
+        continue;
+      }
+      if (layout == 1) {
+        if (old.layout_version != 1 || !select_method.has_value() ||
+            select->second != select_method->rva) continue;
+      } else if (!HasFmodDeviceListsSelectContract(candidate, select->second)) {
+        continue;
+      }
+      candidates.push_back({vtable, string_constructor->rva, count->second,
+                            info_method->rva, current->second, select->second,
+                            layout});
     }
-    candidates.push_back({vtable, string_constructor->rva, count->second,
-                          info_method->rva, current->second,
-                          select_method->rva});
   }
   if (candidates.size() != 1U) {
     *error = "FMOD output vtable matched " +
@@ -1376,6 +1449,44 @@ std::optional<Json> DeriveRuntimeCompatibility(
       {"current_method_rva", FormatRva(derived.current_method)},
       {"select_method_rva", FormatRva(derived.select_method)},
   };
+  if (old.input_methods[0] != 0) {
+    constexpr std::array<std::string_view, 4> fields = {
+        "input_count_method_rva", "input_info_method_rva",
+        "input_current_method_rva", "input_select_method_rva"};
+    constexpr std::array<std::size_t, 4> lengths = {4, 16, 12, 16};
+    const auto old_slots = old.input_indexes();
+    const auto new_slots = derived.input_indexes();
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+      const auto old_method =
+          reference_relocations->find(old.vtable + old_slots[i] * 8);
+      const auto new_method =
+          relocations->find(derived.vtable + new_slots[i] * 8);
+      if (old_method == reference_relocations->end() ||
+          old_method->second != old.input_methods[i] ||
+          new_method == relocations->end()) {
+        *error = "FMOD input vtable does not match its methods";
+        return std::nullopt;
+      }
+      const auto matches = FindSignatureMatches(
+          reference, candidate, disassembler,
+          {std::string(fields[i]), old.input_methods[i], lengths[i], false, 3},
+          true, error);
+      if (!matches || !std::any_of(matches->begin(), matches->end(),
+                                   [&](const auto &match) {
+                                     return match.rva == new_method->second;
+                                   })) {
+        if (error->empty())
+          *error = "candidate FMOD input contract changed";
+        return std::nullopt;
+      }
+      result["fmod_output_device_bridge"][fields[i]] =
+          FormatRva(new_method->second);
+    }
+  }
+  if (derived.layout_version != 1) {
+    result["fmod_output_device_bridge"]["vtable_layout_version"] =
+        derived.layout_version;
+  }
   return result;
 }
 
@@ -1437,6 +1548,41 @@ std::optional<std::uint64_t> FindRegistryFunctionEntry(
   return entries.front();
 }
 
+bool NormalizeRegistryRegisters(std::vector<Instruction>* instructions) {
+  if (instructions->size() != 11) return false;
+  auto& zero = (*instructions)[3];
+  auto& factor = (*instructions)[8];
+  auto& store = (*instructions)[9];
+  auto& begin = (*instructions)[10];
+  const auto reg = [](const Instruction& instruction, std::size_t index,
+                      std::size_t size) -> std::string {
+    if (index >= instruction.operands.size() ||
+        instruction.operands[index].type != Operand::Type::kRegister ||
+        instruction.operands[index].size != size)
+      return {};
+    return instruction.operands[index].register_name;
+  };
+  const std::string zero_reg = reg(zero, 0, 4);
+  const std::string factor_reg = reg(factor, 0, 4);
+  const std::string begin_reg = reg(begin, 0, 8);
+  const std::set<std::string> saved32 = {"r12d", "r13d", "r14d", "r15d"};
+  const std::set<std::string> pointers = {"rcx", "r12", "r13", "r14", "r15"};
+  if (zero.mnemonic != "xor" || saved32.count(zero_reg) != 1 ||
+      reg(zero, 1, 4) != zero_reg || factor.mnemonic != "mov" ||
+      (factor_reg != "eax" && saved32.count(factor_reg) != 1) ||
+      store.mnemonic != "mov" || reg(store, 1, 4) != factor_reg ||
+      begin.mnemonic != "lea" || pointers.count(begin_reg) != 1 ||
+      zero_reg == factor_reg || zero_reg == begin_reg + "d" ||
+      factor_reg == begin_reg + "d")
+    return false;
+  zero.operands[0].register_name = "registry-zero";
+  zero.operands[1].register_name = "registry-zero";
+  factor.operands[0].register_name = "registry-factor";
+  store.operands[1].register_name = "registry-factor";
+  begin.operands[0].register_name = "registry-begin";
+  return true;
+}
+
 std::optional<SignatureMatch> FindRegistrySignatureMatch(
     const ElfImage& reference, const ElfImage& candidate,
     const Disassembler& disassembler, const SignatureSpec& spec,
@@ -1458,12 +1604,51 @@ std::optional<SignatureMatch> FindRegistrySignatureMatch(
       spec.minimum_anchor_bytes,
       {0, 4},
   };
-  const auto body_match =
-      FindSignatureMatch(reference, candidate, disassembler, body_spec, error);
-  if (!body_match.has_value()) return std::nullopt;
   const std::vector<Instruction> reference_prologue(
       reference_full->begin(),
       std::next(reference_full->begin(), kBodyInstructionIndex));
+  std::optional<SignatureMatch> body_match;
+  std::vector<Instruction> normalized_reference(
+      reference_full->begin() + kBodyInstructionIndex,
+      reference_full->begin() + kBodyInstructionIndex + kBodyInstructionCount);
+  if (NormalizeRegistryRegisters(&normalized_reference)) {
+    const SignatureSpec clear_spec{"registry-size-and-clear",
+                                   (*reference_full)[12].address,
+                                   4,
+                                   true,
+                                   spec.minimum_anchor_bytes,
+                                   {0, 0}};
+    const auto clear_matches = FindSignatureMatches(
+        reference, candidate, disassembler, clear_spec, true, error);
+    if (!clear_matches.has_value()) return std::nullopt;
+    std::vector<SignatureMatch> valid;
+    for (const auto& clear : *clear_matches) {
+      if (clear.rva < 16) continue;
+      std::string candidate_error;
+      const auto body =
+          disassembler.Decode(candidate, clear.rva - 16, kBodyInstructionCount,
+                              4096, &candidate_error);
+      if (!body.has_value() || (*body)[4].address != clear.rva) continue;
+      auto normalized = *body;
+      if (!NormalizeRegistryRegisters(&normalized) ||
+          !ValidateSemantics(normalized_reference, normalized, body_spec,
+                             &candidate_error) ||
+          !FindRegistryFunctionEntry(candidate, disassembler, clear.rva - 16,
+                                     reference_prologue, &candidate_error))
+        continue;
+      valid.push_back({clear.rva - 16, normalized_reference, *body});
+    }
+    if (valid.size() != 1) {
+      *error = "registry register contract matched " +
+               std::to_string(valid.size()) + " candidate locations";
+      return std::nullopt;
+    }
+    body_match = std::move(valid.front());
+  } else {
+    body_match = FindSignatureMatch(reference, candidate, disassembler,
+                                    body_spec, error);
+    if (!body_match.has_value()) return std::nullopt;
+  }
   const auto candidate_entry = FindRegistryFunctionEntry(
       candidate, disassembler, body_match->rva, reference_prologue, error);
   if (!candidate_entry.has_value()) return std::nullopt;
@@ -1504,8 +1689,8 @@ std::optional<std::uint64_t> DirectJumpTarget(
 std::optional<SignatureMatch> FindConstructorBoundaryMatch(
     const ElfImage& reference, const ElfImage& candidate,
     const Disassembler& disassembler, const SignatureSpec& spec,
-    std::uint64_t reference_entry, std::uint64_t candidate_entry,
-    std::string* error) {
+    std::uint64_t reference_entry,
+    const std::vector<std::uint64_t>& candidate_entries, std::string* error) {
   if (reference_entry != spec.reference_rva) {
     *error = "reference constructor boundary moved outside init-array index 4";
     return std::nullopt;
@@ -1521,19 +1706,22 @@ std::optional<SignatureMatch> FindConstructorBoundaryMatch(
   const auto target_match = FindSignatureMatch(
       reference, candidate, disassembler, target_spec, error);
   if (!target_match.has_value()) return std::nullopt;
-  const auto candidate_wrapper =
-      disassembler.Decode(candidate, candidate_entry, 1, 16, error);
-  if (!candidate_wrapper.has_value()) return std::nullopt;
-  const auto candidate_target = DirectJumpTarget(
-      candidate_wrapper->front(), "candidate constructor boundary", error);
-  if (!candidate_target.has_value() || *candidate_target != target_match->rva) {
-    if (error->empty()) {
-      *error = "constructor index 4 no longer targets its verified boundary";
+  std::vector<SignatureMatch> matches;
+  for (const auto entry : candidate_entries) {
+    std::string ignored;
+    const auto wrapper = disassembler.Decode(candidate, entry, 1, 16, &ignored);
+    if (!wrapper) continue;
+    const auto target =
+        DirectJumpTarget(wrapper->front(), "constructor boundary", &ignored);
+    if (target && *target == target_match->rva) {
+      matches.push_back({entry, *reference_wrapper, *wrapper});
     }
+  }
+  if (matches.size() != 1) {
+    *error = "constructor boundary has no unique init-array entry";
     return std::nullopt;
   }
-  return SignatureMatch{candidate_entry, *reference_wrapper,
-                        *candidate_wrapper};
+  return std::move(matches.front());
 }
 
 std::vector<std::uint64_t> RipTargets(const Instruction& instruction) {
@@ -1544,6 +1732,70 @@ std::vector<std::uint64_t> RipTargets(const Instruction& instruction) {
     }
   }
   return result;
+}
+
+std::optional<std::uint64_t> SingletonBodyRva(const ElfImage& image,
+                                              const Disassembler& disassembler,
+                                              std::uint64_t entry,
+                                              std::string* error) {
+  const auto prefix = disassembler.Decode(image, entry, 2, 32, error);
+  if (!prefix) return std::nullopt;
+  if ((*prefix)[0].mnemonic != "push") return entry;
+  const auto& push = (*prefix)[0];
+  const auto& move = (*prefix)[1];
+  if (push.operands.size() != 1 || push.operands[0].register_name != "rbp" ||
+      move.mnemonic != "mov" || move.operands.size() != 2 ||
+      move.operands[0].register_name != "rbp" ||
+      move.operands[1].register_name != "rsp") {
+    *error = "JNI singleton has an unsupported prologue";
+    return std::nullopt;
+  }
+  return move.address + move.size;
+}
+
+bool HasSingletonLinks(const std::vector<Instruction>& instructions) {
+  if (instructions.size() != 3 || instructions[0].mnemonic != "lea" ||
+      instructions[1].mnemonic != "xchg" || instructions[2].mnemonic != "mov")
+    return false;
+  const auto head = RipTargets(instructions[0]);
+  const auto slot = RipTargets(instructions[1]);
+  const auto next = RipTargets(instructions[2]);
+  return head.size() == 1 && slot.size() == 1 && next.size() == 1 &&
+         slot[0] % 8 == 0 && head[0] == slot[0] + 8 && next[0] == head[0];
+}
+
+std::optional<SignatureMatch> FindSingletonSignatureMatch(
+    const ElfImage& reference, const ElfImage& candidate,
+    const Disassembler& disassembler, const SignatureSpec& spec,
+    const std::vector<std::uint64_t>& candidate_entries, std::string* error) {
+  const auto body =
+      SingletonBodyRva(reference, disassembler, spec.reference_rva, error);
+  if (!body) return std::nullopt;
+  const auto matches = FindSignatureMatches(
+      reference, candidate, disassembler,
+      {"jni-singleton-links", *body, 3, false, 3}, true, error);
+  if (!matches) return std::nullopt;
+  std::vector<SignatureMatch> valid;
+  for (const auto& match : *matches) {
+    if (!HasSingletonLinks(match.reference) ||
+        !HasSingletonLinks(match.candidate))
+      continue;
+    for (const auto entry : candidate_entries) {
+      if (entry != match.rva && (match.rva < 4 || entry != match.rva - 4))
+        continue;
+      std::string ignored;
+      const auto candidate_body =
+          SingletonBodyRva(candidate, disassembler, entry, &ignored);
+      if (candidate_body && *candidate_body == match.rva) {
+        valid.push_back({entry, match.reference, match.candidate});
+      }
+    }
+  }
+  if (valid.size() != 1) {
+    *error = "JNI singleton links have no unique init-array entry";
+    return std::nullopt;
+  }
+  return std::move(valid.front());
 }
 
 std::optional<std::uint64_t> MappedRipTarget(const SignatureMatch& match,
@@ -1771,7 +2023,7 @@ std::optional<Json> LoadCandidateMetadata(const std::filesystem::path& root,
       metadata->contains("sha256") ? &(*metadata)["sha256"] : nullptr;
   if (metadata->value("schema_version", 0) != 1 ||
       metadata->value("package", "") != "com.roblox.client" ||
-      metadata->value("abi", "") != "x86_64" || version_name.empty() ||
+      metadata->value("abi", "") != compat::kGuestAbi || version_name.empty() ||
       version_code == 0 ||
       metadata->value("elf_build_id", "") != candidate.build_id() ||
       hashes == nullptr || !hashes->is_object() ||
@@ -1847,10 +2099,14 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
         return FindRegistrySignatureMatch(reference, candidate, disassembler,
                                           spec, error);
       }
+      if (spec.name == "jni-singleton-initializer") {
+        return FindSingletonSignatureMatch(reference, candidate, disassembler,
+                                           spec, *candidate_init, error);
+      }
       if (spec.name == "constructor-4") {
-        return FindConstructorBoundaryMatch(
-            reference, candidate, disassembler, spec, (*reference_init)[4],
-            (*candidate_init)[4], error);
+        return FindConstructorBoundaryMatch(reference, candidate, disassembler,
+                                            spec, spec.reference_rva,
+                                            *candidate_init, error);
       }
       return FindSignatureMatch(reference, candidate, disassembler, spec,
                                 error);
@@ -1896,21 +2152,64 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
     return std::nullopt;
   }
   matches.emplace("allocate", std::move(*selected_allocate));
-  for (const std::size_t index : {2U, 3U, 4U}) {
-    const SignatureMatch& match =
-        matches["constructor-" + std::to_string(index)];
-    if ((*reference_init)[index] != match.reference[0].address ||
-        (*candidate_init)[index] != match.rva) {
-      *error = "constructor moved outside verified init-array boundary";
+  const Json& reference_anchors = sidecar["derivation_anchors"];
+  const Json& role_rvas = reference_anchors["constructor_rvas"];
+  const Json* reference_indices =
+      reference_anchors.contains("constructor_indices")
+          ? &reference_anchors["constructor_indices"]
+          : nullptr;
+  Json candidate_indices = Json::object();
+  Json candidate_constructor_rvas = Json::object();
+  for (const std::size_t role : {2U, 3U, 4U, 5U}) {
+    const std::string key = std::to_string(role);
+    std::size_t reference_index = role;
+    if (reference_indices != nullptr) {
+      if (!reference_indices->is_object() ||
+          !reference_indices->contains(key)) {
+        *error = "reference constructor indices are incomplete";
+        return std::nullopt;
+      }
+      const auto parsed =
+          PositiveSize((*reference_indices)[key], "constructor index", error);
+      if (!parsed) return std::nullopt;
+      reference_index = *parsed;
+    }
+    const auto reference_rva = ProfileRva(role_rvas, key, error);
+    const auto& match = matches.at(role == 5 ? "jni-singleton-initializer"
+                                             : "constructor-" + key);
+    const auto expected_rva =
+        role == 5
+            ? ProfileRva(reference_anchors, "jni_singleton_initializer_rva",
+                         error)
+            : std::optional<std::uint64_t>(match.reference.front().address);
+    if (!reference_rva || !expected_rva || *reference_rva != *expected_rva ||
+        reference_index < 2 || reference_index >= reference_init->size() ||
+        (*reference_init)[reference_index] != *reference_rva ||
+        std::count(reference_init->begin(), reference_init->end(),
+                   *reference_rva) != 1 ||
+        std::count(candidate_init->begin(), candidate_init->end(), match.rva) !=
+            1) {
+      *error = "constructor role has no unique verified init-array entry";
       return std::nullopt;
     }
+    const auto index = static_cast<std::size_t>(
+        std::find(candidate_init->begin(), candidate_init->end(), match.rva) -
+        candidate_init->begin());
+    if (index < 2) {
+      *error = "constructor role moved into reserved startup entries";
+      return std::nullopt;
+    }
+    if (role == 2 && reference_profile.value(
+                         "native_mimalloc_thread_initializer_after_constructor",
+                         SIZE_MAX) != reference_index) {
+      *error =
+          "reference allocator constructor disagrees with its TLS checkpoint";
+      return std::nullopt;
+    }
+    candidate_indices[key] = index;
+    candidate_constructor_rvas[key] = FormatRva(match.rva);
   }
-  const SignatureMatch& singleton = matches["jni-singleton-initializer"];
-  if ((*reference_init)[5] != singleton.reference[0].address ||
-      (*candidate_init)[5] != singleton.rva) {
-    *error = "JNI singleton initializer is not constructor index 5";
-    return std::nullopt;
-  }
+  const SignatureMatch& singleton = matches.at("jni-singleton-initializer");
 
   Json candidate_bridges = Json::array();
   std::map<std::string, std::uint64_t> bridge_rvas;
@@ -1980,21 +2279,17 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
     return std::nullopt;
   }
 
-  const auto constructor_ranges =
-      AdjustRanges(reference_profile["constructor_run_ranges"],
-                   *reference_count, candidate_init->size(), error);
   const auto native_ranges =
       AdjustRanges(reference_profile["native_mimalloc_constructor_run_ranges"],
                    *reference_count, candidate_init->size(), error);
-  if (!constructor_ranges.has_value() || !native_ranges.has_value()) {
+  if (!native_ranges.has_value() || native_ranges->size() != 1 ||
+      (*native_ranges)[0].value("begin", SIZE_MAX) != 2 ||
+      (*native_ranges)[0].value("end_exclusive", SIZE_MAX) !=
+          candidate_init->size()) {
+    *error = "native constructor replay must cover all non-reserved entries";
     return std::nullopt;
   }
-  const std::size_t thread_boundary = reference_profile.value(
-      "native_mimalloc_thread_initializer_after_constructor", SIZE_MAX);
-  if (thread_boundary != 2) {
-    *error = "native allocator TLS boundary is no longer verified";
-    return std::nullopt;
-  }
+  const std::size_t thread_boundary = candidate_indices["2"].get<std::size_t>();
   const auto singleton_bytes =
       PositiveSize(seeds["jni_singleton_bytes"], "JNI singleton size", error);
   const auto arena_slots = PositiveSize(seeds["arena_table_slot_count"],
@@ -2027,13 +2322,14 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
         {"deallocate", FormatRva(bridge_rvas["free"])}}},
       {"init_array_offset", FormatRva(init_section->address)},
       {"init_array_count", candidate_init->size()},
-      {"constructor_run_ranges", *constructor_ranges},
+      {"constructor_run_ranges", *native_ranges},
       {"native_mimalloc_constructor_run_ranges", *native_ranges},
       {"native_mimalloc_thread_initializer_after_constructor", thread_boundary},
       {"native_pre_jni_bootstrap",
        {{"registry_initializer", FormatRva(registry_initializer)},
         {"registry_slot", FormatRva(*registry_slot)}}},
       {"default_allocator_strategy", "native_mimalloc"},
+      {"host_allocator_bridges_supported", false},
   };
   Json anchors = {
       {"signature_version", 1},
@@ -2042,11 +2338,8 @@ std::optional<std::pair<Json, Json>> DeriveDocuments(const ElfImage& reference,
       {"empty_string_initializer_rva",
        FormatRva(matches["empty-string-initializer"].rva)},
       {"jni_singleton_initializer_rva", FormatRva(singleton.rva)},
-      {"constructor_rvas",
-       {{"2", FormatRva((*candidate_init)[2])},
-        {"3", FormatRva((*candidate_init)[3])},
-        {"4", FormatRva((*candidate_init)[4])},
-        {"5", FormatRva((*candidate_init)[5])}}},
+      {"constructor_rvas", candidate_constructor_rvas},
+      {"constructor_indices", candidate_indices},
   };
   const std::uint64_t version_code =
       metadata["version_code"].get<std::uint64_t>();

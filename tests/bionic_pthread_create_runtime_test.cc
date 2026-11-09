@@ -5,11 +5,14 @@
 #include <sched.h>
 #include <unistd.h>
 
+#include "compat/bionic_abi_exports.h"
+
 #include <algorithm>
 #include <atomic>
 
 namespace {
 
+std::atomic<int> g_host_scheduler_calls{0};
 std::atomic<bool> g_intercept_pthread_create{false};
 std::atomic<int> g_intercepted_create_calls{0};
 std::atomic<int> g_forced_create_failures{0};
@@ -53,6 +56,22 @@ extern "C" int __wrap_pthread_create(pthread_t* thread,
     }
   }
   return __real_pthread_create(thread, attributes, start_routine, argument);
+}
+
+// These host substitutes would accept RT calls; no privileges are required.
+extern "C" int __wrap_pthread_setschedparam(
+    pthread_t, int policy, const sched_param*) {
+  ++g_host_scheduler_calls;
+  return policy == SCHED_OTHER ? EAGAIN : 0;
+}
+
+extern "C" int __wrap_sched_setscheduler(pid_t, int policy, const sched_param*) {
+  ++g_host_scheduler_calls;
+  if (policy == SCHED_OTHER) {
+    errno = ESRCH;
+    return -1;
+  }
+  return 0;
 }
 
 namespace mocktail::compat {
@@ -172,9 +191,10 @@ TEST(BionicPthreadCreateRuntimeTest, GrowsRejectedExplicitGuestStack) {
             0);
   ASSERT_EQ(pthread_attr_destroy(&host_defaults), 0);
 
-  pthread_attr_t guest_attributes;
-  ASSERT_EQ(pthread_attr_init(&guest_attributes), 0);
-  ASSERT_EQ(pthread_attr_setstacksize(&guest_attributes, kRequestedStackSize),
+  MocktailBionicPthreadAttr guest_attributes;
+  ASSERT_EQ(mocktail_pthread_attr_init(&guest_attributes), 0);
+  ASSERT_EQ(mocktail_pthread_attr_setstacksize(&guest_attributes,
+                                             kRequestedStackSize),
             0);
 
   g_intercepted_create_calls.store(0, std::memory_order_release);
@@ -189,7 +209,7 @@ TEST(BionicPthreadCreateRuntimeTest, GrowsRejectedExplicitGuestStack) {
       &thread, &guest_attributes, RecordThreadStackSize, nullptr);
   g_intercept_pthread_create.store(false, std::memory_order_release);
 
-  ASSERT_EQ(pthread_attr_destroy(&guest_attributes), 0);
+  ASSERT_EQ(mocktail_pthread_attr_destroy(&guest_attributes), 0);
   ASSERT_EQ(result, 0);
   ASSERT_EQ(pthread_join(thread, nullptr), 0);
   EXPECT_EQ(g_intercepted_create_calls.load(std::memory_order_acquire), 3);
@@ -206,46 +226,68 @@ TEST(BionicPthreadCreateRuntimeTest, PreservesRequestedStackSize) {
   constexpr size_t kRequestedStackSize = 2 * 1024 * 1024;
   g_observed_stack_size.store(0, std::memory_order_release);
 
-  pthread_attr_t attributes;
-  ASSERT_EQ(pthread_attr_init(&attributes), 0);
-  ASSERT_EQ(pthread_attr_setstacksize(&attributes, kRequestedStackSize), 0);
+  MocktailBionicPthreadAttr attributes;
+  ASSERT_EQ(mocktail_pthread_attr_init(&attributes), 0);
+  ASSERT_EQ(
+      mocktail_pthread_attr_setstacksize(&attributes, kRequestedStackSize), 0);
 
   pthread_t thread{};
   ASSERT_EQ(mocktail_bionic_pthread_create(&thread, &attributes,
                                            RecordThreadStackSize, nullptr),
             0);
-  EXPECT_EQ(pthread_attr_destroy(&attributes), 0);
+  EXPECT_EQ(mocktail_pthread_attr_destroy(&attributes), 0);
   ASSERT_EQ(pthread_join(thread, nullptr), 0);
   ExpectRequestedStackSize(
       g_observed_stack_size.load(std::memory_order_acquire),
       kRequestedStackSize);
 }
 
-TEST(BionicPthreadCreateRuntimeTest, RetryPreservesRequestedStackSize) {
-  constexpr size_t kRequestedStackSize = 3 * 1024 * 1024;
-  g_observed_stack_size.store(0, std::memory_order_release);
+TEST(BionicPthreadCreateRuntimeTest, RejectsExplicitRealtimeBeforeHostCreate) {
+  for (const int policy : {SCHED_FIFO, SCHED_RR}) {
+    MocktailBionicPthreadAttr attributes;
+    ASSERT_EQ(mocktail_pthread_attr_init(&attributes), 0);
+    attributes.sched_policy = policy;
+    sched_param parameters{};
+    parameters.sched_priority = 99;
+    ASSERT_EQ(
+        mocktail_pthread_attr_setschedparam(&attributes, &parameters), 0);
+    g_intercepted_create_calls.store(0);
+    g_intercept_pthread_create.store(true);
+    pthread_t thread{};
+    const int result = mocktail_bionic_pthread_create(
+        &thread, &attributes, RecordThreadStackSize, nullptr);
+    g_intercept_pthread_create.store(false);
+    EXPECT_EQ(result, EPERM);
+    EXPECT_EQ(g_intercepted_create_calls.load(), 0);
+    EXPECT_EQ(mocktail_pthread_attr_destroy(&attributes), 0);
+  }
+}
 
-  pthread_attr_t attributes;
-  ASSERT_EQ(pthread_attr_init(&attributes), 0);
-  ASSERT_EQ(pthread_attr_setstacksize(&attributes, kRequestedStackSize), 0);
-  ASSERT_EQ(pthread_attr_setinheritsched(&attributes, PTHREAD_EXPLICIT_SCHED),
-            0);
-  ASSERT_EQ(pthread_attr_setschedpolicy(&attributes, SCHED_FIFO), 0);
-  // A zero FIFO priority makes the fully copied host attr invalid. The
-  // compatibility retry drops advisory scheduling while retaining the stack.
-  sched_param invalid_parameters{};
-  ASSERT_EQ(pthread_attr_getschedparam(&attributes, &invalid_parameters), 0);
-  ASSERT_EQ(invalid_parameters.sched_priority, 0);
+TEST(BionicPthreadCreateRuntimeTest, DeniesRealtimePromotionWithoutCallingHost) {
+  const int before = g_host_scheduler_calls.load();
+  sched_param parameters{};
+  parameters.sched_priority = 99;
+  for (const int policy : {SCHED_FIFO, SCHED_RR,
+                          SCHED_FIFO | SCHED_RESET_ON_FORK,
+                          SCHED_RR | SCHED_RESET_ON_FORK}) {
+    errno = EDOM;
+    EXPECT_EQ(mocktail_bionic_pthread_setschedparam(
+                  pthread_self(), policy, &parameters), EPERM);
+    EXPECT_EQ(errno, EDOM);
+    EXPECT_EQ(mocktail_bionic_sched_setscheduler(0, policy, &parameters), -1);
+    EXPECT_EQ(errno, EPERM);
+  }
+  EXPECT_EQ(g_host_scheduler_calls.load(), before);
+}
 
-  pthread_t thread{};
-  ASSERT_EQ(mocktail_bionic_pthread_create(&thread, &attributes,
-                                           RecordThreadStackSize, nullptr),
-            0);
-  EXPECT_EQ(pthread_attr_destroy(&attributes), 0);
-  ASSERT_EQ(pthread_join(thread, nullptr), 0);
-  ExpectRequestedStackSize(
-      g_observed_stack_size.load(std::memory_order_acquire),
-      kRequestedStackSize);
+TEST(BionicPthreadCreateRuntimeTest, ForwardsNormalSchedulingAndHostErrors) {
+  sched_param parameters{};
+  const int before = g_host_scheduler_calls.load();
+  EXPECT_EQ(mocktail_bionic_pthread_setschedparam(
+                pthread_self(), SCHED_OTHER, &parameters), EAGAIN);
+  EXPECT_EQ(mocktail_bionic_sched_setscheduler(0, SCHED_OTHER, &parameters), -1);
+  EXPECT_EQ(errno, ESRCH);
+  EXPECT_EQ(g_host_scheduler_calls.load(), before + 2);
 }
 
 }  // namespace

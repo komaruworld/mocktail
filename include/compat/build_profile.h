@@ -1,6 +1,9 @@
 #ifndef MOCKTAIL_COMPAT_BUILD_PROFILE_H_
 #define MOCKTAIL_COMPAT_BUILD_PROFILE_H_
 
+#include <array>
+
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -22,7 +25,32 @@ struct FmodOutputDeviceBridgeProfile {
   std::uintptr_t info_method_rva = 0;
   std::uintptr_t current_method_rva = 0;
   std::uintptr_t select_method_rva = 0;
-  std::uint32_t vtable_layout_version = 1;
+  // Roblox 2.738 inserted device-list methods before the current/select slots.
+  int vtable_layout_version = 1;
+
+  // Optional exact-build input count/info/current/select methods.
+  std::array<std::uintptr_t, 4> input_method_rvas{};
+  bool has_input_devices() const { return input_method_rvas[0] != 0; }
+  std::array<std::size_t, 4> input_vtable_indexes() const {
+    return vtable_layout_version == 2
+               ? std::array<std::size_t, 4>{9, 10, 12, 18}
+               : std::array<std::size_t, 4>{8, 9, 10, 16};
+  }
+  std::array<std::size_t, 6> capture_vtable_indexes() const {
+    return vtable_layout_version == 2
+               ? std::array<std::size_t, 6>{4, 13, 14, 15, 16, 17}
+               : std::array<std::size_t, 6>{4, 11, 12, 13, 14, 15};
+  }
+
+  bool valid_vtable_layout() const {
+    return vtable_layout_version == 1 || vtable_layout_version == 2;
+  }
+  std::size_t current_vtable_index() const {
+    return vtable_layout_version == 2 ? 8 : 7;
+  }
+  std::size_t select_vtable_index() const {
+    return vtable_layout_version == 2 ? 19 : 17;
+  }
 };
 
 // Exact-build metadata for the experimental native VR bridge. The bridge

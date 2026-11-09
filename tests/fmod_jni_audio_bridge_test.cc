@@ -293,6 +293,36 @@ TEST(WebRtcJniAudioBridgeTest, CapturesTenMillisecondFramesThroughExactJni) {
                                   [&probe] { return probe.callbacks > 0; }));
     EXPECT_EQ(probe.last_size, probe.capacity);
   }
+  // Exercise migration while the native side holds the original direct buffer.
+  void *original_buffer = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(probe.mutex);
+    original_buffer = probe.buffer;
+  }
+  std::vector<SdlRecordingDevice> recording_devices;
+  ASSERT_TRUE(ListSdlRecordingDevices(&recording_devices).ok());
+  ASSERT_FALSE(recording_devices.empty());
+  std::string selected_name;
+  ASSERT_TRUE(
+      SwitchSdlRecordingDevice(recording_devices.front().id, &selected_name)
+          .ok());
+  EXPECT_EQ(selected_name, recording_devices.front().name);
+  ASSERT_TRUE(SwitchSdlRecordingDevice(0, &selected_name).ok());
+  EXPECT_EQ(selected_name, "default");
+  EXPECT_FALSE(SwitchSdlRecordingDevice(0xffffffffU, &selected_name).ok());
+  std::uint32_t selected_id = 999;
+  ASSERT_TRUE(
+      GetConfiguredSdlRecordingDevice(&selected_id, &selected_name).ok());
+  EXPECT_EQ(selected_id, 0U);
+  {
+    std::unique_lock<std::mutex> lock(probe.mutex);
+    const int before = probe.callbacks;
+    ASSERT_TRUE(probe.cv.wait_for(lock, std::chrono::seconds(2), [&] {
+      return probe.callbacks >= before + 3;
+    }));
+    EXPECT_EQ(probe.buffer, original_buffer);
+    EXPECT_EQ(probe.last_size, probe.capacity);
+  }
   EXPECT_EQ(env->CallBooleanMethod(recorder, stop), JNI_TRUE);
 
   EXPECT_TRUE(ShutdownWebRtcJniAudioBridge(&vm).ok());
@@ -602,6 +632,51 @@ TEST(WebRtcJniAudioBridgeTest,
             JNI_TRUE);
   env->CallVoidMethod(manager,
                       env->GetMethodID(manager_class, "dispose", "()V"));
+}
+
+TEST(SdlAudioCaptureTest, MigrationPreservesPausedCapturesAndBuffers) {
+  ScopedSdlAudioShutdown shutdown;
+  ASSERT_TRUE(InitializeSdlAudioSubsystem().ok());
+  WebRtcCaptureProbe probe;
+  SdlAudioCaptureOptions options;
+  options.output_spec.channels = 1;
+  options.data_context = &probe;
+  options.data_callback = [](void *opaque, std::size_t) {
+    auto *p = static_cast<WebRtcCaptureProbe *>(opaque);
+    std::lock_guard<std::mutex> lock(p->mutex);
+    ++p->callbacks;
+    p->cv.notify_all();
+  };
+  std::unique_ptr<AudioCapture> first, second;
+  ASSERT_TRUE(CreateSdlAudioCapture(options, &first).ok());
+  ASSERT_TRUE(CreateSdlAudioCapture(options, &second).ok());
+  void *first_buffer = first->buffer_data();
+  void *second_buffer = second->buffer_data();
+  std::string name;
+  ASSERT_TRUE(SwitchSdlRecordingDevice(0, &name).ok());
+  {
+    std::unique_lock<std::mutex> lock(probe.mutex);
+    EXPECT_FALSE(probe.cv.wait_for(lock, std::chrono::milliseconds(50),
+                                   [&] { return probe.callbacks != 0; }));
+  }
+  ASSERT_TRUE(first->Start().ok());
+  ASSERT_TRUE(second->Start().ok());
+  {
+    std::unique_lock<std::mutex> lock(probe.mutex);
+    ASSERT_TRUE(probe.cv.wait_for(lock, std::chrono::seconds(2),
+                                  [&] { return probe.callbacks >= 4; }));
+  }
+  ASSERT_TRUE(first->Stop().ok());
+  ASSERT_TRUE(second->Stop().ok());
+  ASSERT_TRUE(SwitchSdlRecordingDevice(0, &name).ok());
+  EXPECT_EQ(first->buffer_data(), first_buffer);
+  EXPECT_EQ(second->buffer_data(), second_buffer);
+  {
+    std::unique_lock<std::mutex> lock(probe.mutex);
+    const int count = probe.callbacks;
+    EXPECT_FALSE(probe.cv.wait_for(lock, std::chrono::milliseconds(50),
+                                   [&] { return probe.callbacks != count; }));
+  }
 }
 
 TEST(SdlAudioCaptureTest, ResolvesDefaultIdAndUnambiguousDeviceNames) {

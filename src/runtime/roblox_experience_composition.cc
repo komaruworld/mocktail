@@ -11,6 +11,7 @@
 
 #include "jnivm/jnivm.h"
 #include "runtime/external_launch_broker.h"
+#include "runtime/roblox_launch_uri.h"
 #include "runtime/webview_helper_launcher.h"
 #include "window/window.h"
 
@@ -131,11 +132,16 @@ Status PublishSystemTheme(JNIEnv* env,
     status = CheckJni(env, "publish SystemTheme.systemThemeUpdated");
   }
 
-  if (message_id != nullptr) env->DeleteLocalRef(message_id);
-  if (payload != nullptr) env->DeleteLocalRef(payload);
-  if (message != nullptr) env->DeleteLocalRef(message);
-  if (protocol != nullptr) env->DeleteLocalRef(protocol);
-  if (message_bus_class != nullptr) env->DeleteLocalRef(message_bus_class);
+  if (message_id != nullptr)
+    env->DeleteLocalRef(message_id);
+  if (payload != nullptr)
+    env->DeleteLocalRef(payload);
+  if (message != nullptr)
+    env->DeleteLocalRef(message);
+  if (protocol != nullptr)
+    env->DeleteLocalRef(protocol);
+  if (message_bus_class != nullptr)
+    env->DeleteLocalRef(message_bus_class);
   return status;
 }
 
@@ -187,7 +193,8 @@ template <>
 bool SetField<jint>(JNIEnv* env, jobject object, jclass clazz, const char* name,
                     const char* signature, jint value) {
   jfieldID field = env->GetFieldID(clazz, name, signature);
-  if (field == nullptr) return false;
+  if (field == nullptr)
+    return false;
   env->SetIntField(object, field, value);
   return true;
 }
@@ -196,7 +203,8 @@ template <>
 bool SetField<jlong>(JNIEnv* env, jobject object, jclass clazz,
                      const char* name, const char* signature, jlong value) {
   jfieldID field = env->GetFieldID(clazz, name, signature);
-  if (field == nullptr) return false;
+  if (field == nullptr)
+    return false;
   env->SetLongField(object, field, value);
   return true;
 }
@@ -206,7 +214,8 @@ bool SetField<jboolean>(JNIEnv* env, jobject object, jclass clazz,
                         const char* name, const char* signature,
                         jboolean value) {
   jfieldID field = env->GetFieldID(clazz, name, signature);
-  if (field == nullptr) return false;
+  if (field == nullptr)
+    return false;
   env->SetBooleanField(object, field, value);
   return true;
 }
@@ -215,7 +224,8 @@ template <>
 bool SetField<jfloat>(JNIEnv* env, jobject object, jclass clazz,
                       const char* name, const char* signature, jfloat value) {
   jfieldID field = env->GetFieldID(clazz, name, signature);
-  if (field == nullptr) return false;
+  if (field == nullptr)
+    return false;
   env->SetFloatField(object, field, value);
   return true;
 }
@@ -224,7 +234,8 @@ template <>
 bool SetField<jobject>(JNIEnv* env, jobject object, jclass clazz,
                        const char* name, const char* signature, jobject value) {
   jfieldID field = env->GetFieldID(clazz, name, signature);
-  if (field == nullptr) return false;
+  if (field == nullptr)
+    return false;
   env->SetObjectField(object, field, value);
   return true;
 }
@@ -334,7 +345,9 @@ RobloxExperienceComposition::RobloxExperienceComposition(
   }
 }
 
-RobloxExperienceComposition::~RobloxExperienceComposition() { Shutdown(); }
+RobloxExperienceComposition::~RobloxExperienceComposition() {
+  Shutdown();
+}
 
 Status RobloxExperienceComposition::InitializePlatformProtocols() {
   if (!web_view_cookie_initialization_error_.empty()) {
@@ -348,7 +361,8 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (platform_protocols_initialized_ || objects_ != nullptr ||
-        web_view_bridge_ != nullptr || permissions_bridge_ != nullptr) {
+        web_view_bridge_ != nullptr || permissions_bridge_ != nullptr ||
+        call_protocol_bridge_ != nullptr) {
       return FailedPrecondition("platform protocols are already initialized");
     }
   }
@@ -425,16 +439,27 @@ Status RobloxExperienceComposition::InitializePlatformProtocols() {
     (void)ReleaseGlobalObjects();
     return status;
   }
+  auto call_protocol_bridge = std::make_unique<RobloxCallProtocolBridge>(
+      environment_, permissions_symbols_, permissions_objects);
+  status = call_protocol_bridge->Initialize();
+  if (!status.ok()) {
+    (void)permissions_bridge->Shutdown();
+    (void)browser_service_bridge->Shutdown();
+    (void)web_view_bridge->Shutdown();
+    (void)ReleaseGlobalObjects();
+    return status;
+  }
   {
     std::lock_guard<std::mutex> lock(mutex_);
     web_view_bridge_ = std::move(web_view_bridge);
     browser_service_bridge_ = std::move(browser_service_bridge);
     permissions_bridge_ = std::move(permissions_bridge);
+    call_protocol_bridge_ = std::move(call_protocol_bridge);
     platform_protocols_initialized_ = true;
   }
   std::fprintf(stderr,
                "  [platform] Android WebViewProtocol, BrowserService and "
-               "PermissionsProtocol "
+               "PermissionsProtocol and CallProtocol "
                "bridges ready\n");
   return Status::Ok();
 }
@@ -454,7 +479,8 @@ Status RobloxExperienceComposition::OnLuaAppReady(
     std::lock_guard<std::mutex> lock(mutex_);
     if (!platform_protocols_initialized_ || objects_ == nullptr ||
         objects_->message_bus == nullptr || web_view_bridge_ == nullptr ||
-        browser_service_bridge_ == nullptr || permissions_bridge_ == nullptr) {
+        browser_service_bridge_ == nullptr || permissions_bridge_ == nullptr ||
+        call_protocol_bridge_ == nullptr) {
       return FailedPrecondition(
           "platform protocols must be initialized before LuaApp readiness");
     }
@@ -509,7 +535,8 @@ Status RobloxExperienceComposition::OnLuaAppReady(
       controller_.reset();
     }
   }
-  if (!status.ok()) (void)ReleaseLuaAppGlobalObjects();
+  if (!status.ok())
+    (void)ReleaseLuaAppGlobalObjects();
   if (status.ok()) {
     std::fprintf(stderr,
                  "  [theme] published SystemTheme.systemThemeUpdated (%s)\n",
@@ -582,8 +609,7 @@ Status RobloxExperienceComposition::OpenWebSurface(
       !current->SetBackNavigationDisabled(
           presentation.back_navigation_disabled) ||
       !current->SetShowDomainAsTitle(presentation.show_domain_as_title) ||
-      !cookie_synchronized ||
-      (!spawn && !current->LoadUrl(url))) {
+      !cookie_synchronized || (!spawn && !current->LoadUrl(url))) {
     (void)current->RequestClose();
     return Unavailable("could not configure reusable Roblox web surface");
   }
@@ -623,21 +649,22 @@ Status RobloxExperienceComposition::CloseWebSurface() {
     if (web_surface_route_ == WebSurfaceRoute::kNone) {
       return Status::Ok();
     }
-    process = web_surface_process_;
+    process = std::move(web_surface_process_);
+    web_surface_process_generation_ = 0;
     exit_observer = std::move(web_surface_logical_exit_observer_);
     web_surface_route_ = WebSurfaceRoute::kNone;
     web_surface_logical_generation_ = 0;
   }
-  const bool hidden =
-      process == nullptr || !process->running() || process->SetVisible(false);
+  // A closed challenge must stop executing. Reusing its hidden document lets
+  // late callbacks from the old attempt reach the next login attempt. The APK
+  // removes its WebView fragment here and creates a new one on the next open.
+  const bool closed =
+      process == nullptr || !process->running() || process->RequestClose();
   if (exit_observer.valid()) {
     exit_observer.on_exit(exit_observer.context.get());
   }
-  if (!hidden) {
-    if (process != nullptr) {
-      (void)process->RequestClose();
-    }
-    return Unavailable("could not hide reusable Roblox web surface");
+  if (!closed) {
+    return Unavailable("could not close Roblox web surface");
   }
   return Status::Ok();
 }
@@ -950,9 +977,23 @@ Status RobloxExperienceComposition::RouteCurrentWebSurfaceEvent(
     route = web_surface_route_;
     web_view_bridge = web_view_bridge_.get();
   }
-  return event.type == WebViewHelperEventType::kRobloxCookie
-             ? AcceptWebViewRobloxCookie(event.payload)
-             : RouteWebSurfaceEvent(route, event, web_view_bridge);
+  if (event.type == WebViewHelperEventType::kRobloxCookie) {
+    return AcceptWebViewRobloxCookie(event.payload);
+  }
+  if (event.type == WebViewHelperEventType::kExecuteRoblox) {
+    // Roblox defers a signalled launchGame until the Lua app next navigates.
+    // A parsed launchGame is launched here and never forwarded, so a deferred
+    // copy cannot start a second join later.
+    RobloxExperienceLaunchRequest request;
+    if (ParseRobloxWebViewLaunchGame(event.payload, &request).ok() &&
+        Dispatch(request).ok()) {
+      std::fprintf(stderr,
+                   "[experience] WebView launchGame queued place_id=%lld\n",
+                   static_cast<long long>(request.place_id));
+      return CloseWebSurface();
+    }
+  }
+  return RouteWebSurfaceEvent(route, event, web_view_bridge);
 }
 
 Status RobloxExperienceComposition::DrainPlatformEvents() {
@@ -1095,10 +1136,10 @@ Status RobloxExperienceComposition::RefreshLateSurface() {
               SurfaceUpdateStatus(SurfaceCreated(event.surface.generation));
           break;
         case window::WindowSurfaceEventType::kChanged:
-          status = SurfaceUpdateStatus(SurfaceChanged(
-              {event.surface.generation, event.surface.native_window,
-               event.surface.width, event.surface.height,
-               event.surface.dpi_scale}));
+          status = SurfaceUpdateStatus(
+              SurfaceChanged({event.surface.generation,
+                              event.surface.native_window, event.surface.width,
+                              event.surface.height, event.surface.dpi_scale}));
           break;
         case window::WindowSurfaceEventType::kDestroyed:
           status =
@@ -1222,14 +1263,16 @@ Status RobloxExperienceComposition::DrainExternalLaunchRequests() {
 
 void RobloxExperienceComposition::NotifyLuaAppDidReturn() {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (subscribed_) lua_app_return_pending_ = true;
+  if (subscribed_)
+    lua_app_return_pending_ = true;
 }
 
 Status RobloxExperienceComposition::DrainLaunchRequests() {
   Status completed_result = Status::Ok();
   if (launch_worker_.joinable()) {
     const OwnedPthreadWaitResult wait = launch_worker_.WaitFor(0, 1);
-    if (wait.status == OwnedPthreadWaitStatus::kTimedOut) return Status::Ok();
+    if (wait.status == OwnedPthreadWaitStatus::kTimedOut)
+      return Status::Ok();
     if (!wait.joined()) {
       return Status::Error(StatusCode::kPlatformError,
                            "could not reap experience launch worker: " +
@@ -1287,7 +1330,8 @@ Status RobloxExperienceComposition::DrainLaunchRequests() {
   }
 
   Status external_launch_status = DrainExternalLaunchRequests();
-  if (!external_launch_status.ok()) return external_launch_status;
+  if (!external_launch_status.ok())
+    return external_launch_status;
 
   bool switch_active_game = false;
   std::optional<RobloxExperienceLaunchRequest> joining_request;
@@ -1296,7 +1340,8 @@ Status RobloxExperienceComposition::DrainLaunchRequests() {
     if (!subscribed_ || controller_ == nullptr || objects_ == nullptr) {
       return FailedPrecondition("experience composition is not subscribed");
     }
-    if (controlled_switch_waiting_for_return_) return Status::Ok();
+    if (controlled_switch_waiting_for_return_)
+      return Status::Ok();
     if (!launch_in_progress_ && active_launch_ == nullptr && game_active_ &&
         !pending_launch_requests_.empty()) {
       // Start the queued launch only after consuming this leave callback, so
@@ -1321,9 +1366,12 @@ Status RobloxExperienceComposition::DrainLaunchRequests() {
     if (!subscribed_ || controller_ == nullptr || objects_ == nullptr) {
       return FailedPrecondition("experience composition is not subscribed");
     }
-    if (launch_in_progress_ || active_launch_ != nullptr) return Status::Ok();
-    if (game_active_) return Status::Ok();
-    if (pending_launch_requests_.empty()) return Status::Ok();
+    if (launch_in_progress_ || active_launch_ != nullptr)
+      return Status::Ok();
+    if (game_active_)
+      return Status::Ok();
+    if (pending_launch_requests_.empty())
+      return Status::Ok();
     if (next_request_id_ == 0 ||
         next_request_id_ == std::numeric_limits<uint64_t>::max()) {
       pending_launch_requests_.clear();
@@ -1359,7 +1407,8 @@ Status RobloxExperienceComposition::DrainLaunchRequests() {
   const int start_error =
       launch_worker_.Start(&RobloxExperienceComposition::RunLaunchWorker, this,
                            kLaunchWorkerStackSize);
-  if (start_error == 0) return Status::Ok();
+  if (start_error == 0)
+    return Status::Ok();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     launch_in_progress_ = false;
@@ -1416,7 +1465,8 @@ void RobloxExperienceComposition::RunActiveLaunch() {
     std::lock_guard<std::mutex> lock(mutex_);
     task = active_launch_.get();
   }
-  if (task == nullptr) return;
+  if (task == nullptr)
+    return;
   Status status =
       BuildLaunchObjects(task->context.game_surface, &task->context.surface,
                          &task->context.platform_params);
@@ -1539,6 +1589,7 @@ Status RobloxExperienceComposition::Shutdown() {
   std::unique_ptr<RobloxWebViewBridge> web_view_bridge;
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge;
   std::unique_ptr<RobloxPermissionsBridge> permissions_bridge;
+  std::unique_ptr<RobloxCallProtocolBridge> call_protocol_bridge;
   std::shared_ptr<WebViewHelperProcess> web_surface_process;
   jnivm::VM* late_lifecycle_vm = nullptr;
   {
@@ -1562,6 +1613,7 @@ Status RobloxExperienceComposition::Shutdown() {
     web_view_bridge = std::move(web_view_bridge_);
     browser_service_bridge = std::move(browser_service_bridge_);
     permissions_bridge = std::move(permissions_bridge_);
+    call_protocol_bridge = std::move(call_protocol_bridge_);
     web_surface_process = std::move(web_surface_process_);
     web_surface_logical_exit_observer_ = {};
     web_surface_route_ = WebSurfaceRoute::kNone;
@@ -1578,12 +1630,19 @@ Status RobloxExperienceComposition::Shutdown() {
   if (web_surface_process != nullptr) {
     (void)web_surface_process->RequestClose();
   }
-  Status status = permissions_bridge != nullptr ? permissions_bridge->Shutdown()
-                                                : Status::Ok();
+  Status status = call_protocol_bridge != nullptr
+                      ? call_protocol_bridge->Shutdown()
+                      : Status::Ok();
+  const Status permissions_status = permissions_bridge != nullptr
+                                        ? permissions_bridge->Shutdown()
+                                        : Status::Ok();
+  if (status.ok())
+    status = permissions_status;
   const Status browser_status = browser_service_bridge != nullptr
                                     ? browser_service_bridge->Shutdown()
                                     : Status::Ok();
-  if (status.ok()) status = browser_status;
+  if (status.ok())
+    status = browser_status;
   const Status web_view_status =
       web_view_bridge != nullptr ? web_view_bridge->Shutdown() : Status::Ok();
   if (status.ok()) {
@@ -1595,6 +1654,7 @@ Status RobloxExperienceComposition::Shutdown() {
     status = bridge_status;
   }
   browser_service_bridge.reset();
+  call_protocol_bridge.reset();
   permissions_bridge.reset();
   web_view_bridge.reset();
   bridge.reset();
@@ -1612,14 +1672,16 @@ Status RobloxExperienceComposition::Shutdown() {
     launch_in_progress_ = false;
     lua_app_return_pending_ = false;
     if (active_launch_ != nullptr) {
-      if (status.ok()) status = active_launch_->result;
+      if (status.ok())
+        status = active_launch_->result;
       active_launch_.reset();
     }
     controller = std::move(controller_);
   }
   if (controller != nullptr) {
     const Status controller_status = controller->Shutdown();
-    if (status.ok()) status = controller_status;
+    if (status.ok())
+      status = controller_status;
   }
   const Status release = ReleaseGlobalObjects();
   return status.ok() ? release : status;
@@ -1650,7 +1712,8 @@ void RobloxExperienceComposition::NotifyPresence(
 Status RobloxExperienceComposition::BuildPlatformGlobalObjects() {
   JNIEnv* env = nullptr;
   Status status = environment_.Acquire(&env);
-  if (!status.ok()) return status;
+  if (!status.ok())
+    return status;
 
   jobject bus_local = nullptr;
   jclass bus_class =
@@ -1664,7 +1727,8 @@ Status RobloxExperienceComposition::BuildPlatformGlobalObjects() {
   bus_local = singleton != nullptr
                   ? env->CallStaticObjectMethod(bus_class, singleton)
                   : nullptr;
-  if (bus_class != nullptr) env->DeleteLocalRef(bus_class);
+  if (bus_class != nullptr)
+    env->DeleteLocalRef(bus_class);
   status = bus_local != nullptr
                ? CheckJni(env, "obtain exact MessageBus.f singleton")
                : Unavailable("MessageBus.f singleton is unavailable");
@@ -1677,7 +1741,8 @@ Status RobloxExperienceComposition::BuildPlatformGlobalObjects() {
     }
   }
 
-  if (bus_local != nullptr) env->DeleteLocalRef(bus_local);
+  if (bus_local != nullptr)
+    env->DeleteLocalRef(bus_local);
   if (!status.ok()) {
     if (global->message_bus != nullptr)
       env->DeleteGlobalRef(global->message_bus);
@@ -1695,7 +1760,8 @@ Status RobloxExperienceComposition::BuildPlatformGlobalObjects() {
 Status RobloxExperienceComposition::BuildLuaAppGlobalObjects() {
   JNIEnv* env = nullptr;
   Status status = environment_.Acquire(&env);
-  if (!status.ok()) return status;
+  if (!status.ok())
+    return status;
 
   jclass native_gl_local =
       env->FindClass("com/roblox/engine/jni/NativeGLInterface");
@@ -1719,12 +1785,17 @@ Status RobloxExperienceComposition::BuildLuaAppGlobalObjects() {
     }
   }
 
-  if (activity_local != nullptr) env->DeleteLocalRef(activity_local);
-  if (activity_class != nullptr) env->DeleteLocalRef(activity_class);
-  if (native_gl_local != nullptr) env->DeleteLocalRef(native_gl_local);
+  if (activity_local != nullptr)
+    env->DeleteLocalRef(activity_local);
+  if (activity_class != nullptr)
+    env->DeleteLocalRef(activity_class);
+  if (native_gl_local != nullptr)
+    env->DeleteLocalRef(native_gl_local);
   if (!status.ok()) {
-    if (activity_global != nullptr) env->DeleteGlobalRef(activity_global);
-    if (native_gl_global != nullptr) env->DeleteGlobalRef(native_gl_global);
+    if (activity_global != nullptr)
+      env->DeleteGlobalRef(activity_global);
+    if (native_gl_global != nullptr)
+      env->DeleteGlobalRef(native_gl_global);
     return status;
   }
 
@@ -1751,7 +1822,8 @@ Status RobloxExperienceComposition::BuildLaunchObjects(
   *platform_params = nullptr;
   JNIEnv* env = nullptr;
   Status status = environment_.Acquire(&env);
-  if (!status.ok()) return status;
+  if (!status.ok())
+    return status;
 
   jclass surface_class = nullptr;
   jobject surface_local = nullptr;
@@ -1785,8 +1857,9 @@ Status RobloxExperienceComposition::BuildLaunchObjects(
         SetField<jobject>(env, params_local, params_class, "assetFolderPath",
                           "Ljava/lang/String;", asset_path) &&
         SetField<jfloat>(env, params_local, params_class, "dpiScale", "F",
-                         surface.dpi_scale > 0.0f ? surface.dpi_scale
-                                                  : surface_config_.dpi_scale) &&
+                         surface.dpi_scale > 0.0f
+                             ? surface.dpi_scale
+                             : surface_config_.dpi_scale) &&
         SetField<jint>(env, params_local, params_class, "viewportWidthMm", "I",
                        surface_config_.viewport_width_mm) &&
         SetField<jint>(env, params_local, params_class, "viewportHeightMm", "I",
@@ -1805,12 +1878,17 @@ Status RobloxExperienceComposition::BuildLaunchObjects(
             ? CheckJni(env, "populate fresh launch PlatformParams")
             : Unavailable("required PlatformParams fields are unavailable");
   }
-  if (asset_path != nullptr) env->DeleteLocalRef(asset_path);
-  if (surface_class != nullptr) env->DeleteLocalRef(surface_class);
-  if (params_class != nullptr) env->DeleteLocalRef(params_class);
+  if (asset_path != nullptr)
+    env->DeleteLocalRef(asset_path);
+  if (surface_class != nullptr)
+    env->DeleteLocalRef(surface_class);
+  if (params_class != nullptr)
+    env->DeleteLocalRef(params_class);
   if (!status.ok()) {
-    if (params_local != nullptr) env->DeleteLocalRef(params_local);
-    if (surface_local != nullptr) env->DeleteLocalRef(surface_local);
+    if (params_local != nullptr)
+      env->DeleteLocalRef(params_local);
+    if (surface_local != nullptr)
+      env->DeleteLocalRef(surface_local);
     return status;
   }
   *surface_object = surface_local;
@@ -1881,13 +1959,19 @@ Status RobloxExperienceComposition::BuildLuaAppStartParams(
                        "required LuaApp StartAppParams fields are unavailable");
   }
 
-  if (selected_theme != nullptr) env->DeleteLocalRef(selected_theme);
-  if (username != nullptr) env->DeleteLocalRef(username);
-  if (app_starter_script != nullptr) env->DeleteLocalRef(app_starter_script);
-  if (app_starter_place != nullptr) env->DeleteLocalRef(app_starter_place);
-  if (params_class != nullptr) env->DeleteLocalRef(params_class);
+  if (selected_theme != nullptr)
+    env->DeleteLocalRef(selected_theme);
+  if (username != nullptr)
+    env->DeleteLocalRef(username);
+  if (app_starter_script != nullptr)
+    env->DeleteLocalRef(app_starter_script);
+  if (app_starter_place != nullptr)
+    env->DeleteLocalRef(app_starter_place);
+  if (params_class != nullptr)
+    env->DeleteLocalRef(params_class);
   if (!status.ok()) {
-    if (params_local != nullptr) env->DeleteLocalRef(params_local);
+    if (params_local != nullptr)
+      env->DeleteLocalRef(params_local);
     return status;
   }
   *start_app_params = params_local;
@@ -1919,7 +2003,8 @@ Status RobloxExperienceComposition::RestartLuaAppSurface(
 
   JNIEnv* env = nullptr;
   Status status = environment_.Acquire(&env);
-  if (!status.ok()) return status;
+  if (!status.ok())
+    return status;
 
   jobject surface_object = nullptr;
   jobject platform_params = nullptr;
@@ -1959,11 +2044,16 @@ Status RobloxExperienceComposition::RestartLuaAppSurface(
     status = CheckJni(env, "restart LuaApp with recreated surface");
   }
 
-  if (start_reason != nullptr) env->DeleteLocalRef(start_reason);
-  if (stop_reason != nullptr) env->DeleteLocalRef(stop_reason);
-  if (start_app_params != nullptr) env->DeleteLocalRef(start_app_params);
-  if (platform_params != nullptr) env->DeleteLocalRef(platform_params);
-  if (surface_object != nullptr) env->DeleteLocalRef(surface_object);
+  if (start_reason != nullptr)
+    env->DeleteLocalRef(start_reason);
+  if (stop_reason != nullptr)
+    env->DeleteLocalRef(stop_reason);
+  if (start_app_params != nullptr)
+    env->DeleteLocalRef(start_app_params);
+  if (platform_params != nullptr)
+    env->DeleteLocalRef(platform_params);
+  if (surface_object != nullptr)
+    env->DeleteLocalRef(surface_object);
   if (status.ok()) {
     std::fprintf(
         stderr,
@@ -2023,7 +2113,8 @@ Status RobloxExperienceComposition::RebindLuaAppSurface(
 Status RobloxExperienceComposition::ReleaseGlobalObjects() {
   JNIEnv* env = nullptr;
   Status status = environment_.Acquire(&env);
-  if (!status.ok()) return status;
+  if (!status.ok())
+    return status;
   std::unique_ptr<GlobalObjects> objects;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -2038,10 +2129,12 @@ Status RobloxExperienceComposition::ReleaseGlobalObjects() {
     pending_launch_requests_.clear();
     next_request_id_ = 1;
   }
-  if (objects == nullptr) return Status::Ok();
+  if (objects == nullptr)
+    return Status::Ok();
   if (objects->message_bus != nullptr)
     env->DeleteGlobalRef(objects->message_bus);
-  if (objects->activity != nullptr) env->DeleteGlobalRef(objects->activity);
+  if (objects->activity != nullptr)
+    env->DeleteGlobalRef(objects->activity);
   if (objects->native_gl_class != nullptr)
     env->DeleteGlobalRef(objects->native_gl_class);
   return CheckJni(env, "release experience composition JNI roots");
@@ -2050,7 +2143,8 @@ Status RobloxExperienceComposition::ReleaseGlobalObjects() {
 Status RobloxExperienceComposition::ReleaseLuaAppGlobalObjects() {
   JNIEnv* env = nullptr;
   Status status = environment_.Acquire(&env);
-  if (!status.ok()) return status;
+  if (!status.ok())
+    return status;
 
   jclass native_gl_class = nullptr;
   jobject activity = nullptr;
@@ -2070,8 +2164,10 @@ Status RobloxExperienceComposition::ReleaseLuaAppGlobalObjects() {
     pending_launch_requests_.clear();
     next_request_id_ = 1;
   }
-  if (activity != nullptr) env->DeleteGlobalRef(activity);
-  if (native_gl_class != nullptr) env->DeleteGlobalRef(native_gl_class);
+  if (activity != nullptr)
+    env->DeleteGlobalRef(activity);
+  if (native_gl_class != nullptr)
+    env->DeleteGlobalRef(native_gl_class);
   return CheckJni(env, "release LuaApp experience JNI roots");
 }
 

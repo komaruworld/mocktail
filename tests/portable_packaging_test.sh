@@ -28,7 +28,7 @@ grep -q '^artifact_name=mocktail-linux-x86_64-glibc-standalone$' \
   <<<"${dry_run}"
 grep -q '^interpreter=.*/ld-linux-x86-64\.so\.2$' <<<"${dry_run}"
 grep -q '^android_tools_libc=glibc$' <<<"${dry_run}"
-grep -q '^project_artifacts=17$' <<<"${dry_run}"
+grep -q '^project_artifacts=18$' <<<"${dry_run}"
 grep -q 'host=libc\.so\.6 reason=glibc' <<<"${dry_run}"
 grep -q 'host=libEGL\.so\.1 reason=gpu-driver-stack' <<<"${dry_run}"
 ! grep -q 'host=libwebkitgtk-6\.0\.so\.4' <<<"${dry_run}"
@@ -122,6 +122,7 @@ for path in \
     mocktail/bin/mocktail_updater \
     mocktail/bin/mocktail_failure_dialog \
     mocktail/bin/mocktail_webview_helper \
+    mocktail/bin/mocktail_cookie_helper \
     mocktail/bin/mocktail_freebsd_socket_helper \
     mocktail/bin/libEGL.so \
     mocktail/bin/libvulkan.so \
@@ -138,6 +139,7 @@ for path in \
     mocktail/metadata/SHA256SUMS.txt \
     mocktail/metadata/roblox_compatibility.json \
     mocktail/metadata/roblox_bootstrap_sources.json \
+    mocktail/metadata/roblox_download_sources.json \
     mocktail/metadata/roblox_host_abi_reference.json \
     mocktail/metadata/roblox_signing_certificates.json \
     mocktail/metadata/.mocktail-portable-bundle; do
@@ -284,6 +286,7 @@ EOF
   done
   printf '{}\n' >"${musl_metadata}/roblox_compatibility.json"
   printf '{}\n' >"${musl_metadata}/roblox_bootstrap_sources.json"
+  printf '{}\n' >"${musl_metadata}/roblox_download_sources.json"
   printf '{}\n' >"${musl_metadata}/roblox_host_abi_reference.json"
   printf '{}\n' >"${musl_metadata}/roblox_signing_certificates.json"
   touch "${musl_metadata}/.mocktail-portable-bundle"

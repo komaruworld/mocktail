@@ -61,6 +61,7 @@ def supported_profiles(catalog: dict) -> list[dict]:
         if isinstance(profile, dict)
         and profile.get("status") == "supported"
         and profile.get("default_allowed") is True
+        and profile.get("abi", ARCHITECTURE) == ARCHITECTURE
         and isinstance(profile.get("version_name"), str)
         and isinstance(profile.get("version_code"), int)
     ]

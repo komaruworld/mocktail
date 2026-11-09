@@ -35,6 +35,7 @@ readonly -a PROJECT_ARTIFACTS=(
   mocktail_updater
   mocktail_failure_dialog
   mocktail_webview_helper
+  mocktail_cookie_helper
   libmocktail_audio_sdl.so
   libc.so
   libdl.so
@@ -492,6 +493,7 @@ CopyRuntimeTree() {
     "${runtime_root}/scripts/install_thin_dependencies.sh"
   install -m 0644 -- "${PROJECT_ROOT}/config/roblox_compatibility.json" \
     "${PROJECT_ROOT}/config/roblox_bootstrap_sources.json" \
+    "${PROJECT_ROOT}/config/roblox_download_sources.json" \
     "${PROJECT_ROOT}/config/roblox_host_abi_reference.json" \
     "${PROJECT_ROOT}/config/roblox_signing_certificates.json" \
     "${runtime_root}/metadata/"

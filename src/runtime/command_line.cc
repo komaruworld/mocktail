@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "compat/guest_abi.h"
 #include "runtime/roblox_launch_uri.h"
 
 namespace mocktail {
@@ -249,11 +250,12 @@ std::string CommandLineUsage(const std::string& program_name) {
   usage
       << "Usage: " << (program_name.empty() ? "mocktail" : program_name)
       << " [options] [roblox-uri]\n\n"
-      << "Normal startup downloads and activates a verified managed x86_64 "
-         "Roblox payload automatically.\n\n"
+      << "Normal startup downloads and activates a verified managed "
+      << compat::kGuestAbi
+      << " Roblox payload automatically.\n\n"
       << "Options:\n"
       << "  --roblox-lib <path>      Development override for a specific "
-         "x86_64 libroblox.so\n"
+      << compat::kGuestAbi << " libroblox.so\n"
       << "  --headless               Run without creating an SDL window\n"
       << "  --windowed               Force windowed startup (default)\n"
       << "  -vr / --vr / --no-vr     Launch Roblox via OpenXR (WiVRn) or "
@@ -269,10 +271,13 @@ std::string CommandLineUsage(const std::string& program_name) {
          "website link\n"
       << "  --help, -h               Show this help\n\n"
       << "Auth:\n"
-      << "  When no saved Roblox cookie is found, Roblox starts in guest mode "
-         "and\n"
-      << "  uses its native sign-in flow. New credentials are stored "
-         "privately.\n\n"
+      << "  When no saved Roblox session is found, Roblox's welcome screen "
+         "opens with the native sign-in flow.\n"
+      << "  Set MOCKTAIL_NATIVE_LOGIN=0 to use the optional WebView sign-in "
+         "window.\n"
+      << "  Roblox may still open a WebView for required verification "
+         "challenges.\n"
+      << "  New credentials are stored privately.\n\n"
       << "Additional runtime options are available as MOCKTAIL_* environment "
          "variables.\n";
   return usage.str();

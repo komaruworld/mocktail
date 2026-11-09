@@ -47,8 +47,8 @@ struct RobloxThemeCacheResult {
 };
 
 // Reads the current account's Roblox theme without changing appStorage. A
-// missing value leaves dark_theme empty so the caller can use Roblox's own
-// startup default.
+// missing or unrecognized value falls back to AuthenticatedTheme, then the
+// caller's startup default.
 RobloxThemeCacheResult ReadRobloxThemeCache(
     const std::filesystem::path& app_storage_file,
     std::int64_t authenticated_user_id);

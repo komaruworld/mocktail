@@ -28,6 +28,7 @@ constexpr EGLint kEglSuccess = 0x3000;
 constexpr EGLint kEglNotInitialized = 0x3001;
 constexpr EGLint kEglBadDisplay = 0x3008;
 constexpr EGLint kEglBadAttribute = 0x3004;
+constexpr EGLint kEglBadMatch = 0x3009;
 constexpr EGLint kEglConfigId = 0x3028;
 constexpr EGLint kEglRedSize = 0x3024;
 constexpr EGLint kEglGreenSize = 0x3023;
@@ -436,13 +437,21 @@ EGLBoolean eglSwapBuffers(EGLDisplay display, EGLSurface surface) {
   return swapped ? kEglTrue : kEglFalse;
 }
 
-EGLBoolean eglSwapInterval(EGLDisplay display, EGLint) {
+EGLBoolean eglSwapInterval(EGLDisplay display, EGLint interval) {
   if (!IsActiveDisplay(display) || g_current_context == nullptr) {
     SetError(kEglBadDisplay);
     return kEglFalse;
   }
-  SetError(kEglSuccess);
-  return kEglTrue;
+  if (TestGraphicsStubsEnabled() && WindowContext() == nullptr) {
+    SetError(kEglSuccess);
+    return kEglTrue;
+  }
+  using Fn = bool (*)(int);
+  static Fn cached_fn = nullptr;
+  const Fn fn = ResolveCached(&cached_fn, "mocktail_window_set_swap_interval");
+  const bool applied = fn != nullptr && fn(interval);
+  SetError(applied ? kEglSuccess : kEglBadMatch);
+  return applied ? kEglTrue : kEglFalse;
 }
 
 EGLBoolean eglQuerySurface(EGLDisplay display, EGLSurface surface,

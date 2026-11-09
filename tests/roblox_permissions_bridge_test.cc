@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "jnivm/jnivm.h"
+#include "runtime/roblox_call_protocol_bridge.h"
 
 namespace mocktail {
 namespace runtime {
@@ -23,15 +24,18 @@ using Json = nlohmann::json;
 constexpr char kRequest[] = R"({"permissions":["MICROPHONE_ACCESS"]})";
 
 std::string Copy(JNIEnv* env, jstring value) {
-  if (!value) return {};
+  if (!value)
+    return {};
   const char* chars = env->GetStringUTFChars(value, nullptr);
   const std::string copy = chars ? chars : "";
-  if (chars) env->ReleaseStringUTFChars(value, chars);
+  if (chars)
+    env->ReleaseStringUTFChars(value, chars);
   return copy;
 }
 
 struct Probe {
   jnivm::VM* vm = nullptr;
+  std::string expected_protocol = "PermissionsProtocol";
   std::map<std::string, jobject> legacy;
   std::map<std::string, jobject> handlers;
   int callbacks_created = 0;
@@ -50,11 +54,13 @@ struct Probe {
   bool block_publish = false;
   bool publish_entered = false;
   bool release_publish = false;
+
   struct Published {
     std::string method;
     Json body;
     jint code;
   };
+
   std::vector<Published> published;
   std::vector<std::pair<std::string, Json>> resolved;
 };
@@ -68,7 +74,8 @@ void Prepare(void* context) {
 jobject CreateRaw(void* context, std::shared_ptr<void> target,
                   void (*run)(void*, JNIEnv*, jstring)) {
   auto* probe = static_cast<Probe*>(context);
-  if (++probe->callbacks_created == probe->fail_callback_at) return nullptr;
+  if (++probe->callbacks_created == probe->fail_callback_at)
+    return nullptr;
   return probe->vm->CreateMessageBusRawCallback(
       std::move(target), jnivm::MessageBusRawCallbacks{run});
 }
@@ -113,19 +120,22 @@ void InvokeAsync(JNIEnv* env, jobject handler, const char* payload,
   args[0].l = message;
   args[1].l = id;
   env->CallVoidMethodA(handler, run, args);
-  if (message) env->DeleteLocalRef(message);
+  if (message)
+    env->DeleteLocalRef(message);
   env->DeleteLocalRef(id);
   env->DeleteLocalRef(cls);
 }
 
 jobject Subscribe(JNIEnv* env, jobject, jstring protocol, jstring method,
                   jobject callback, jboolean once) {
-  EXPECT_EQ(Copy(env, protocol), "PermissionsProtocol");
+  EXPECT_EQ(Copy(env, protocol), g_probe->expected_protocol);
   EXPECT_EQ(once, JNI_FALSE);
   const int handle = ++g_probe->subscriptions;
-  if (handle == g_probe->fail_subscription_at) return nullptr;
+  if (handle == g_probe->fail_subscription_at)
+    return nullptr;
   g_probe->legacy[Copy(env, method)] = callback;
-  if (g_probe->call_during_registration) InvokeLegacy(env, callback, kRequest);
+  if (g_probe->call_during_registration)
+    InvokeLegacy(env, callback, kRequest);
   jclass cls = env->FindClass("com/roblox/universalapp/messagebus/Connection");
   jmethodID ctor = env->GetMethodID(cls, "<init>", "(J)V");
   jobject connection = env->NewObject(cls, ctor, static_cast<jlong>(handle));
@@ -140,18 +150,18 @@ void Disconnect(JNIEnv*, jobject, jlong handle) {
 
 void SetHandler(JNIEnv* env, jobject, jstring protocol, jstring method,
                 jobject handler) {
-  EXPECT_EQ(Copy(env, protocol), "PermissionsProtocol");
+  EXPECT_EQ(Copy(env, protocol), g_probe->expected_protocol);
   g_probe->handlers[Copy(env, method)] = handler;
 }
 
 void ClearHandler(JNIEnv* env, jobject, jstring protocol, jstring) {
-  EXPECT_EQ(Copy(env, protocol), "PermissionsProtocol");
+  EXPECT_EQ(Copy(env, protocol), g_probe->expected_protocol);
   ++g_probe->native_cleared;
 }
 
 void Publish(JNIEnv* env, jobject, jstring protocol, jstring method,
              jstring response, jint code, jstring telemetry) {
-  EXPECT_EQ(Copy(env, protocol), "PermissionsProtocol");
+  EXPECT_EQ(Copy(env, protocol), g_probe->expected_protocol);
   EXPECT_EQ(Copy(env, telemetry), "{}");
   {
     std::unique_lock<std::mutex> lock(g_probe->mutex);
@@ -160,7 +170,9 @@ void Publish(JNIEnv* env, jobject, jstring protocol, jstring method,
     if (g_probe->block_publish) {
       g_probe->publish_entered = true;
       g_probe->changed.notify_all();
-      g_probe->changed.wait(lock, [] { return g_probe->release_publish; });
+      g_probe->changed.wait(lock, [] {
+        return g_probe->release_publish;
+      });
     }
   }
   if (g_probe->reenter) {
@@ -185,11 +197,14 @@ class RobloxPermissionsBridgeTest : public testing::Test {
     bus = env->AllocObject(cls);
     env->DeleteLocalRef(cls);
   }
+
   void TearDown() override {
+    call_bridge.reset();
     bridge.reset();
     env->DeleteLocalRef(bus);
     g_probe = nullptr;
   }
+
   Status Initialize(bool enabled = true) {
     bridge = std::make_unique<RobloxPermissionsBridge>(
         JniEnvironmentProvider{vm.GetJavaVM(), &vm, Prepare},
@@ -200,10 +215,23 @@ class RobloxPermissionsBridgeTest : public testing::Test {
         enabled);
     return bridge->Initialize();
   }
+
+  Status InitializeCall() {
+    probe.expected_protocol = "Call";
+    call_bridge = std::make_unique<RobloxCallProtocolBridge>(
+        JniEnvironmentProvider{vm.GetJavaVM(), &vm, Prepare},
+        RobloxMessageBusSymbols{Subscribe, Disconnect, Publish, SetHandler,
+                                ClearHandler, Resolve},
+        RobloxMessageBusObjects{bus, &probe, CreateRaw, ClearRaw, CreateAsync,
+                                ClearAsync});
+    return call_bridge->Initialize();
+  }
+
   Probe::Published Legacy(const char* method, const char* payload = kRequest) {
     InvokeLegacy(env, probe.legacy.at(method), payload);
     return probe.published.back();
   }
+
   Json Async(const char* method, const char* payload = kRequest,
              const char* id = "request-1") {
     InvokeAsync(env, probe.handlers.at(method), payload, id);
@@ -215,7 +243,37 @@ class RobloxPermissionsBridgeTest : public testing::Test {
   JNIEnv* env = nullptr;
   jobject bus = nullptr;
   std::unique_ptr<RobloxPermissionsBridge> bridge;
+  std::unique_ptr<RobloxCallProtocolBridge> call_bridge;
 };
+
+TEST_F(RobloxPermissionsBridgeTest,
+       CallStateResolvesBothTransportsWithoutStartingCall) {
+  ASSERT_TRUE(InitializeCall().ok());
+  ASSERT_EQ(probe.legacy.size(), 1u);
+  ASSERT_EQ(probe.handlers.size(), 1u);
+  const auto legacy = Legacy("getCallState", "{}");
+  EXPECT_EQ(legacy.code, 0);
+  EXPECT_EQ(legacy.body["status"], "Idle");
+  EXPECT_EQ(legacy.body["muted"], true);
+  EXPECT_EQ(legacy.body["camEnabled"], false);
+  const auto asynchronous = Async("getCallState", "{}", "voice-init-1");
+  EXPECT_EQ(asynchronous, legacy.body);
+  ASSERT_EQ(probe.resolved.size(), 1u);
+  EXPECT_EQ(probe.resolved[0].first, "voice-init-1");
+}
+
+TEST_F(RobloxPermissionsBridgeTest, CallStateShutdownDisablesStaleCallbacks) {
+  ASSERT_TRUE(InitializeCall().ok());
+  jobject handler = env->NewGlobalRef(probe.handlers.at("getCallState"));
+  ASSERT_TRUE(call_bridge->Shutdown().ok());
+  InvokeAsync(env, handler, "{}", "stale");
+  EXPECT_TRUE(probe.published.empty());
+  EXPECT_TRUE(probe.resolved.empty());
+  EXPECT_EQ(probe.disconnected, 1);
+  EXPECT_EQ(probe.native_cleared, 1);
+  EXPECT_EQ(probe.handlers_cleared, 1);
+  env->DeleteGlobalRef(handler);
+}
 
 TEST_F(RobloxPermissionsBridgeTest, RegistersBothTransportsAndReinitializes) {
   ASSERT_TRUE(Initialize().ok());
@@ -395,12 +453,14 @@ TEST_F(RobloxPermissionsBridgeTest,
   bool entered;
   {
     std::unique_lock<std::mutex> lock(probe.mutex);
-    entered = probe.changed.wait_for(lock, std::chrono::seconds(2),
-                                     [&] { return probe.publish_entered; });
+    entered = probe.changed.wait_for(lock, std::chrono::seconds(2), [&] {
+      return probe.publish_entered;
+    });
   }
   EXPECT_TRUE(entered);
-  auto shutdown =
-      std::async(std::launch::async, [&] { return bridge->Shutdown(); });
+  auto shutdown = std::async(std::launch::async, [&] {
+    return bridge->Shutdown();
+  });
   EXPECT_EQ(shutdown.wait_for(std::chrono::milliseconds(30)),
             std::future_status::timeout);
   {

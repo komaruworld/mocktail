@@ -14,7 +14,7 @@ namespace mocktail::audio::internal {
 struct FmodInputCaptureProfile {
   std::string_view build_id;
   std::uintptr_t vtable_rva;
-  std::uint32_t vtable_layout_version;
+  int vtable_layout_version;
   // Format, latency, start, stop, poll, recording.
   std::array<std::size_t, 6> slots;
   std::array<std::uintptr_t, 6> method_rvas;

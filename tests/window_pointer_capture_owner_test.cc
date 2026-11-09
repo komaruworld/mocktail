@@ -11,15 +11,12 @@ namespace {
 
 class FakeBackend final : public PointerCaptureBackend {
  public:
-  bool Apply(bool relative_mode, bool cursor_visible) override {
-    calls.push_back({relative_mode, cursor_visible});
+  bool Apply(const PointerCaptureRequest& request) override {
+    calls.push_back(request);
     return succeeds;
   }
 
-  struct Call {
-    bool relative_mode;
-    bool cursor_visible;
-  };
+  using Call = PointerCaptureRequest;
   std::vector<Call> calls;
   bool succeeds = true;
 };
@@ -118,8 +115,11 @@ TEST(WindowPointerCaptureOwnerTest, QueryOrCaptureFailureStaysReleased) {
   EXPECT_TRUE(owner.cursor_visible());
   EXPECT_EQ(backend.calls.size(), 2U);
   query.succeeds = false;
+  backend.succeeds = true;
   EXPECT_TRUE(owner.Pump(false));
   EXPECT_FALSE(owner.captured());
+  ASSERT_EQ(backend.calls.size(), 3U);
+  EXPECT_FALSE(backend.calls.back().relative_mode);
 }
 
 TEST(WindowPointerCaptureOwnerTest, QueryCanClearItselfWithoutDeadlock) {
@@ -151,6 +151,75 @@ TEST(WindowPointerCaptureOwnerTest, RightDragCapturesUntilButtonRelease) {
   EXPECT_TRUE(owner.OnRightButton(false, false));
   EXPECT_FALSE(owner.captured());
   EXPECT_FALSE(owner.cursor_visible());
+}
+
+TEST(WindowPointerCaptureOwnerTest, RightDragRetainsItsEventAnchorAcrossTextFocus) {
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.OnRightButton(true, false, PointerPosition{25.0f, 40.0f}));
+  ASSERT_TRUE(backend.calls.back().anchor.has_value());
+  EXPECT_FLOAT_EQ(backend.calls.back().anchor->x, 25.0f);
+  EXPECT_FLOAT_EQ(backend.calls.back().anchor->y, 40.0f);
+
+  ASSERT_TRUE(owner.Pump(true));
+  EXPECT_FALSE(owner.captured());
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(backend.calls.back().anchor.has_value());
+  EXPECT_FLOAT_EQ(backend.calls.back().anchor->x, 25.0f);
+  EXPECT_FLOAT_EQ(backend.calls.back().anchor->y, 40.0f);
+
+  ASSERT_TRUE(owner.OnRightButton(false, false));
+  query.locked_center = true;
+  ASSERT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(backend.calls.back().anchor.has_value());
+}
+
+TEST(WindowPointerCaptureOwnerTest, RightDragDoesNotReplaceANativeLockAnchor) {
+  FakeBackend backend;
+  QueryState query{true, true};
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.Pump(false));
+  ASSERT_TRUE(owner.OnRightButton(true, false, PointerPosition{900.0f, 800.0f}));
+  ASSERT_TRUE(owner.OnRightButton(false, false));
+  EXPECT_TRUE(owner.captured());
+  query.locked_center = false;
+  ASSERT_TRUE(owner.Pump(false));
+  EXPECT_FALSE(backend.calls.back().anchor.has_value());
+}
+
+TEST(WindowPointerCaptureOwnerTest, FocusLossAndShutdownCancelCursorRestoration) {
+  FakeBackend backend;
+  QueryState query{true, false};
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.RegisterQuery(Query, &query));
+  ASSERT_TRUE(owner.OnRightButton(true, false, PointerPosition{25.0f, 40.0f}));
+  ASSERT_TRUE(owner.OnFocusLost());
+  EXPECT_FALSE(backend.calls.back().restore_position);
+  EXPECT_FALSE(backend.calls.back().anchor.has_value());
+
+  query.locked_center = true;
+  ASSERT_TRUE(owner.OnFocusGained(false));
+  EXPECT_FALSE(backend.calls.back().anchor.has_value());
+  ASSERT_TRUE(owner.Shutdown());
+  EXPECT_FALSE(backend.calls.back().restore_position);
+}
+
+TEST(WindowPointerCaptureOwnerTest, FailedReleaseIsRetriedWhileUnfocused) {
+  FakeBackend backend;
+  WindowPointerCaptureOwner owner(&backend);
+  ASSERT_TRUE(owner.OnRightButton(true, false, PointerPosition{25.0f, 40.0f}));
+  backend.succeeds = false;
+  EXPECT_FALSE(owner.OnFocusLost());
+  EXPECT_FALSE(backend.calls.back().restore_position);
+  const auto calls_before_retry = backend.calls.size();
+  backend.succeeds = true;
+  EXPECT_TRUE(owner.Pump(false));
+  ASSERT_EQ(backend.calls.size(), calls_before_retry + 1);
+  EXPECT_FALSE(backend.calls.back().relative_mode);
+  EXPECT_FALSE(backend.calls.back().restore_position);
 }
 
 TEST(WindowPointerCaptureOwnerTest,

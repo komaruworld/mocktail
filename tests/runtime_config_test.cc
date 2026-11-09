@@ -73,6 +73,8 @@ TEST(RuntimeConfigTest, UsesSupportedDefaults) {
   EXPECT_TRUE(config.audio_input_device_valid());
   EXPECT_TRUE(config.microphone_enabled());
   EXPECT_FALSE(config.use_system_proxy());
+  EXPECT_FALSE(config.fleasion_enabled());
+  EXPECT_TRUE(config.fleasion_valid());
   EXPECT_FALSE(config.network_proxy().has_value());
   EXPECT_FALSE(config.discord_rpc().enabled);
   EXPECT_TRUE(config.discord_rpc().show_place_name);

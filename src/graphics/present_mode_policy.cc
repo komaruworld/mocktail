@@ -18,7 +18,11 @@ std::string_view EnvironmentOr(const char *name, const char *fallback) {
 } // namespace
 
 PresentModePolicy ResolvePresentModePolicy(std::string_view vsync_value,
-                                           std::string_view frame_rate_value) {
+                                           std::string_view frame_rate_value,
+                                           std::string_view present_mode) {
+  if (present_mode == "fifo") return PresentModePolicy::kFifo;
+  if (present_mode == "mailbox") return PresentModePolicy::kMailbox;
+  if (present_mode == "immediate") return PresentModePolicy::kImmediate;
   if (vsync_value == "on" || vsync_value == "1") {
     return PresentModePolicy::kVsync;
   }
@@ -39,7 +43,8 @@ PresentModePolicy CachedPresentModePolicy() {
   static const PresentModePolicy policy = [] {
     return ResolvePresentModePolicy(
         EnvironmentOr("MOCKTAIL_VSYNC", "auto"),
-        EnvironmentOr("MOCKTAIL_FRAME_RATE_LIMIT", "-1"));
+        EnvironmentOr("MOCKTAIL_FRAME_RATE_LIMIT", "-1"),
+        EnvironmentOr("MOCKTAIL_PRESENT_MODE", "auto"));
   }();
   return policy;
 }
@@ -49,6 +54,15 @@ FilterPresentModes(PresentModePolicy policy,
                    const std::vector<VkPresentModeKHR> &host_modes) {
   if (policy == PresentModePolicy::kHostDefault || host_modes.empty()) {
     return host_modes;
+  }
+  if (const auto explicit_mode = ExplicitPresentMode(policy)) {
+    const auto supported = [&](VkPresentModeKHR mode) {
+      return std::find(host_modes.begin(), host_modes.end(), mode) !=
+             host_modes.end();
+    };
+    if (supported(*explicit_mode)) return {*explicit_mode};
+    if (supported(VK_PRESENT_MODE_FIFO_KHR)) return {VK_PRESENT_MODE_FIFO_KHR};
+    return {};
   }
   // Late frames: FIFO waits for the next vblank. FIFO_LATEST_READY and
   // MAILBOX present the newest image instead. FIFO_RELAXED only tears if
@@ -72,6 +86,24 @@ FilterPresentModes(PresentModePolicy policy,
     }
   }
   return host_modes;
+}
+
+std::optional<VkPresentModeKHR> ExplicitPresentMode(PresentModePolicy policy) {
+  switch (policy) {
+  case PresentModePolicy::kFifo: return VK_PRESENT_MODE_FIFO_KHR;
+  case PresentModePolicy::kMailbox: return VK_PRESENT_MODE_MAILBOX_KHR;
+  case PresentModePolicy::kImmediate: return VK_PRESENT_MODE_IMMEDIATE_KHR;
+  default: return std::nullopt;
+  }
+}
+
+int ResolveSwapInterval(PresentModePolicy policy, int requested) {
+  switch (policy) {
+  case PresentModePolicy::kHostDefault: return requested;
+  case PresentModePolicy::kUnthrottled:
+  case PresentModePolicy::kImmediate: return 0;
+  default: return 1;
+  }
 }
 
 const char *PresentModeKhrName(VkPresentModeKHR mode) {
@@ -99,6 +131,12 @@ const char *PresentModePolicyName(PresentModePolicy policy) {
     return "vsync";
   case PresentModePolicy::kUnthrottled:
     return "unthrottled";
+  case PresentModePolicy::kFifo:
+    return "fifo";
+  case PresentModePolicy::kMailbox:
+    return "mailbox";
+  case PresentModePolicy::kImmediate:
+    return "immediate";
   }
   return "unknown";
 }
@@ -120,6 +158,8 @@ std::uint32_t PreferSwapchainMinImageCount(PresentModePolicy policy,
     if (min_images != 0) {
       count = std::max(count, min_images + 2);
     }
+  } else if (policy == PresentModePolicy::kMailbox) {
+    count = std::max(count, 3U);
   }
   if (max_images != 0) {
     count = std::min(count, max_images);
