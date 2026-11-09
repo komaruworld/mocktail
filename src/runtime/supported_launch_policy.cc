@@ -149,7 +149,6 @@ bool ApplySupportedLaunchPolicy(bool interactive, std::string* error) {
       {"MOCKTAIL_RESUME_GAME_WITH_PLATFORM_PARAMS_AFTER_START_GAME", "0"},
       {"MOCKTAIL_SEND_APP_READY", "0"},
       {"MOCKTAIL_SEND_GAME_LOADED", "0"},
-      {"MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP", "1"},
       {"MOCKTAIL_AUTO_EXIT_AFTER_PRESENT_MS", "0"},
   };
   for (const auto& [name, value] : defaults) {

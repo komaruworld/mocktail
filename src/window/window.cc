@@ -2285,17 +2285,7 @@ bool PumpEvents() {
   };
 
   SDL_Event event;
-  // Pump + PeepEvents drains without SDL_WaitEventTimeoutNS. Unthrottled
-  // ticks only ingest OS events every 4ms so the leader does not contend
-  // with the render thread on wl_display thousands of times per second.
-  constexpr uint64_t kUnthrottledPumpIntervalNs = 4000000ULL;
-  static uint64_t last_os_pump_ns = 0;
-  const uint64_t now_ns = SDL_GetTicksNS();
-  if (!UnthrottledPresentationRequested() || last_os_pump_ns == 0 ||
-      now_ns - last_os_pump_ns >= kUnthrottledPumpIntervalNs) {
-    SDL_PumpEvents();
-    last_os_pump_ns = now_ns;
-  }
+  SDL_PumpEvents();
   while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_FIRST,
                         SDL_EVENT_LAST) > 0) {
     if (event.type != SDL_EVENT_MOUSE_MOTION) {
@@ -2501,9 +2491,6 @@ bool UnthrottledPresentationRequested() {
 
 uint64_t PaceInputPump() {
   if (!g_state.initialised) {
-    return 0;
-  }
-  if (UnthrottledPresentationRequested()) {
     return 0;
   }
   if (__builtin_expect(SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST), 0)) {

@@ -910,7 +910,7 @@ void PumpRobloxMainThreadMessagesOnce() {
   static const bool force_early =
       IsEnabled("MOCKTAIL_FORCE_EARLY_MAIN_THREAD_MESSAGE_PUMP");
   static const bool pump_disabled =
-      IsDisabled("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP");
+      !IsEnabled("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP");
   static const bool trace_pump =
       IsEnabled("MOCKTAIL_TRACE_MAIN_THREAD_PUMP");
   static const int pump_limit =
@@ -4480,8 +4480,6 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       HasEnvValue("MOCKTAIL_CALL_REAL_APP_BRIDGE_START");
   const bool user_overrode_call_update_surface =
       HasEnvValue("MOCKTAIL_CALL_REAL_APP_BRIDGE_UPDATE_SURFACE");
-  const bool user_overrode_main_thread_message_pump =
-      HasEnvValue("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP");
 
   std::cout << "======================================================\n"
             << "  Mocktail Roblox Compatibility Layer\n"
@@ -4877,12 +4875,6 @@ int mocktail::legacy::Run(const runtime::CommandLineOptions& options,
       setenv("MOCKTAIL_APP_LIFECYCLE_ACTIVE", "1", 1);
       std::cout << "  [window] windowed startup: auto-enabled "
                 << "AppLifecycleNativeAdapter.setActive\n"
-                << std::flush;
-    }
-    if (!user_overrode_main_thread_message_pump) {
-      setenv("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP", "1", 1);
-      std::cout << "  [window] windowed startup: auto-enabled main-thread "
-                << "message pump\n"
                 << std::flush;
     }
     if (!user_overrode_call_update_surface) {

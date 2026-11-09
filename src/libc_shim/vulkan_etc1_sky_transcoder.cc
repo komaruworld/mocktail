@@ -139,15 +139,6 @@ void WriteLe32(uint8_t *bytes, uint32_t value) {
   bytes[3] = static_cast<uint8_t>(value >> 24);
 }
 
-bool IsBundledSkyTexture(const char *path) {
-  constexpr char kSkyDirectory[] = "/assets/android/textures/sky/";
-  if (path == nullptr || std::strstr(path, kSkyDirectory) == nullptr) {
-    return false;
-  }
-  const size_t length = std::strlen(path);
-  return length >= 4 && std::memcmp(path + length - 4, ".tex", 4) == 0;
-}
-
 bool TranscodeKtx1Etc1(std::vector<uint8_t> *file) {
   constexpr size_t kHeaderSize = 64;
   if (file->size() < kHeaderSize ||
@@ -211,6 +202,15 @@ bool TranscodeKtx1Etc1(std::vector<uint8_t> *file) {
 }
 
 } // namespace
+
+bool IsBundledSkyTexture(const char *path) {
+  constexpr char kSkyDirectory[] = "/assets/android/textures/sky/";
+  if (path == nullptr || std::strstr(path, kSkyDirectory) == nullptr) {
+    return false;
+  }
+  const size_t length = std::strlen(path);
+  return length >= 4 && std::memcmp(path + length - 4, ".tex", 4) == 0;
+}
 
 void ConvertEtc1RgbBlockToBc1(const uint8_t *etc1, uint8_t *bc1) {
   std::array<Rgb, 16> pixels{};

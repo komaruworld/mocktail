@@ -16,6 +16,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 namespace mocktail::graphics {
 
 bool LookupEmulatedEtc2Format(VkFormat format, Etc2EmulatedFormat* out) {
@@ -120,6 +124,33 @@ std::uint32_t SmallTextureUpscale(const char* value) {
 }
 
 namespace {
+
+#if defined(__x86_64__)
+__attribute__((target("sse4.1"))) void CopyFromMapped(
+    std::uint8_t* destination, const std::uint8_t* source, std::size_t size) {
+  while (size != 0 && (reinterpret_cast<std::uintptr_t>(source) & 15) != 0) {
+    *destination++ = *source++;
+    --size;
+  }
+  auto* in = reinterpret_cast<__m128i*>(const_cast<std::uint8_t*>(source));
+  for (; size >= 64; size -= 64, in += 4, destination += 64) {
+    const __m128i a = _mm_stream_load_si128(in);
+    const __m128i b = _mm_stream_load_si128(in + 1);
+    const __m128i c = _mm_stream_load_si128(in + 2);
+    const __m128i d = _mm_stream_load_si128(in + 3);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination), a);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + 16), b);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + 32), c);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + 48), d);
+  }
+  std::memcpy(destination, in, size);
+}
+#else
+void CopyFromMapped(std::uint8_t* destination, const std::uint8_t* source,
+                    std::size_t size) {
+  std::memcpy(destination, source, size);
+}
+#endif
 
 bool ShouldLog(std::atomic<unsigned>* counter, unsigned limit) {
   return counter->fetch_add(1, std::memory_order_relaxed) < limit;
@@ -1274,17 +1305,17 @@ void VulkanEtc2Emulation::PrepareSubmit(const VkCommandBuffer* command_buffers,
     const VkDeviceSize compressed_layer = upload.compressed / upload.layers;
     const VkDeviceSize decoded_layer = upload.decoded / upload.layers;
     if (upload.source_span == copy.compressed) {
-      std::memcpy(source, copy.source, copy.compressed);
+      CopyFromMapped(source, copy.source, copy.compressed);
     } else {
       const VkDeviceSize block_rows =
           (static_cast<VkDeviceSize>(upload.height) + 3) / 4;
       const VkDeviceSize packed_row = compressed_layer / block_rows;
       for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
         for (VkDeviceSize row = 0; row < block_rows; ++row) {
-          std::memcpy(source + layer * compressed_layer + row * packed_row,
-                      copy.source + layer * upload.source_layer_stride +
-                          row * upload.source_row_stride,
-                      packed_row);
+          CopyFromMapped(source + layer * compressed_layer + row * packed_row,
+                         copy.source + layer * upload.source_layer_stride +
+                             row * upload.source_row_stride,
+                         packed_row);
         }
       }
     }
