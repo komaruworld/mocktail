@@ -120,6 +120,7 @@ add_library(mocktail_sdl_vulkan_wsi STATIC
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/sdl_vulkan_wsi.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/android_vulkan_wsi_adapter.cc
   ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/present_mode_policy.cc
+  ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/src/graphics/vulkan_swapchain_policy.cc
 )
 set_target_properties(mocktail_sdl_vulkan_wsi PROPERTIES
   POSITION_INDEPENDENT_CODE ON
@@ -165,6 +166,12 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
     Mocktail::SdlVulkanWsi
     GTest::gtest_main
   )
+  add_executable(vulkan_swapchain_policy_test
+    ${MOCKTAIL_PLATFORM_GRAPHICS_ROOT}/tests/vulkan_swapchain_policy_test.cc
+  )
+  target_link_libraries(vulkan_swapchain_policy_test PRIVATE
+    Mocktail::SdlVulkanWsi GTest::gtest_main
+  )
   target_link_libraries(display_refresh_capabilities_test PRIVATE
     Mocktail::PlatformSdl
     GTest::gtest_main
@@ -181,4 +188,5 @@ if(BUILD_TESTING AND TARGET GTest::gtest_main)
   gtest_discover_tests(platform_graphics_foundation_test)
   gtest_discover_tests(display_refresh_capabilities_test)
   gtest_discover_tests(present_mode_policy_test)
+  gtest_discover_tests(vulkan_swapchain_policy_test)
 endif()

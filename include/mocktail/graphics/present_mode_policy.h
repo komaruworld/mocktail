@@ -29,6 +29,11 @@ int ResolveSwapInterval(PresentModePolicy policy, int requested);
 
 PresentModePolicy CachedPresentModePolicy();
 
+// The Roblox scheduler cap and the window-system presentation policy are
+// independent. Native Wayland auto uses mailbox; explicit policies win.
+PresentModePolicy ResolveVulkanSurfacePolicy(PresentModePolicy configured,
+                                             bool wayland_surface);
+
 std::vector<VkPresentModeKHR>
 FilterPresentModes(PresentModePolicy policy,
                    const std::vector<VkPresentModeKHR> &host_modes);

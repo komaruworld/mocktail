@@ -21,6 +21,19 @@ TEST(PresentModePolicyTest, DerivesDisplayAndUnlimitedDefaults) {
             PresentModePolicy::kUnthrottled);
 }
 
+TEST(PresentModePolicyTest, WaylandAutoPresentationIsIndependentOfTheFpsCap) {
+  const auto unmanaged = ResolvePresentModePolicy("auto", "-1");
+  EXPECT_EQ(ResolveVulkanSurfacePolicy(unmanaged, true),
+            PresentModePolicy::kMailbox);
+  EXPECT_EQ(ResolveVulkanSurfacePolicy(unmanaged, false), unmanaged);
+  for (const auto policy : {PresentModePolicy::kFifo, PresentModePolicy::kMailbox,
+                            PresentModePolicy::kImmediate,
+                            PresentModePolicy::kUnthrottled,
+                            PresentModePolicy::kVsync}) {
+    EXPECT_EQ(ResolveVulkanSurfacePolicy(policy, true), policy);
+  }
+}
+
 TEST(PresentModePolicyTest, FiltersWithoutFabricatingHostModes) {
   const std::vector<VkPresentModeKHR> host = {VK_PRESENT_MODE_IMMEDIATE_KHR,
                                               VK_PRESENT_MODE_FIFO_KHR};
@@ -94,6 +107,15 @@ TEST(PresentModePolicyTest, RequestsExtraSwapchainImagesWhenUnthrottled) {
   EXPECT_EQ(
       PreferSwapchainMinImageCount(PresentModePolicy::kUnthrottled, 2, 2, 0),
       5U);
+}
+
+TEST(PresentModePolicyTest, MailboxReservesAnImageBeyondTheSurfaceMinimum) {
+  EXPECT_EQ(PreferSwapchainMinImageCount(PresentModePolicy::kMailbox, 3, 4, 0),
+            5U);
+  EXPECT_EQ(PreferSwapchainMinImageCount(PresentModePolicy::kMailbox, 6, 4, 0),
+            6U);
+  EXPECT_EQ(PreferSwapchainMinImageCount(PresentModePolicy::kMailbox, 3, 4, 4),
+            4U);
 }
 
 } // namespace

@@ -49,6 +49,13 @@ PresentModePolicy CachedPresentModePolicy() {
   return policy;
 }
 
+PresentModePolicy ResolveVulkanSurfacePolicy(PresentModePolicy configured,
+                                             bool wayland_surface) {
+  return wayland_surface && configured == PresentModePolicy::kHostDefault
+             ? PresentModePolicy::kMailbox
+             : configured;
+}
+
 std::vector<VkPresentModeKHR>
 FilterPresentModes(PresentModePolicy policy,
                    const std::vector<VkPresentModeKHR> &host_modes) {
@@ -160,6 +167,11 @@ std::uint32_t PreferSwapchainMinImageCount(PresentModePolicy policy,
     }
   } else if (policy == PresentModePolicy::kMailbox) {
     count = std::max(count, 3U);
+    // The presentation engine can retain more than two images. Mailbox
+    // needs the surface minimum plus one to leave an image for acquisition.
+    if (min_images < UINT32_MAX) {
+      count = std::max(count, min_images + 1);
+    }
   }
   if (max_images != 0) {
     count = std::min(count, max_images);

@@ -51,6 +51,10 @@ graphics:
   # frame_rate_limit: -1
   # Optional presentation synchronization override: auto, on, or off.
   # vsync: off
+  # Optional present mode: auto, fifo, mailbox, or immediate. With no other
+  # presentation override, native Wayland auto uses mailbox when supported.
+  # Roblox's Basic Settings continue to control the frame-rate cap.
+  # present_mode: auto
 
 performance:
   # Boolean (default: false): size Roblox scheduler/render queues from every

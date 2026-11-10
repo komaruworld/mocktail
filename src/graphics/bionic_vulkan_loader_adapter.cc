@@ -19,6 +19,7 @@
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
 #include "mocktail/graphics/present_mode_policy.h"
 #include "mocktail/graphics/vulkan_etc2_emulation.h"
+#include "mocktail/graphics/vulkan_swapchain_policy.h"
 #include "mocktail/graphics/vulkan_text_overlay_compositor.h"
 #include "mocktail/platform/platform_runtime.h"
 
@@ -141,6 +142,7 @@ struct AdapterState {
   struct DeviceDispatch {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+    mocktail::graphics::VulkanSurfaceQueries surface_queries;
     PFN_vkQueuePresentKHR queue_present = nullptr;
     PFN_vkQueueSubmit queue_submit = nullptr;
     PFN_vkQueueSubmit2 queue_submit2 = nullptr;
@@ -181,6 +183,7 @@ struct AdapterState {
   PFN_vkGetInstanceProcAddr host_get_instance_proc_addr = nullptr;
   std::atomic<PFN_vkGetDeviceProcAddr> host_get_device_proc_addr{nullptr};
   std::vector<DeviceDispatch> device_dispatches;
+  std::vector<VkInstance> surface_maintenance_instances;
   std::vector<QueueBinding> queue_bindings;
   std::vector<CommandBufferBinding> command_buffer_bindings;
   PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR host_surface_capabilities =
@@ -441,13 +444,16 @@ const AdapterState::DeviceDispatch& HostDispatchForCommandBuffer(
 
 void RegisterHostDeviceDispatch(VkDevice device,
                                 VkPhysicalDevice physical_device,
-                                PFN_vkGetDeviceProcAddr get_device_proc_addr) {
+                                PFN_vkGetDeviceProcAddr get_device_proc_addr,
+                                const mocktail::graphics::VulkanSurfaceQueries&
+                                    surface_queries) {
   if (device == VK_NULL_HANDLE || get_device_proc_addr == nullptr) {
     return;
   }
   AdapterState::DeviceDispatch dispatch;
   dispatch.device = device;
   dispatch.physical_device = physical_device;
+  dispatch.surface_queries = surface_queries;
   dispatch.queue_present = reinterpret_cast<PFN_vkQueuePresentKHR>(
       get_device_proc_addr(device, "vkQueuePresentKHR"));
   dispatch.queue_submit = reinterpret_cast<PFN_vkQueueSubmit>(
@@ -633,6 +639,12 @@ bool IsHostWsiExtension(const char* name) {
   const auto& extensions = State().host_wsi.required_instance_extensions();
   return std::find(extensions.begin(), extensions.end(), name) !=
          extensions.end();
+}
+
+mocktail::graphics::PresentModePolicy HostSurfacePresentPolicy() {
+  return mocktail::graphics::ResolveVulkanSurfacePolicy(
+      mocktail::graphics::CachedPresentModePolicy(),
+      IsHostWsiExtension("VK_KHR_wayland_surface"));
 }
 
 std::vector<VkExtensionProperties> AndroidVisibleExtensions(
@@ -1222,6 +1234,28 @@ vkCreateInstance(const VkInstanceCreateInfo* create_info,
                  status.message().c_str());
     return VK_ERROR_EXTENSION_NOT_PRESENT;
   }
+  // The selected host present mode may have different image limits from the
+  // legacy surface query. Enable the optional query and its dependencies.
+  bool surface_maintenance = false;
+  if (std::find(translated.begin(), translated.end(),
+                VK_KHR_SURFACE_EXTENSION_NAME) != translated.end()) {
+    const auto enumerate =
+        reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+            HostInstanceProc(VK_NULL_HANDLE,
+                             "vkEnumerateInstanceExtensionProperties"));
+    std::uint32_t count = 0;
+    if (enumerate != nullptr &&
+        enumerate(nullptr, &count, nullptr) == VK_SUCCESS && count != 0) {
+      std::vector<VkExtensionProperties> supported(count);
+      const VkResult enumerated = enumerate(nullptr, &count, supported.data());
+      if (enumerated == VK_SUCCESS || enumerated == VK_INCOMPLETE) {
+        supported.resize(std::min<std::size_t>(count, supported.size()));
+        surface_maintenance =
+            mocktail::graphics::EnableSurfaceMaintenanceExtensions(
+                supported, &translated);
+      }
+    }
+  }
   std::vector<const char*> translated_names;
   translated_names.reserve(translated.size());
   for (const std::string& extension : translated) {
@@ -1260,6 +1294,9 @@ vkCreateInstance(const VkInstanceCreateInfo* create_info,
     std::lock_guard<std::mutex> lock(state.mutex);
     ++state.active_instance_count;
     state.latest_instance = *instance;
+    if (surface_maintenance) {
+      state.surface_maintenance_instances.push_back(*instance);
+    }
     state.host_get_device_proc_addr.store(
         reinterpret_cast<PFN_vkGetDeviceProcAddr>(
             state.host_get_instance_proc_addr(*instance, "vkGetDeviceProcAddr")),
@@ -1283,6 +1320,9 @@ vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* allocator) {
   }
   AdapterState& state = State();
   std::lock_guard<std::mutex> lock(state.mutex);
+  auto& maintenance = state.surface_maintenance_instances;
+  maintenance.erase(std::remove(maintenance.begin(), maintenance.end(), instance),
+                      maintenance.end());
   if (state.active_instance_count != 0) {
     --state.active_instance_count;
   }
@@ -1431,12 +1471,17 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   VkInstance instance = VK_NULL_HANDLE;
+  bool surface_maintenance = false;
   PFN_vkGetInstanceProcAddr host_get_instance_proc_addr = nullptr;
   PFN_vkGetDeviceProcAddr host_get_device_proc_addr = nullptr;
   {
     AdapterState& state = State();
     std::lock_guard<std::mutex> lock(state.mutex);
     instance = state.latest_instance;
+    surface_maintenance =
+        std::find(state.surface_maintenance_instances.begin(),
+                  state.surface_maintenance_instances.end(), instance) !=
+        state.surface_maintenance_instances.end();
     host_get_instance_proc_addr = state.host_get_instance_proc_addr;
     host_get_device_proc_addr =
         state.host_get_device_proc_addr.load(std::memory_order_acquire);
@@ -1524,8 +1569,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   if (result != VK_SUCCESS) {
     return result;
   }
+  mocktail::graphics::VulkanSurfaceQueries surface_queries;
+  surface_queries.present_modes =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceSurfacePresentModesKHR>(
+          HostInstanceProc(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR"));
+  surface_queries.capabilities =
+      reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(
+          HostInstanceProc(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"));
+  if (surface_maintenance) {
+    surface_queries.mode_capabilities =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR>(
+            HostInstanceProc(instance,
+                             "vkGetPhysicalDeviceSurfaceCapabilities2KHR"));
+  }
   RegisterHostDeviceDispatch(*device, physical_device,
-                             host_get_device_proc_addr);
+                             host_get_device_proc_addr, surface_queries);
   VkPhysicalDeviceMemoryProperties memory_properties{};
   if (const auto host_memory_properties =
           reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
@@ -1642,84 +1700,17 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
     return VK_ERROR_INITIALIZATION_FAILED;
   }
   VkSwapchainCreateInfoKHR host_info = *create_info;
-  const mocktail::graphics::PresentModePolicy present_policy =
-      mocktail::graphics::CachedPresentModePolicy();
-  const auto explicit_mode = mocktail::graphics::ExplicitPresentMode(present_policy);
-  auto image_count_policy = present_policy;
+  const auto present_policy = HostSurfacePresentPolicy();
   if (present_policy != mocktail::graphics::PresentModePolicy::kHostDefault) {
-    bool mode_selected = false;
-    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR host_caps = nullptr;
-    PFN_vkGetPhysicalDeviceSurfacePresentModesKHR host_modes_query = nullptr;
-    {
-      AdapterState& state = State();
-      std::lock_guard<std::mutex> lock(state.mutex);
-      host_caps = state.host_surface_capabilities;
-      host_modes_query = state.host_surface_present_modes;
-    }
-    const VkPhysicalDevice physical_device =
-        HostDispatchForDevice(device).physical_device;
-    if (host_modes_query != nullptr && physical_device != VK_NULL_HANDLE) {
-      std::uint32_t host_count = 0;
-      if (host_modes_query(physical_device, create_info->surface, &host_count,
-                           nullptr) == VK_SUCCESS &&
-          host_count != 0) {
-        std::vector<VkPresentModeKHR> host_modes(host_count);
-        const VkResult modes_result = host_modes_query(
-            physical_device, create_info->surface, &host_count,
-            host_modes.data());
-        if (modes_result == VK_SUCCESS || modes_result == VK_INCOMPLETE) {
-          host_modes.resize(host_count);
-          const std::vector<VkPresentModeKHR> selected =
-              mocktail::graphics::FilterPresentModes(present_policy,
-                                                     host_modes);
-          if (!selected.empty()) {
-            static std::atomic<bool> mode_logged{false};
-            if (!mode_logged.exchange(true, std::memory_order_relaxed)) {
-              std::fprintf(
-                  stderr,
-                  "  [vulkan] present_mode=%s requested=%s applied=%s%s\n",
-                  mocktail::graphics::PresentModePolicyName(present_policy),
-                  mocktail::graphics::PresentModeKhrName(
-                      create_info->presentMode),
-                  mocktail::graphics::PresentModeKhrName(selected.front()),
-                  explicit_mode && selected.front() != *explicit_mode
-                      ? " (requested mode unsupported; using FIFO)" : "");
-            }
-            host_info.presentMode = selected.front();
-            mode_selected = true;
-            if (explicit_mode && selected.front() != *explicit_mode) {
-              image_count_policy = mocktail::graphics::PresentModePolicy::kFifo;
-            }
-          }
-        }
-      }
-    }
-    if (explicit_mode && !mode_selected) {
-      std::fprintf(stderr, "  [vulkan] cannot resolve present_mode=%s for surface\n",
-                   mocktail::graphics::PresentModePolicyName(present_policy));
-      return VK_ERROR_INITIALIZATION_FAILED;
-    }
-    VkSurfaceCapabilitiesKHR capabilities{};
-    if (host_caps != nullptr && physical_device != VK_NULL_HANDLE &&
-        host_caps(physical_device, create_info->surface, &capabilities) ==
-            VK_SUCCESS) {
-      const std::uint32_t preferred =
-          mocktail::graphics::PreferSwapchainMinImageCount(
-              image_count_policy, create_info->minImageCount,
-              capabilities.minImageCount, capabilities.maxImageCount);
-      if (preferred != host_info.minImageCount) {
-        host_info.minImageCount = preferred;
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true, std::memory_order_relaxed)) {
-          std::fprintf(stderr,
-                       "  [vulkan] present policy=%s swapchain "
-                       "minImageCount=%u (requested=%u max=%u)\n",
-                       mocktail::graphics::PresentModePolicyName(
-                           present_policy),
-                       preferred, create_info->minImageCount,
-                       capabilities.maxImageCount);
-        }
-      }
+    const auto dispatch = HostDispatchForDevice(device);
+    const VkResult selected = mocktail::graphics::ApplySwapchainPresentPolicy(
+        present_policy, dispatch.physical_device, dispatch.surface_queries,
+        &host_info);
+    if (selected != VK_SUCCESS) {
+      std::fprintf(stderr,
+                   "  [vulkan] cannot configure swapchain presentation: %d\n",
+                   static_cast<int>(selected));
+      return selected;
     }
   }
   const VkResult result =
@@ -1741,8 +1732,15 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
       host_get_images(device, *swapchain, &image_count, images.data());
   if (images_result == VK_SUCCESS || images_result == VK_INCOMPLETE) {
     images.resize(image_count);
+    std::fprintf(stderr,
+                 "  [vulkan] swapchain present_mode=%s images=%u "
+                 "(requested_mode=%s requested_images=%u selected_min=%u)\n",
+                 mocktail::graphics::PresentModeKhrName(host_info.presentMode),
+                 image_count,
+                 mocktail::graphics::PresentModeKhrName(create_info->presentMode),
+                 create_info->minImageCount, host_info.minImageCount);
     (void)State().text_overlay.RegisterSwapchain(
-        device, *swapchain, *create_info, images.data(), image_count);
+        device, *swapchain, host_info, images.data(), image_count);
   }
   return result;
 }
@@ -2200,7 +2198,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfacePresentModesKHR(
     }
     host_modes.resize(host_count);
   }
-  const mocktail::graphics::PresentModePolicy policy = mocktail::graphics::CachedPresentModePolicy();
+  const auto policy = HostSurfacePresentPolicy();
   const std::vector<VkPresentModeKHR> visible =
       mocktail::graphics::FilterPresentModes(policy, host_modes);
   {
