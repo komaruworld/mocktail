@@ -68,10 +68,30 @@ float Trigger(int16_t raw) {
   return value <= kDeadzone ? 0.0F : (value - kDeadzone) / (1.0F - kDeadzone);
 }
 
+uint8_t SwapNintendoFaceButton(uint8_t button) {
+  switch (button) {
+    case SDL_GAMEPAD_BUTTON_SOUTH:
+      return SDL_GAMEPAD_BUTTON_EAST;
+    case SDL_GAMEPAD_BUTTON_EAST:
+      return SDL_GAMEPAD_BUTTON_SOUTH;
+    case SDL_GAMEPAD_BUTTON_WEST:
+      return SDL_GAMEPAD_BUTTON_NORTH;
+    case SDL_GAMEPAD_BUTTON_NORTH:
+      return SDL_GAMEPAD_BUTTON_WEST;
+    default:
+      return button;
+  }
+}
+
 }  // namespace
 
-int32_t MapSdlGamepadButtonToAndroid(uint8_t button) {
-  switch (button) {
+int32_t MapSdlGamepadButtonToAndroid(uint8_t button,
+                                     platform::GamepadFamily family) {
+  const uint8_t mapped_button =
+      family == platform::GamepadFamily::kNintendoSwitch
+          ? SwapNintendoFaceButton(button)
+          : button;
+  switch (mapped_button) {
     case SDL_GAMEPAD_BUTTON_SOUTH:
       return 96;
     case SDL_GAMEPAD_BUTTON_EAST:
@@ -114,6 +134,7 @@ int32_t RobloxGamepadType(platform::GamepadFamily family) {
       return 2;
     case platform::GamepadFamily::kXbox:
       return 3;
+    case platform::GamepadFamily::kNintendoSwitch:
     default:
       return 0;
   }
@@ -186,7 +207,8 @@ Status RobloxInputRouter::ConfigureGamepadLocked(const ActiveGamepad& gamepad,
   for (const uint8_t button : kButtons) {
     KeepFirstError(
         sink.supported_key(sink.context, gamepad.device_id,
-                           MapSdlGamepadButtonToAndroid(button),
+                           MapSdlGamepadButtonToAndroid(
+                               button, gamepad.descriptor.family),
                            available && Has(gamepad.descriptor.buttons, button),
                            type),
         &first_error);
@@ -244,7 +266,8 @@ RobloxInputDispatchResult RobloxInputRouter::HandleGamepadButtonLocked(
   if (!snapshot_.focused) {
     return {RobloxInputDispatchState::kIgnoredUnfocused, kind, Status::Ok()};
   }
-  const int32_t key = MapSdlGamepadButtonToAndroid(event.button);
+  const int32_t key =
+      MapSdlGamepadButtonToAndroid(event.button, found->descriptor.family);
   if (key < 0 || !Has(found->descriptor.buttons, event.button)) {
     return Ignored(kind, "gamepad button is not supported");
   }
@@ -330,7 +353,9 @@ Status RobloxInputRouter::ReleaseGamepadInputsLocked(ActiveGamepad& gamepad) {
       if (Has(gamepad.pressed_buttons, button)) {
         Status status =
             sink_.gamepad.button(sink_.gamepad.context, gamepad.device_id,
-                                 MapSdlGamepadButtonToAndroid(button), false);
+                                 MapSdlGamepadButtonToAndroid(
+                                     button, gamepad.descriptor.family),
+                                 false);
         if (status.ok()) {
           ++snapshot_.gamepad_events;
         }

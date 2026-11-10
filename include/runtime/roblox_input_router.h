@@ -45,7 +45,12 @@ AndroidKeyMapping MapSdlKeyToAndroid(uint32_t sdl_scancode, uint32_t sdl_key = 0
 // MotionEvent button bits.
 int32_t MapSdlMouseButtonToRoblox(uint8_t sdl_button);
 
-int32_t MapSdlGamepadButtonToAndroid(uint8_t sdl_button);
+// Translates SDL gamepad buttons to Android keycodes. SDL3 names face buttons
+// by position, which matches an Xbox layout, so Nintendo pads have them
+// swapped to keep each printed label on its matching A/B/X/Y keycode.
+int32_t MapSdlGamepadButtonToAndroid(
+    uint8_t sdl_button,
+    platform::GamepadFamily family = platform::GamepadFamily::kUnknown);
 int32_t RobloxGamepadType(platform::GamepadFamily family);
 
 struct RobloxGamepadSink {
