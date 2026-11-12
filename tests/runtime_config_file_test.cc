@@ -113,6 +113,7 @@ TEST(RuntimeConfigBootstrapTest, CreatesCompletePrivateFirstRunFile) {
   EXPECT_EQ(loaded.config.audio_output_device(), "default");
   EXPECT_EQ(loaded.config.audio_input_device(), "default");
   EXPECT_FALSE(loaded.config.input_capabilities().touch_enabled);
+  EXPECT_TRUE(loaded.config.controller_vibration());
   EXPECT_TRUE(loaded.config.desktop_playability());
   EXPECT_EQ(loaded.config.device_profile().name, "pc-windows-11");
 }
@@ -151,6 +152,9 @@ TEST(RuntimeConfigBootstrapTest,
            "# String (default: auto): request Feral GameMode when its host "
            "daemon and\n  # client library are available. Supported values: "
            "auto, on, off.\n  gamemode: auto",
+           "# Boolean (default: true): translate Roblox phone haptics into "
+           "controller\n  # rumble. Set false to disable vibration. Restart "
+           "Mocktail to apply.\n  controller_vibration: true",
            "# To pin output, copy an exact SDL device name printed during "
            "startup.\n  output_device: default",
            "# between boots; prefer the exact device name when it is unique.\n"
@@ -1134,6 +1138,47 @@ TEST(RuntimeConfigFileTest, FleasionEnvironmentRoundTripsAndHostsModeDoesNotSetP
   EXPECT_TRUE(resolved.fleasion_valid());
   EXPECT_EQ(resolved.fleasion_proxy_mode(), "hosts");
   ASSERT_TRUE(ExportRuntimeConfigEnvironment(RuntimeConfig::FromEnvironment(MapEnvironment()), &error));
+}
+
+TEST(RuntimeConfigFileTest, ControllerVibrationYamlAndEnvironmentPrecedence) {
+  TemporaryDirectory temporary;
+  auto file = temporary.Write(
+      "version: 1\ndevice: pc\ninput:\n  controller_vibration: false\n");
+  auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.controller_vibration());
+  loaded = LoadRuntimeConfig(
+      MapEnvironment({{"MOCKTAIL_CONTROLLER_VIBRATION", "on"}}), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.controller_vibration());
+  file = temporary.Write("input:\n  controller_vibration: true\n");
+  loaded = LoadRuntimeConfig(MapEnvironment(), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.controller_vibration());
+  loaded = LoadRuntimeConfig(
+      MapEnvironment({{"MOCKTAIL_CONTROLLER_VIBRATION", "0"}}), file);
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_FALSE(loaded.config.controller_vibration());
+  loaded = LoadRuntimeConfig(MapEnvironment(), "/does/not/exist/config.yaml");
+  ASSERT_TRUE(loaded) << loaded.error;
+  EXPECT_TRUE(loaded.config.controller_vibration());
+}
+
+TEST(RuntimeConfigFileTest, RejectsInvalidControllerVibrationSettings) {
+  TemporaryDirectory temporary;
+  for (const char* value : {"yes", "1", "sometimes", "[]"}) {
+    const auto file = temporary.Write(
+        std::string("input:\n  controller_vibration: ") + value + "\n");
+    const auto loaded = LoadRuntimeConfig(MapEnvironment(), file);
+    EXPECT_FALSE(loaded) << value;
+    EXPECT_NE(loaded.error.find("input.controller_vibration"),
+              std::string::npos);
+  }
+  const auto loaded = LoadRuntimeConfig(
+      MapEnvironment({{"MOCKTAIL_CONTROLLER_VIBRATION", "invalid"}}),
+      "/does/not/exist/config.yaml");
+  EXPECT_FALSE(loaded);
+  EXPECT_NE(loaded.error.find("controller vibration"), std::string::npos);
 }
 
 }  // namespace

@@ -96,6 +96,9 @@ struct RobloxMessageBusRequestBridge::State {
                  state->protocol_name.c_str(),
                  state->methods[endpoint->method].c_str(), response.outcome,
                  id ? "async" : "legacy");
+    if (!id && !response.reply) {
+      return;
+    }
     LocalString body(env, response.json.c_str());
     LocalString telemetry(env, "{}");
     LocalString method(env, state->methods[endpoint->method].c_str());

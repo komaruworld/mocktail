@@ -18,6 +18,7 @@
 #include "runtime/roblox_experience_launch_bridge.h"
 #include "runtime/roblox_experience_presence.h"
 #include "runtime/roblox_fresh_game_launch_controller.h"
+#include "runtime/roblox_haptics_bridge.h"
 #include "runtime/roblox_permissions_bridge.h"
 #include "runtime/roblox_web_view_bridge.h"
 #include "runtime/webview_roblox_cookie.h"
@@ -131,6 +132,9 @@ class RobloxExperienceComposition final {
       delete;
 
   Status InitializePlatformProtocols();
+  Status InitializeHaptics(UpdateMobileHapticsStateFn update_state,
+                           bool enabled);
+  std::shared_ptr<RobloxHaptics> haptics() const { return haptics_; }
   Status OnLuaAppReady(RobloxLuaAppExperienceReadiness readiness);
   // Callback-safe notification from the native app lifecycle. The callback
   // never invokes JNI or waits for an in-flight launch worker.
@@ -252,6 +256,9 @@ class RobloxExperienceComposition final {
   std::unique_ptr<RobloxBrowserServiceBridge> browser_service_bridge_;
   std::unique_ptr<RobloxPermissionsBridge> permissions_bridge_;
   std::unique_ptr<RobloxCallProtocolBridge> call_protocol_bridge_;
+  const std::shared_ptr<RobloxHaptics> haptics_ =
+      std::make_shared<RobloxHaptics>();
+  std::unique_ptr<RobloxHapticsBridge> haptics_bridge_;
   std::shared_ptr<WebViewHelperProcess> web_surface_process_;
   std::shared_ptr<WebSurfaceExitTarget> web_surface_exit_target_;
   std::shared_ptr<LifecycleTarget> lifecycle_target_;
