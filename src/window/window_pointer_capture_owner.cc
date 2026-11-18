@@ -56,7 +56,7 @@ void WindowPointerCaptureOwner::ClearQuery() {
 
 bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
   if (!focused_) {
-    return Apply(false, true, false);
+    return Apply(false, true, PointerReleasePosition::kUnchanged);
   }
   MouseLockQueryCallback callback = nullptr;
   void* context = nullptr;
@@ -92,22 +92,25 @@ bool WindowPointerCaptureOwner::Pump(bool text_input_active) {
     condition_.notify_all();
   }
   const bool native_lock_active = query_ok && locked_center;
-  native_lock_observed_ = native_lock_active;
-  if (wait_for_native_unlock_after_right_drag_ && !native_lock_active) {
-    wait_for_native_unlock_after_right_drag_ = false;
-  }
-  const bool client_active = query_ok;
-  const bool native_capture_active = client_active && native_lock_active;
-  const bool right_drag_active = right_button_held_;
   // Roblox can keep Shift Lock active while chat has text focus. Honor that
   // native lock so camera motion stays relative and cannot leave the window.
   // Text editing only suppresses the host's fallback RMB camera capture.
-  const bool capture_requested =
-      native_capture_active || (right_drag_active && !text_input_active);
+  const bool right_drag_active = right_button_held_ && !text_input_active;
+  const bool capture_requested = native_lock_active || right_drag_active;
+  if (!captured_ && capture_requested) {
+    release_position_ = right_drag_active
+                            ? PointerReleasePosition::kDragStart
+                            : PointerReleasePosition::kWindowCenter;
+  } else if (native_lock_active && !right_button_held_ &&
+             shift_key_pressed_during_right_drag_) {
+    // Shift Lock took over the drag. An ordinary drag can also leave the
+    // native query locked for one more pump after button-up.
+    release_position_ = PointerReleasePosition::kWindowCenter;
+  }
   // When capture is released, Roblox still draws its own cursor.
   // Show the system pointer only when the native client cannot provide one.
-  const bool cursor_visible = !client_active && !capture_requested;
-  return Apply(capture_requested, cursor_visible);
+  const bool cursor_visible = !query_ok && !capture_requested;
+  return Apply(capture_requested, cursor_visible, release_position_);
 }
 
 bool WindowPointerCaptureOwner::OnRightButton(
@@ -119,12 +122,16 @@ bool WindowPointerCaptureOwner::OnRightButton(
   }
   right_button_held_ = pressed;
   const bool applied = Pump(text_input_active);
-  if (!pressed) right_drag_anchor_.reset();
+  if (!pressed) {
+    right_drag_anchor_.reset();
+    shift_key_pressed_during_right_drag_ = false;
+  }
   return applied;
 }
 
 bool WindowPointerCaptureOwner::OnShiftKeyPressed(bool text_input_active) {
   focused_ = true;
+  if (right_button_held_) shift_key_pressed_during_right_drag_ = true;
   return Pump(text_input_active);
 }
 
@@ -146,29 +153,17 @@ bool WindowPointerCaptureOwner::OnFocusLost() {
   focused_ = false;
   right_button_held_ = false;
   right_drag_anchor_.reset();
-  native_lock_observed_ = false;
-  native_lock_was_active_before_right_drag_ = false;
   shift_key_pressed_during_right_drag_ = false;
-  wait_for_native_unlock_after_right_drag_ = false;
-  discard_next_motion_after_right_drag_ = false;
-  return Apply(false, true, false);
+  return Apply(false, true, PointerReleasePosition::kUnchanged);
 }
 
 bool WindowPointerCaptureOwner::Shutdown() {
   ClearQuery();
-  focused_ = false;
-  right_button_held_ = false;
-  right_drag_anchor_.reset();
-  native_lock_observed_ = false;
-  native_lock_was_active_before_right_drag_ = false;
-  shift_key_pressed_during_right_drag_ = false;
-  wait_for_native_unlock_after_right_drag_ = false;
-  discard_next_motion_after_right_drag_ = false;
-  return Apply(false, true, false);
+  return OnFocusLost();
 }
 
-bool WindowPointerCaptureOwner::Apply(bool capture, bool cursor_visible,
-                                      bool restore_position) {
+bool WindowPointerCaptureOwner::Apply(
+    bool capture, bool cursor_visible, PointerReleasePosition release_position) {
   if (state_valid_ && capture == captured_ && cursor_visible == cursor_visible_) {
     return true;
   }
@@ -178,7 +173,7 @@ bool WindowPointerCaptureOwner::Apply(bool capture, bool cursor_visible,
     return !capture && cursor_visible;
   }
   if (backend_->Apply(
-          {capture, cursor_visible, right_drag_anchor_, restore_position})) {
+          {capture, cursor_visible, right_drag_anchor_, release_position})) {
     state_valid_ = true;
     const bool capture_changed = capture != captured_;
     const bool cursor_changed = cursor_visible != cursor_visible_;
@@ -195,7 +190,7 @@ bool WindowPointerCaptureOwner::Apply(bool capture, bool cursor_visible,
     }
     return true;
   }
-  state_valid_ = backend_->Apply({false, true, std::nullopt, false});
+  state_valid_ = backend_->Apply({});
   captured_ = false;
   cursor_visible_ = true;
   return false;
@@ -208,42 +203,46 @@ bool SdlPointerCaptureBackend::Apply(const PointerCaptureRequest& request) {
   }
 
   if (request.relative_mode && !relative_mode_) {
-    if (request.anchor) {
-      capture_anchor_x_ = request.anchor->x;
-      capture_anchor_y_ = request.anchor->y;
-    } else {
-      SDL_GetMouseState(&capture_anchor_x_, &capture_anchor_y_);
-    }
-    capture_anchor_valid_ =
-        std::isfinite(capture_anchor_x_) && std::isfinite(capture_anchor_y_);
     if (!SDL_SetWindowMouseGrab(window, true)) {
-      capture_anchor_valid_ = false;
       return false;
     }
+    if (request.release_position == PointerReleasePosition::kDragStart) {
+      drag_start_ = request.anchor;
+      if (!drag_start_) {
+        drag_start_.emplace();
+        SDL_GetMouseState(&drag_start_->x, &drag_start_->y);
+      }
+    }
   }
-  if (!request.relative_mode && relative_mode_ && request.restore_position &&
-      capture_anchor_valid_ && SDL_GetKeyboardFocus() == window) {
-    // SDL requires the warp before relative mode is disabled. This preserves
-    // the desktop pointer position across Roblox's transient RMB camera drag.
+  if (!request.relative_mode && relative_mode_ &&
+      request.release_position != PointerReleasePosition::kUnchanged &&
+      SDL_GetKeyboardFocus() == window) {
+    // Set SDL's absolute position before unlocking so the next button event
+    // agrees with the cursor that Roblox draws.
     int width = 0;
     int height = 0;
     if (SDL_GetWindowSize(window, &width, &height) && width > 0 && height > 0) {
-      SDL_WarpMouseInWindow(
-          window, std::clamp(capture_anchor_x_, 0.0f, static_cast<float>(width - 1)),
-          std::clamp(capture_anchor_y_, 0.0f, static_cast<float>(height - 1)));
+      if (request.release_position == PointerReleasePosition::kWindowCenter) {
+        SDL_WarpMouseInWindow(window, width / 2.0f, height / 2.0f);
+      } else if (drag_start_ && std::isfinite(drag_start_->x) &&
+                 std::isfinite(drag_start_->y)) {
+        const float x = std::clamp(drag_start_->x, 0.0f, width - 1.0f);
+        const float y = std::clamp(drag_start_->y, 0.0f, height - 1.0f);
+        SDL_WarpMouseInWindow(window, x, y);
+      }
     }
   }
   if (request.relative_mode != relative_mode_ &&
       !SDL_SetWindowRelativeMouseMode(window, request.relative_mode)) {
     if (request.relative_mode) {
-      capture_anchor_valid_ = false;
+      drag_start_.reset();
       SDL_SetWindowMouseGrab(window, false);
     }
     return false;
   }
   relative_mode_ = request.relative_mode;
   if (!relative_mode_) {
-    capture_anchor_valid_ = false;
+    drag_start_.reset();
   }
   if (!request.relative_mode && !SDL_SetWindowMouseGrab(window, false)) return false;
   return request.cursor_visible ? SDL_ShowCursor() : SDL_HideCursor();

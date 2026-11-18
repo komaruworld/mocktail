@@ -191,7 +191,24 @@ TEST_F(WindowPointerCaptureSdlTest, FocusLossDoesNotWarpToTheOldWindow) {
   ExpectPosition(2300, 400);
 }
 
-TEST_F(WindowPointerCaptureSdlTest, RightDragPreservesTheExistingNativeLockAnchor) {
+TEST_F(WindowPointerCaptureSdlTest, ShiftUnlockCentersTheNextRightClick) {
+  native_lock_ = true;
+  ASSERT_TRUE(owner_->OnShiftKeyPressed(false));
+  QueueMotion(500, 400);
+  Pump();
+  native_lock_ = false;
+  ASSERT_TRUE(owner_->OnShiftKeyPressed(false));
+  ExpectPosition(600, 400);
+
+  BeginRightDrag();
+  ASSERT_TRUE(last_press_.has_value());
+  EXPECT_FLOAT_EQ(last_press_->x, 400);
+  EXPECT_FLOAT_EQ(last_press_->y, 300);
+  ReleaseRightDrag();
+  ExpectPosition(600, 400);
+}
+
+TEST_F(WindowPointerCaptureSdlTest, NativeLockUsesCurrentCenterAfterResizeAndRightDrag) {
   native_lock_ = true;
   ASSERT_TRUE(owner_->Pump(false));
   ASSERT_TRUE(owner_->captured());
@@ -201,9 +218,38 @@ TEST_F(WindowPointerCaptureSdlTest, RightDragPreservesTheExistingNativeLockAncho
   ReleaseRightDrag();
   EXPECT_TRUE(owner_->captured());
   EXPECT_TRUE(SDL_GetWindowRelativeMouseMode(window_));
+  ASSERT_TRUE(SDL_SetWindowSize(window_, 600, 400));
+  ASSERT_TRUE(SDL_SyncWindow(window_));
+  Pump();
+  int width, height, x, y;
+  ASSERT_TRUE(SDL_GetWindowSize(window_, &width, &height));
+  ASSERT_EQ(width, 600);
+  ASSERT_EQ(height, 400);
+  ASSERT_TRUE(SDL_GetWindowPosition(window_, &x, &y));
   native_lock_ = false;
   ASSERT_TRUE(owner_->Pump(false));
   EXPECT_FALSE(owner_->captured());
+  ExpectPosition(x + width / 2, y + height / 2);
+}
+
+TEST_F(WindowPointerCaptureSdlTest, ShiftLockTakingOverRightDragReleasesAtCenter) {
+  BeginRightDrag();
+  native_lock_ = true;
+  ASSERT_TRUE(owner_->OnShiftKeyPressed(false));
+  ReleaseRightDrag();
+  ASSERT_TRUE(owner_->captured());
+  native_lock_ = false;
+  ASSERT_TRUE(owner_->Pump(false));
+  ExpectPosition(600, 400);
+}
+
+TEST_F(WindowPointerCaptureSdlTest, RightDragRestoresPressWhenNativeUnlockIsDelayed) {
+  BeginRightDrag();
+  native_lock_ = true;
+  ReleaseRightDrag();
+  ASSERT_TRUE(owner_->captured());
+  native_lock_ = false;
+  ASSERT_TRUE(owner_->Pump(false));
   ExpectPosition(300, 200);
 }
 

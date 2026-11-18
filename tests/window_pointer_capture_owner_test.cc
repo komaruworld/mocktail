@@ -176,7 +176,7 @@ TEST(WindowPointerCaptureOwnerTest, RightDragRetainsItsEventAnchorAcrossTextFocu
   EXPECT_FALSE(backend.calls.back().anchor.has_value());
 }
 
-TEST(WindowPointerCaptureOwnerTest, RightDragDoesNotReplaceANativeLockAnchor) {
+TEST(WindowPointerCaptureOwnerTest, RightDragPreservesNativeCenterOnRelease) {
   FakeBackend backend;
   QueryState query{true, true};
   WindowPointerCaptureOwner owner(&backend);
@@ -187,6 +187,8 @@ TEST(WindowPointerCaptureOwnerTest, RightDragDoesNotReplaceANativeLockAnchor) {
   EXPECT_TRUE(owner.captured());
   query.locked_center = false;
   ASSERT_TRUE(owner.Pump(false));
+  EXPECT_EQ(backend.calls.back().release_position,
+            PointerReleasePosition::kWindowCenter);
   EXPECT_FALSE(backend.calls.back().anchor.has_value());
 }
 
@@ -197,14 +199,16 @@ TEST(WindowPointerCaptureOwnerTest, FocusLossAndShutdownCancelCursorRestoration)
   ASSERT_TRUE(owner.RegisterQuery(Query, &query));
   ASSERT_TRUE(owner.OnRightButton(true, false, PointerPosition{25.0f, 40.0f}));
   ASSERT_TRUE(owner.OnFocusLost());
-  EXPECT_FALSE(backend.calls.back().restore_position);
+  EXPECT_EQ(backend.calls.back().release_position,
+            PointerReleasePosition::kUnchanged);
   EXPECT_FALSE(backend.calls.back().anchor.has_value());
 
   query.locked_center = true;
   ASSERT_TRUE(owner.OnFocusGained(false));
   EXPECT_FALSE(backend.calls.back().anchor.has_value());
   ASSERT_TRUE(owner.Shutdown());
-  EXPECT_FALSE(backend.calls.back().restore_position);
+  EXPECT_EQ(backend.calls.back().release_position,
+            PointerReleasePosition::kUnchanged);
 }
 
 TEST(WindowPointerCaptureOwnerTest, FailedReleaseIsRetriedWhileUnfocused) {
@@ -213,13 +217,15 @@ TEST(WindowPointerCaptureOwnerTest, FailedReleaseIsRetriedWhileUnfocused) {
   ASSERT_TRUE(owner.OnRightButton(true, false, PointerPosition{25.0f, 40.0f}));
   backend.succeeds = false;
   EXPECT_FALSE(owner.OnFocusLost());
-  EXPECT_FALSE(backend.calls.back().restore_position);
+  EXPECT_EQ(backend.calls.back().release_position,
+            PointerReleasePosition::kUnchanged);
   const auto calls_before_retry = backend.calls.size();
   backend.succeeds = true;
   EXPECT_TRUE(owner.Pump(false));
   ASSERT_EQ(backend.calls.size(), calls_before_retry + 1);
   EXPECT_FALSE(backend.calls.back().relative_mode);
-  EXPECT_FALSE(backend.calls.back().restore_position);
+  EXPECT_EQ(backend.calls.back().release_position,
+            PointerReleasePosition::kUnchanged);
 }
 
 TEST(WindowPointerCaptureOwnerTest,

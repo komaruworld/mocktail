@@ -16,11 +16,13 @@ struct PointerPosition {
   float y = 0.0f;
 };
 
+enum class PointerReleasePosition { kDragStart, kWindowCenter, kUnchanged };
+
 struct PointerCaptureRequest {
   bool relative_mode = false;
   bool cursor_visible = true;
   std::optional<PointerPosition> anchor;
-  bool restore_position = true;
+  PointerReleasePosition release_position = PointerReleasePosition::kUnchanged;
 };
 
 class PointerCaptureBackend {
@@ -65,7 +67,8 @@ class WindowPointerCaptureOwner final {
   bool cursor_visible() const { return cursor_visible_; }
 
  private:
-  bool Apply(bool capture, bool cursor_visible, bool restore_position = true);
+  bool Apply(bool capture, bool cursor_visible,
+             PointerReleasePosition release_position);
 
   PointerCaptureBackend* backend_ = nullptr;
   std::mutex mutex_;
@@ -77,11 +80,8 @@ class WindowPointerCaptureOwner final {
   bool focused_ = true;
   bool right_button_held_ = false;
   std::optional<PointerPosition> right_drag_anchor_;
-  bool native_lock_observed_ = false;
-  bool native_lock_was_active_before_right_drag_ = false;
+  PointerReleasePosition release_position_ = PointerReleasePosition::kUnchanged;
   bool shift_key_pressed_during_right_drag_ = false;
-  bool wait_for_native_unlock_after_right_drag_ = false;
-  bool discard_next_motion_after_right_drag_ = false;
   bool captured_ = false;
   bool cursor_visible_ = true;
   bool state_valid_ = true;
@@ -95,10 +95,8 @@ class SdlPointerCaptureBackend final : public PointerCaptureBackend {
 
  private:
   void* window_ = nullptr;
-  float capture_anchor_x_ = 0.0f;
-  float capture_anchor_y_ = 0.0f;
+  std::optional<PointerPosition> drag_start_;
   bool relative_mode_ = false;
-  bool capture_anchor_valid_ = false;
 };
 
 }  // namespace window
