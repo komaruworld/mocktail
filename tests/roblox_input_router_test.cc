@@ -470,6 +470,80 @@ TEST_F(RobloxInputRouterTest, RoutesMappedHardwareKeyAndRepeat) {
   EXPECT_FALSE(probe_.keys[2].pressed);
 }
 
+TEST_F(RobloxInputRouterTest, KeypadDivideUsesSlashUntilReleasedAfterChatOpens) {
+  platform::KeyEvent key{true, false, SDL_SCANCODE_KP_DIVIDE, SDLK_KP_DIVIDE,
+                         SDL_KMOD_NUM};
+  ASSERT_TRUE(router_.HandleEvent(Event(key)).dispatched());
+  ASSERT_TRUE(router_.BeginTextFocusSession({42, 1, ""}).ok());
+  key.repeat = true;
+  ASSERT_TRUE(router_.HandleEvent(Event(key)).dispatched());
+  key = {false, false, SDL_SCANCODE_KP_DIVIDE, SDLK_KP_DIVIDE, SDL_KMOD_SHIFT};
+  ASSERT_TRUE(router_.HandleEvent(Event(key)).dispatched());
+  ASSERT_EQ(probe_.keys.size(), 3u);
+  for (const KeyCall& call : probe_.keys) {
+    EXPECT_EQ(call.scan_code, 53);
+    EXPECT_EQ(call.key_code, 76);
+  }
+  EXPECT_TRUE(probe_.keys[1].repeat);
+  EXPECT_FALSE(probe_.keys[2].pressed);
+
+  key = {true, false, SDL_SCANCODE_KP_DIVIDE, SDLK_KP_DIVIDE, 0};
+  ASSERT_TRUE(router_.HandleEvent(Event(key)).dispatched());
+  EXPECT_EQ(probe_.keys.back().scan_code, 98);
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::TextInputEvent{"/"})).dispatched());
+  EXPECT_EQ(router_.Snapshot().active_keys, 1u);
+}
+
+TEST_F(RobloxInputRouterTest, ModifiedKeypadDivideKeepsItsPhysicalBinding) {
+  for (const auto mod : {SDL_KMOD_SHIFT, SDL_KMOD_CTRL, SDL_KMOD_ALT,
+                         SDL_KMOD_GUI, SDL_KMOD_MODE}) {
+    platform::KeyEvent key{true, false, SDL_SCANCODE_KP_DIVIDE, SDLK_KP_DIVIDE, mod};
+    ASSERT_TRUE(router_.HandleEvent(Event(key)).dispatched());
+    EXPECT_EQ(probe_.keys.back().scan_code, 98);
+    EXPECT_EQ(probe_.keys.back().key_code, 154);
+    key.pressed = false;
+    key.modifiers = 0;
+    ASSERT_TRUE(router_.HandleEvent(Event(key)).dispatched());
+    EXPECT_EQ(probe_.keys.back().scan_code, 98);
+  }
+}
+
+TEST_F(RobloxInputRouterTest, BothSlashKeysShareOnePressUntilTheLastRelease) {
+  for (bool keypad_first : {false, true}) {
+    probe_.keys.clear();
+    platform::KeyEvent first{true, false, SDL_SCANCODE_SLASH, SDLK_SLASH, 0};
+    platform::KeyEvent second{true, false, SDL_SCANCODE_KP_DIVIDE, SDLK_KP_DIVIDE, 0};
+    if (keypad_first) std::swap(first, second);
+    ASSERT_TRUE(router_.HandleEvent(Event(first)).dispatched());
+    ASSERT_TRUE(router_.HandleEvent(Event(second)).status.ok());
+    first.pressed = false;
+    ASSERT_TRUE(router_.HandleEvent(Event(first)).status.ok());
+    EXPECT_EQ(probe_.keys.size(), 1u);
+    second.pressed = false;
+    ASSERT_TRUE(router_.HandleEvent(Event(second)).dispatched());
+    ASSERT_EQ(probe_.keys.size(), 2u);
+    EXPECT_TRUE(probe_.keys.front().pressed);
+    EXPECT_FALSE(probe_.keys.back().pressed);
+    EXPECT_EQ(probe_.keys.back().scan_code, 53);
+    EXPECT_EQ(router_.Snapshot().active_keys, 0u);
+  }
+}
+
+TEST_F(RobloxInputRouterTest, FocusLossReleasesSharedSlashOnce) {
+  platform::KeyEvent keypad{true, false, SDL_SCANCODE_KP_DIVIDE, SDLK_KP_DIVIDE, 0};
+  platform::KeyEvent slash{true, false, SDL_SCANCODE_SLASH, SDLK_SLASH, 0};
+  ASSERT_TRUE(router_.HandleEvent(Event(keypad)).dispatched());
+  ASSERT_TRUE(router_.HandleEvent(Event(slash)).status.ok());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::WindowFocusEvent{false})).status.ok());
+  ASSERT_TRUE(router_.HandleEvent(Event(platform::WindowFocusEvent{true})).status.ok());
+  keypad.pressed = slash.pressed = false;
+  ASSERT_TRUE(router_.HandleEvent(Event(keypad)).status.ok());
+  ASSERT_TRUE(router_.HandleEvent(Event(slash)).status.ok());
+  ASSERT_EQ(probe_.keys.size(), 2u);
+  EXPECT_EQ(probe_.keys.back().key_code, 76);
+  EXPECT_FALSE(probe_.keys.back().pressed);
+}
+
 TEST_F(RobloxInputRouterTest, FocusLossReleasesAllPressedInputs) {
   ASSERT_TRUE(router_
                   .HandleEvent(Event(platform::MouseButtonEvent{

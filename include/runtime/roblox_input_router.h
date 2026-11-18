@@ -211,6 +211,8 @@ class RobloxInputRouter final {
   RobloxInputDispatchResult HandleTouchLocked(
       const platform::TouchEvent& event);
   RobloxInputDispatchResult HandleKeyLocked(const platform::KeyEvent& event);
+  AndroidKeyMapping MapNewKeyLocked(const platform::KeyEvent& event) const;
+  bool OtherSlashHeldLocked(const ActiveKey& key);
   RobloxInputDispatchResult HandleGamepadConnectionLocked(
       const platform::GamepadConnectionEvent& event);
   RobloxInputDispatchResult HandleGamepadButtonLocked(

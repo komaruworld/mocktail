@@ -1,5 +1,6 @@
 #include "runtime/roblox_input_router.h"
 
+#include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_scancode.h>
 
@@ -688,6 +689,30 @@ RobloxInputDispatchResult RobloxInputRouter::HandleTouchLocked(
   return NativeResultLocked(std::move(status), RobloxInputEventKind::kTouch);
 }
 
+AndroidKeyMapping RobloxInputRouter::MapNewKeyLocked(
+    const platform::KeyEvent& event) const {
+  constexpr uint32_t kLockModifiers =
+      SDL_KMOD_NUM | SDL_KMOD_CAPS | SDL_KMOD_SCROLL;
+  if (event.scancode == SDL_SCANCODE_KP_DIVIDE &&
+      (event.modifiers & ~kLockModifiers) == 0 &&
+      !text_editor_.Snapshot().focused) {
+    return MapSdlKeyToAndroid(SDL_SCANCODE_SLASH);
+  }
+  return MapSdlKeyToAndroid(event.scancode, event.keycode);
+}
+
+bool RobloxInputRouter::OtherSlashHeldLocked(const ActiveKey& key) {
+  if (key.sdl_scancode != SDL_SCANCODE_SLASH &&
+      key.sdl_scancode != SDL_SCANCODE_KP_DIVIDE) {
+    return false;
+  }
+  const auto peer = key.sdl_scancode == SDL_SCANCODE_SLASH
+                        ? SDL_SCANCODE_KP_DIVIDE : SDL_SCANCODE_SLASH;
+  const auto other = FindKeyIteratorLocked(peer);
+  return other != active_keys_.end() &&
+         other->android.scan_code == key.android.scan_code;
+}
+
 RobloxInputDispatchResult RobloxInputRouter::HandleKeyLocked(
     const platform::KeyEvent& event) {
   if (sink_.key == nullptr) {
@@ -695,25 +720,37 @@ RobloxInputDispatchResult RobloxInputRouter::HandleKeyLocked(
                   RobloxInputEventKind::kKeyboard,
                   Unsupported("native hardware keyboard is unavailable"));
   }
-  const AndroidKeyMapping android =
-      MapSdlKeyToAndroid(event.scancode, event.keycode);
-  if (!android.valid()) {
+  auto active = FindKeyIteratorLocked(event.scancode);
+  const bool held = active != active_keys_.end();
+  if (!held && (!event.pressed || event.repeat) &&
+      (event.scancode == SDL_SCANCODE_SLASH ||
+       event.scancode == SDL_SCANCODE_KP_DIVIDE)) {
+    return Result(RobloxInputDispatchState::kStateUpdated,
+                  RobloxInputEventKind::kKeyboard);
+  }
+  const ActiveKey key{event.scancode,
+                      held ? active->android : MapNewKeyLocked(event)};
+  if (!key.android.valid()) {
     return Result(RobloxInputDispatchState::kIgnoredUnsupported,
                   RobloxInputEventKind::kKeyboard,
                   Unsupported("SDL key has no Android mapping"));
   }
-  Status status = sink_.key(sink_.context, event.pressed, android.scan_code,
-                            android.key_code, event.repeat);
-  if (status.ok()) {
-    auto active = FindKeyIteratorLocked(event.scancode);
-    if (event.pressed && active == active_keys_.end()) {
-      active_keys_.push_back({event.scancode, android});
-    } else if (!event.pressed && active != active_keys_.end()) {
-      active_keys_.erase(active);
-    }
-    snapshot_.active_keys = active_keys_.size();
+  auto result = Result(RobloxInputDispatchState::kStateUpdated,
+                       RobloxInputEventKind::kKeyboard);
+  if (!OtherSlashHeldLocked(key) || (held && event.repeat)) {
+    result = NativeResultLocked(sink_.key(sink_.context, event.pressed,
+                                         key.android.scan_code, key.android.key_code,
+                                         event.repeat),
+                                RobloxInputEventKind::kKeyboard);
+    if (!result.status.ok()) return result;
   }
-  return NativeResultLocked(std::move(status), RobloxInputEventKind::kKeyboard);
+  if (event.pressed && !held) {
+    active_keys_.push_back(key);
+  } else if (!event.pressed && held) {
+    active_keys_.erase(active);
+  }
+  snapshot_.active_keys = active_keys_.size();
+  return result;
 }
 
 Status RobloxInputRouter::ReleasePressedInputsLocked() {
@@ -756,7 +793,8 @@ Status RobloxInputRouter::ReleasePressedInputsLocked() {
   active_touches_.clear();
 
   for (const ActiveKey& key : active_keys_) {
-    if (sink_.key == nullptr) {
+    if (sink_.key == nullptr || (key.sdl_scancode == SDL_SCANCODE_KP_DIVIDE &&
+                                 OtherSlashHeldLocked(key))) {
       continue;
     }
     Status status = sink_.key(sink_.context, false, key.android.scan_code,
