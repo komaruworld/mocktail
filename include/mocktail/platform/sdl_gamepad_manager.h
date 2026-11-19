@@ -25,6 +25,9 @@ class SdlGamepadManager final {
   void Shutdown();
   bool HandleEvent(const PlatformEvent& event);
   void ResendState();
+  SDL_JoystickID RumbleTarget() const;
+  void Rumble(float intensity, std::uint32_t duration_ms);
+  void StopRumble();
 
  private:
   SDL_Gamepad* Open(SDL_JoystickID id);
@@ -37,6 +40,8 @@ class SdlGamepadManager final {
   void* context_ = nullptr;
   EventFn emit_ = nullptr;
   bool initialized_ = false;
+  SDL_JoystickID active_ = 0;
+  SDL_JoystickID rumble_failed_ = 0;
 };
 
 }  // namespace platform

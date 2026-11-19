@@ -52,6 +52,7 @@ struct RobloxMessageBusReply {
   std::string json;
   jint code = 0;
   const char* outcome = "ok";
+  bool reply = true;
 };
 
 // Owns both legacy subscriptions and correlated async request handlers.

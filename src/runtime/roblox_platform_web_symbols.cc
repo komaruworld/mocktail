@@ -118,6 +118,10 @@ RobloxPlatformWebSymbols ResolveRobloxPlatformWebSymbols(
           roblox_library,
           "Java_com_roblox_universalapp_messagebus_MessageBus_"
           "callResponseHandlerRaw");
+  symbols.update_mobile_haptics_state = Resolve<UpdateMobileHapticsStateFn>(
+      roblox_library,
+      "Java_com_roblox_engine_jni_NativeGLInterface_"
+      "nativeUpdateMobileHapticsState");
   return symbols;
 }
 

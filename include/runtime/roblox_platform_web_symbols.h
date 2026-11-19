@@ -2,6 +2,7 @@
 #define MOCKTAIL_RUNTIME_ROBLOX_PLATFORM_WEB_SYMBOLS_H_
 
 #include "runtime/roblox_browser_service_bridge.h"
+#include "runtime/roblox_haptics_bridge.h"
 #include "runtime/roblox_permissions_bridge.h"
 #include "runtime/roblox_web_view_bridge.h"
 
@@ -15,6 +16,7 @@ struct RobloxPlatformWebSymbols {
   RobloxWebViewMessageBusSymbols web_view;
   RobloxBrowserServiceSymbols browser_service;
   RobloxPermissionsMessageBusSymbols permissions;
+  UpdateMobileHapticsStateFn update_mobile_haptics_state = nullptr;
 
   bool complete() const {
     return web_view.complete() && browser_service.complete() &&
