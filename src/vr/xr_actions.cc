@@ -382,12 +382,20 @@ Status XrActions::Attach(void *xr_instance, void *xr_session,
       auto space_info =
           XrInfo<XrActionSpaceCreateInfo>(XR_TYPE_ACTION_SPACE_CREATE_INFO);
       space_info.subactionPath = subaction;
-      space_info.poseInActionSpace.orientation.w = 1.f;
+      space_info.poseInActionSpace.orientation = {-0.5f, 0.0f, 0.0f, 0.8660254f};
+      space_info.poseInActionSpace.position =
+          hand == 0 ? XrVector3f{0.01f, -0.01f, -0.06f}
+                    : XrVector3f{-0.01f, -0.01f, -0.06f};
       space_info.action = impl_->grip[hand];
       CheckXr(
           instance,
           xrCreateActionSpace(session, &space_info, &impl_->grip_space[hand]),
           "xrCreateActionSpace grip");
+      space_info.poseInActionSpace.orientation =
+          hand == 0
+              ? XrQuaternionf{-0.1716085f, 0.0143007f, -0.1040051f, 0.9795555f}
+              : XrQuaternionf{-0.1716085f, -0.0143007f, 0.1040051f, 0.9795555f};
+      space_info.poseInActionSpace.position = {0.0f, 0.0f, 0.0f};
       space_info.action = impl_->aim[hand];
       CheckXr(
           instance,
