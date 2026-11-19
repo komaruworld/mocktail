@@ -41,14 +41,16 @@ PlatformCacheMigrationResult MigratePlatformProfileCaches(
 
 struct RobloxThemeCacheResult {
   std::optional<bool> dark_theme;
+  bool system_theme = false;
   std::string error;
 
   explicit operator bool() const { return error.empty(); }
 };
 
 // Reads the current account's Roblox theme without changing appStorage. A
-// missing or unrecognized value falls back to AuthenticatedTheme, then the
-// caller's startup default.
+// stored "system" preference reports system_theme so the caller can follow
+// the host theme; other missing or unrecognized values fall back to
+// AuthenticatedTheme, then the caller's startup default.
 RobloxThemeCacheResult ReadRobloxThemeCache(
     const std::filesystem::path& app_storage_file,
     std::int64_t authenticated_user_id);

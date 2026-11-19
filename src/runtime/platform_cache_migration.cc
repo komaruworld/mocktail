@@ -359,18 +359,20 @@ RobloxThemeCacheResult ReadRobloxThemeCache(
     return result;
   }
 
-  const auto read_theme = [](const nlohmann::json& value) -> std::optional<bool> {
+  const auto read_theme = [&result](const nlohmann::json& value) -> bool {
     if (!value.is_string()) {
-      return std::nullopt;
-    }
-    const std::string& theme = value.get_ref<const std::string&>();
-    if (theme == "dark") {
-      return true;
-    }
-    if (theme == "light") {
       return false;
     }
-    return std::nullopt;
+    const std::string& theme = value.get_ref<const std::string&>();
+    if (theme == "dark" || theme == "light") {
+      result.dark_theme = theme == "dark";
+      return true;
+    }
+    if (theme == "system") {
+      result.system_theme = true;
+      return true;
+    }
+    return false;
   };
 
   if (authenticated_user_id >= 0) {
@@ -383,11 +385,9 @@ RobloxThemeCacheResult ReadRobloxThemeCache(
       if (device_themes.is_object()) {
         const auto account_theme =
             device_themes.find(std::to_string(authenticated_user_id));
-        if (account_theme != device_themes.end()) {
-          result.dark_theme = read_theme(*account_theme);
-          if (result.dark_theme.has_value()) {
-            return result;
-          }
+        if (account_theme != device_themes.end() &&
+            read_theme(*account_theme)) {
+          return result;
         }
       }
     }
@@ -395,7 +395,7 @@ RobloxThemeCacheResult ReadRobloxThemeCache(
 
   const auto authenticated_theme = storage.value.find("AuthenticatedTheme");
   if (authenticated_theme != storage.value.end()) {
-    result.dark_theme = read_theme(*authenticated_theme);
+    read_theme(*authenticated_theme);
   }
   return result;
 }
