@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -229,7 +231,22 @@ struct Staging {
   VkBuffer buffer = VK_NULL_HANDLE;
   VkDeviceMemory memory = VK_NULL_HANDLE;
   bool host_cached = false;
+  VkDeviceSize capacity = 0;
+  std::uint8_t* mapped = nullptr;
 };
+
+// Allocating and freeing staging memory costs ~0.5 ms per upload on NVIDIA,
+// so released buffers are pooled per device in power-of-two size classes.
+constexpr VkDeviceSize kMinStagingClass = 64 * 1024;
+constexpr VkDeviceSize kStagingPoolCap = 256ULL * 1024 * 1024;
+
+VkDeviceSize StagingClass(VkDeviceSize size) {
+  VkDeviceSize result = kMinStagingClass;
+  while (result < size) {
+    result <<= 1;
+  }
+  return result;
+}
 
 struct PendingUpload {
   VkDevice device = VK_NULL_HANDLE;
@@ -333,8 +350,9 @@ bool CreateStaging(const HostDevice& dev, VkDeviceSize size, Staging* staging,
   }
   *staging = {dev.device, buffer, memory,
               (dev.memory.memoryTypes[type].propertyFlags &
-               VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0};
-  *mapped = static_cast<std::uint8_t*>(data);
+               VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0,
+              size, static_cast<std::uint8_t*>(data)};
+  *mapped = staging->mapped;
   return true;
 }
 
@@ -511,6 +529,10 @@ struct VulkanEtc2Emulation::State {
   std::unordered_map<VkDeviceMemory, Mapping> mappings;
   std::unordered_map<VkCommandBuffer, CommandRecord> commands;
   std::atomic<bool> has_commands{false};
+  std::mutex staging_mutex;
+  // Keyed by (device, capacity) so lower_bound finds the smallest fit.
+  std::multimap<std::pair<VkDevice, VkDeviceSize>, Staging> staging_pool;
+  std::unordered_map<VkDevice, VkDeviceSize> pooled_bytes;
   TextureOverrides overrides = TextureOverrides::FromEnvironment();
   const std::uint32_t upscale =
       SmallTextureUpscale(std::getenv("MOCKTAIL_SMALL_TEXTURE_UPSCALE"));
@@ -627,6 +649,57 @@ struct VulkanEtc2Emulation::State {
     }
     *record = found->second;
     return true;
+  }
+
+  bool AcquireStaging(const HostDevice& dev, VkDeviceSize size,
+                      Staging* staging, std::uint8_t** mapped) {
+    if (size == 0) {
+      return false;
+    }
+    const VkDeviceSize size_class = StagingClass(size);
+    {
+      std::lock_guard<std::mutex> lock(staging_mutex);
+      const auto found = staging_pool.lower_bound({dev.device, size_class});
+      if (found != staging_pool.end() && found->first.first == dev.device) {
+        *staging = found->second;
+        *mapped = staging->mapped;
+        pooled_bytes[dev.device] -= staging->capacity;
+        staging_pool.erase(found);
+        return true;
+      }
+    }
+    return CreateStaging(dev, size_class, staging, mapped);
+  }
+
+  // Only for buffers the GPU is done with. Over the cap, the device's largest
+  // pooled buffers are destroyed first.
+  void RecycleStaging(const std::vector<Staging>& released) {
+    std::vector<Staging> doomed;
+    {
+      std::lock_guard<std::mutex> lock(staging_mutex);
+      for (const Staging& staging : released) {
+        // A destroyed device's handle may be reused; never pool its buffers.
+        if (Find(staging.device) == nullptr) {
+          continue;
+        }
+        staging_pool.emplace(std::make_pair(staging.device, staging.capacity),
+                             staging);
+        VkDeviceSize& bytes = pooled_bytes[staging.device];
+        bytes += staging.capacity;
+        while (bytes > kStagingPoolCap) {
+          auto largest = std::prev(staging_pool.upper_bound(
+              {staging.device, std::numeric_limits<VkDeviceSize>::max()}));
+          bytes -= largest->second.capacity;
+          doomed.push_back(largest->second);
+          staging_pool.erase(largest);
+        }
+      }
+    }
+    for (const Staging& staging : doomed) {
+      if (const HostDevice* dev = Find(staging.device); dev != nullptr) {
+        DestroyStaging(*dev, staging);
+      }
+    }
   }
 
   void Record(VkCommandBuffer command_buffer,
@@ -747,6 +820,17 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
     }
     state_->has_commands.store(!state_->commands.empty(),
                                std::memory_order_release);
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_->staging_mutex);
+    const auto first = state_->staging_pool.lower_bound({device, 0});
+    auto last = first;
+    while (last != state_->staging_pool.end() && last->first.first == device) {
+      doomed.push_back(last->second);
+      ++last;
+    }
+    state_->staging_pool.erase(first, last);
+    state_->pooled_bytes.erase(device);
   }
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
@@ -999,7 +1083,7 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage(
     LogFailure("skipped an upload with an unsupported region");
     return;
   }
-  if (!CreateStaging(*dev, total, &staging, &mapped)) {
+  if (!state_->AcquireStaging(*dev, total, &staging, &mapped)) {
     LogFailure("could not allocate a host-visible staging buffer");
     return;
   }
@@ -1036,7 +1120,7 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
     LogFailure("skipped an upload with an unsupported region");
     return;
   }
-  if (!CreateStaging(*dev, total, &staging, &mapped)) {
+  if (!state_->AcquireStaging(*dev, total, &staging, &mapped)) {
     LogFailure("could not allocate a host-visible staging buffer");
     return;
   }
@@ -1379,11 +1463,7 @@ void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {
     state_->has_commands.store(!state_->commands.empty(),
                                std::memory_order_release);
   }
-  for (const Staging& staging : doomed) {
-    if (const HostDevice* dev = state_->Find(staging.device); dev != nullptr) {
-      DestroyStaging(*dev, staging);
-    }
-  }
+  state_->RecycleStaging(doomed);
 }
 
 }  // namespace mocktail::graphics
