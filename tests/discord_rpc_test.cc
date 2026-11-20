@@ -132,6 +132,17 @@ TEST(DiscordRpcTest, ShowsExternalPlaceThumbnailWhenAvailable) {
   EXPECT_EQ(activity.large_text, "Natural Disaster Survival");
 }
 
+TEST(DiscordRpcTest, ShowsExperienceCreatorWhenAvailable) {
+  const DiscordRpcConfig config;
+  const RobloxExperienceLaunchRequest request = PublicServer();
+  const DiscordRpcActivity activity = BuildDiscordRpcActivity(
+      config, RobloxExperiencePresencePhase::kPlaying, &request,
+      "Natural Disaster Survival", 1, {}, "Stickmasterluke");
+
+  EXPECT_EQ(activity.details, "Natural Disaster Survival");
+  EXPECT_EQ(activity.state, "By Stickmasterluke");
+}
+
 TEST(DiscordRpcTest, ShowsPlaceJoinWhenServerIdIsUnavailable) {
   const DiscordRpcConfig config;
   RobloxExperienceLaunchRequest request = PublicServer();
