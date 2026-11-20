@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -110,8 +111,13 @@ class VulkanEtc2Test : public ::testing::TestWithParam<bool> {
                                     &region);
   }
 
-  const std::vector<std::uint8_t>& Output(VkCommandBuffer command) const {
-    return memory_bytes.at(bindings.at(recorded.at(command)).first);
+  // Staging buffers are rounded up to a size class, so compare the used prefix.
+  std::vector<std::uint8_t> Output(VkCommandBuffer command,
+                                   std::size_t bytes) const {
+    const auto& memory =
+        memory_bytes.at(bindings.at(recorded.at(command)).first);
+    return {memory.begin(),
+            memory.begin() + std::min(bytes, memory.size())};
   }
 
   static std::vector<std::uint8_t> Decode(const std::uint8_t* source,
@@ -156,6 +162,7 @@ class VulkanEtc2Test : public ::testing::TestWithParam<bool> {
                                           const VkAllocationCallbacks*,
                                           VkDeviceMemory* memory) {
     *memory = Handle<VkDeviceMemory>(active->next++);
+    ++active->allocate_calls;
     active->memory_bytes[*memory].resize(info->allocationSize, 0xa5);
     active->last_memory_type = info->memoryTypeIndex;
     return VK_SUCCESS;
@@ -250,6 +257,7 @@ class VulkanEtc2Test : public ::testing::TestWithParam<bool> {
   VkPhysicalDeviceMemoryProperties memory_properties{};
   VkImageCreateInfo last_image{};
   std::uint32_t last_memory_type = UINT32_MAX;
+  unsigned allocate_calls = 0;
   std::atomic<unsigned> map_calls{0};
   std::atomic<unsigned> unmap_calls{0};
   std::unordered_map<VkBuffer, VkDeviceSize> sizes;
@@ -274,7 +282,7 @@ TEST_P(VulkanEtc2Test, UsesCurrentSourceOnEverySubmission) {
     std::memset(source.data, value, 256 * 256);
     const auto expected = Decode(source.data, 256, 256);
     emulation->PrepareSubmit(&command, 1);
-    EXPECT_EQ(Output(command), expected);
+    EXPECT_EQ(Output(command, expected.size()), expected);
   }
   emulation->ReleaseCommandBuffer(command);
   EXPECT_FALSE(emulation->HasPendingUploads());
@@ -297,7 +305,7 @@ TEST_P(VulkanEtc2Test, DecodesPaddedRowsAndArrayLayers) {
     expected.insert(expected.end(), decoded.begin(), decoded.end());
   }
   emulation->PrepareSubmit(&command, 1);
-  EXPECT_EQ(Output(command), expected);
+  EXPECT_EQ(Output(command, expected.size()), expected);
 }
 
 TEST_P(VulkanEtc2Test, HandlesConcurrentSubmissionsOfUnmappedSources) {
@@ -316,7 +324,7 @@ TEST_P(VulkanEtc2Test, HandlesConcurrentSubmissionsOfUnmappedSources) {
   for (const auto command : commands) {
     callers.emplace_back([&, command] {
       emulation->PrepareSubmit(&command, 1);
-      EXPECT_EQ(Output(command), expected);
+      EXPECT_EQ(Output(command, expected.size()), expected);
     });
   }
   for (auto& caller : callers) caller.join();
@@ -333,7 +341,8 @@ TEST_P(VulkanEtc2Test, RepeatedSecondaryIsDecodedOnce) {
   const VkCommandBuffer repeated[] = {secondary, secondary};
   emulation->CmdExecuteCommands(device, primary, 2, repeated);
   emulation->PrepareSubmit(&primary, 1);
-  EXPECT_EQ(Output(secondary), Decode(source.data, 256, 256));
+  const auto expected = Decode(source.data, 256, 256);
+  EXPECT_EQ(Output(secondary, expected.size()), expected);
   emulation->ReleaseCommandBuffer(primary);
   emulation->ReleaseCommandBuffer(secondary);
   EXPECT_FALSE(emulation->HasPendingUploads());
@@ -350,7 +359,7 @@ TEST_P(VulkanEtc2Test, UpscalingStillProducesTheSamePixels) {
   const auto decoded = Decode(source.data, 16, 16);
   ResampleRgba(decoded.data(), 16, 16, 64, 64, expected.data());
   emulation->PrepareSubmit(&command, 1);
-  EXPECT_EQ(Output(command), expected);
+  EXPECT_EQ(Output(command, expected.size()), expected);
 }
 
 TEST_P(VulkanEtc2Test, DefaultPreservesStreamedMipChain) {
@@ -397,7 +406,7 @@ TEST_P(VulkanEtc2Test, DefaultPreservesStreamedMipChain) {
     EXPECT_EQ(uploads[mip].imageExtent.width, 64U >> mip);
     EXPECT_EQ(uploads[mip].imageExtent.height, 64U >> mip);
   }
-  EXPECT_TRUE(Output(command) == expected);
+  EXPECT_TRUE(Output(command, expected.size()) == expected);
 
   // Streaming a sharper level copies the existing tail into a larger image.
   const auto larger = CreateImage(128, 128, 1, kMips + 1);
@@ -434,6 +443,69 @@ TEST_P(VulkanEtc2Test, NativeSupportPassesThroughWithoutCpuUploads) {
   EXPECT_EQ(last_image.extent.width, 4U);
   EXPECT_EQ(recorded.at(command), source.buffer);
   EXPECT_FALSE(emulation->HasPendingUploads());
+}
+
+TEST_P(VulkanEtc2Test, RecyclesStagingBuffersBySizeClass) {
+  const auto small = CreateSource(128 * 128);
+  const auto medium = CreateSource(256 * 256);
+  const auto large = CreateSource(512 * 512);
+  const std::size_t sources = memory_bytes.size();
+  const auto small_image = CreateImage(128, 128);
+  const auto medium_image = CreateImage(256, 256);
+  const auto large_image = CreateImage(512, 512);
+  const auto first = Handle<VkCommandBuffer>(10);
+  const auto second = Handle<VkCommandBuffer>(11);
+
+  Record(first, medium, medium_image, 256, 256);
+  EXPECT_EQ(allocate_calls, 1U);
+  const VkBuffer pooled = recorded.at(first);
+  emulation->ReleaseCommandBuffer(first);
+  EXPECT_EQ(memory_bytes.size(), sources + 1);
+
+  // A smaller request reuses the released 256 KiB buffer without remapping.
+  const unsigned maps = map_calls.load();
+  Record(first, small, small_image, 128, 128);
+  EXPECT_EQ(allocate_calls, 1U);
+  EXPECT_EQ(map_calls.load(), maps);
+  EXPECT_EQ(recorded.at(first), pooled);
+  // The pool is empty while the first buffer is in flight.
+  Record(second, medium, medium_image, 256, 256);
+  EXPECT_EQ(allocate_calls, 2U);
+  emulation->ReleaseCommandBuffer(first);
+  emulation->ReleaseCommandBuffer(second);
+  // No pooled buffer fits the 1 MiB class.
+  Record(first, large, large_image, 512, 512);
+  EXPECT_EQ(allocate_calls, 3U);
+  emulation->ReleaseCommandBuffer(first);
+  EXPECT_EQ(memory_bytes.size(), sources + 3);
+
+  // Teardown frees both pooled and in-flight buffers.
+  Record(second, medium, medium_image, 256, 256);
+  EXPECT_EQ(allocate_calls, 3U);
+  emulation->DestroyDevice(device);
+  EXPECT_EQ(memory_bytes.size(), sources);
+}
+
+TEST_P(VulkanEtc2Test, StagingPoolEvictsLargestBeyondCap) {
+  constexpr std::uint32_t kSize = 4096;  // 64 MiB decoded per upload.
+  const auto huge = CreateSource(kSize * kSize);
+  const auto small = CreateSource(128 * 128);
+  const std::size_t sources = memory_bytes.size();
+  const auto huge_image = CreateImage(kSize, kSize);
+  const auto small_image = CreateImage(128, 128);
+  const auto command = Handle<VkCommandBuffer>(10);
+  for (int i = 0; i < 4; ++i) Record(command, huge, huge_image, kSize, kSize);
+  Record(command, small, small_image, 128, 128);
+  EXPECT_EQ(allocate_calls, 5U);
+  // 4 x 64 MiB fills the 256 MiB cap; the extra 64 KiB evicts one 64 MiB.
+  emulation->ReleaseCommandBuffer(command);
+  EXPECT_EQ(memory_bytes.size(), sources + 4);
+  Record(command, small, small_image, 128, 128);
+  for (int i = 0; i < 3; ++i) Record(command, huge, huge_image, kSize, kSize);
+  EXPECT_EQ(allocate_calls, 5U);
+  emulation->ReleaseCommandBuffer(command);
+  emulation->DestroyDevice(device);
+  EXPECT_EQ(memory_bytes.size(), sources);
 }
 
 INSTANTIATE_TEST_SUITE_P(HostMemory, VulkanEtc2Test, ::testing::Bool());
