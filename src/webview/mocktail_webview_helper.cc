@@ -1016,6 +1016,21 @@ void FinishControlledJavaScript(GObject* source_object, GAsyncResult* result,
   }
 }
 
+GdkMonitor* FindMonitorAt(GdkDisplay* display, int x, int y) {
+  GListModel* monitors = gdk_display_get_monitors(display);
+  for (guint index = 0; index < g_list_model_get_n_items(monitors); ++index) {
+    auto* monitor =
+        static_cast<GdkMonitor*>(g_list_model_get_item(monitors, index));
+    GdkRectangle geometry{};
+    gdk_monitor_get_geometry(monitor, &geometry);
+    if (geometry.x == x && geometry.y == y) {
+      return monitor;
+    }
+    g_object_unref(monitor);
+  }
+  return nullptr;
+}
+
 bool ApplyControlCommand(
     AppState* state, mocktail::runtime::WebViewHelperControlCommand* command) {
   using mocktail::runtime::WebViewHelperControlOperation;
@@ -1082,6 +1097,39 @@ bool ApplyControlCommand(
         SetBackButtonVisible(web_view, !command->visible);
       }
       break;
+    case WebViewHelperControlOperation::kSetPlacement: {
+      bool fullscreen = false;
+      int x = 0;
+      int y = 0;
+      if (window == nullptr || !mocktail::runtime::ParseWebViewPlacement(
+                                   command->payload, &fullscreen, &x, &y)) {
+        std::cerr << "[webview] rejected placement control without a valid "
+                     "surface\n";
+      } else if (!fullscreen) {
+        gtk_window_unfullscreen(window);
+        gtk_window_maximize(window);
+      } else if (GdkMonitor* monitor = FindMonitorAt(
+                     gtk_widget_get_display(GTK_WIDGET(window)), x, y)) {
+        GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window));
+        const bool remap =
+            gtk_widget_get_visible(GTK_WIDGET(window)) &&
+            (surface == nullptr ||
+             gdk_display_get_monitor_at_surface(
+                 gtk_widget_get_display(GTK_WIDGET(window)), surface) !=
+                 monitor);
+        if (remap) {
+          gtk_widget_set_visible(GTK_WIDGET(window), FALSE);
+        }
+        gtk_window_fullscreen_on_monitor(window, monitor);
+        if (remap) {
+          gtk_window_present(window);
+        }
+        g_object_unref(monitor);
+      } else {
+        gtk_window_fullscreen(window);
+      }
+      break;
+    }
     case WebViewHelperControlOperation::kSetShowDomainAsTitle:
       state->show_domain_as_title = command->visible;
       if (web_view != nullptr) {

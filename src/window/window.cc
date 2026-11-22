@@ -1601,6 +1601,24 @@ WindowViewportSnapshot GetWindowViewportSnapshot() {
   return snapshot;
 }
 
+WindowPlacementSnapshot GetWindowPlacementSnapshot() {
+  WindowPlacementSnapshot snapshot;
+  if (g_state.sdl_window == nullptr) {
+    return snapshot;
+  }
+  SDL_Rect bounds{};
+  const SDL_DisplayID display = SDL_GetDisplayForWindow(g_state.sdl_window);
+  if (display == 0 || !SDL_GetDisplayBounds(display, &bounds)) {
+    return snapshot;
+  }
+  snapshot.valid = true;
+  snapshot.fullscreen =
+      (SDL_GetWindowFlags(g_state.sdl_window) & SDL_WINDOW_FULLSCREEN) != 0;
+  snapshot.display_x = bounds.x;
+  snapshot.display_y = bounds.y;
+  return snapshot;
+}
+
 platform::DisplayRefreshCapabilities GetDisplayRefreshCapabilities() {
   platform::DisplayRefreshCapabilities caps = g_state.display_refresh;
   if (!UnthrottledPresentationRequested() || !caps.valid()) {

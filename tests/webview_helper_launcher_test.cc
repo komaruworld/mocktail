@@ -452,7 +452,7 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
       "while not pathlib.Path('" + queued.string() + "').exists():\n"
       "    if time.monotonic() >= deadline: raise SystemExit(21)\n"
       "    time.sleep(0.01)\n"
-      "for index in range(10):\n"
+      "for index in range(11):\n"
       "    pathlib.Path('" + packet_prefix +
           "' + str(index)).write_bytes(s.recv(65548))\n"));
 
@@ -473,6 +473,7 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
   EXPECT_TRUE(result.process->EvaluateJavaScript("document.title = 'Roblox';"));
   EXPECT_TRUE(result.process->SetBackNavigationDisabled(true));
   EXPECT_TRUE(result.process->SetShowDomainAsTitle(true));
+  EXPECT_TRUE(result.process->SetPlacement(true, 1920, -40));
   EXPECT_TRUE(result.process->SetRobloxCookie("_|signed-token"));
   EXPECT_TRUE(result.process->SetRobloxCookie({}));
   EXPECT_TRUE(result.process->ClearRobloxCookie());
@@ -488,6 +489,7 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
       WebViewHelperControlOperation::kEvaluateJavaScript,
       WebViewHelperControlOperation::kSetBackNavigationDisabled,
       WebViewHelperControlOperation::kSetShowDomainAsTitle,
+      WebViewHelperControlOperation::kSetPlacement,
       WebViewHelperControlOperation::kSetRobloxCookie,
       WebViewHelperControlOperation::kRetainPersistentRobloxCookie,
       WebViewHelperControlOperation::kClearRobloxCookie,
@@ -500,6 +502,7 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
       "document.title = 'Roblox';",
       std::string(1, '\1'),
       std::string(1, '\1'),
+      "F 1920 -40",
       "_|signed-token",
       "",
       "",
@@ -521,7 +524,28 @@ TEST(WebViewHelperLauncherTest, SendsBoundedTypedControlsToRunningHelper) {
   EXPECT_FALSE(result.process->EvaluateJavaScript("1 + 1"));
   EXPECT_FALSE(result.process->SetBackNavigationDisabled(false));
   EXPECT_FALSE(result.process->SetShowDomainAsTitle(false));
+  EXPECT_FALSE(result.process->SetPlacement(false, 0, 0));
   EXPECT_TRUE(result.process->RequestClose());
+}
+
+TEST(WebViewHelperLauncherTest, ParsesOnlyStrictPlacementPayloads) {
+  bool fullscreen = false;
+  int x = 0;
+  int y = 0;
+  EXPECT_TRUE(ParseWebViewPlacement("M 2560 0", &fullscreen, &x, &y));
+  EXPECT_FALSE(fullscreen);
+  EXPECT_EQ(x, 2560);
+  EXPECT_EQ(y, 0);
+  EXPECT_TRUE(ParseWebViewPlacement("F -1920 1440", &fullscreen, &x, &y));
+  EXPECT_TRUE(fullscreen);
+  EXPECT_EQ(x, -1920);
+  EXPECT_EQ(y, 1440);
+  for (const char* invalid :
+       {"", "F", "F 0", "X 0 0", "F  0 0", "F 0 0 ", "F +1 0", "F 0 0x",
+        "F 99999999999 0", "F 0\n0"}) {
+    EXPECT_FALSE(ParseWebViewPlacement(invalid, nullptr, nullptr, nullptr))
+        << invalid;
+  }
 }
 
 TEST(WebViewHelperLauncherTest, RejectsMalformedAndOversizedControlPackets) {
