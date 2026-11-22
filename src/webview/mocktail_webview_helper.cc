@@ -804,6 +804,14 @@ void SetLoadErrorVisible(WebKitWebView* web_view, bool visible) {
   }
 }
 
+void SetBackButtonVisible(WebKitWebView* web_view, bool visible) {
+  auto* button = static_cast<GtkWidget*>(
+      g_object_get_data(G_OBJECT(web_view), "mocktail-back-button"));
+  if (button != nullptr) {
+    gtk_widget_set_visible(button, visible);
+  }
+}
+
 bool ScheduleResourceRetry(WebKitWebView* web_view, const char* uri,
                             const GError* error) {
   // Retry an interrupted verification resource load once, before Roblox's
@@ -1071,6 +1079,7 @@ bool ApplyControlCommand(
       if (web_view != nullptr) {
         webkit_settings_set_enable_back_forward_navigation_gestures(
             webkit_web_view_get_settings(web_view), !command->visible);
+        SetBackButtonVisible(web_view, !command->visible);
       }
       break;
     case WebViewHelperControlOperation::kSetShowDomainAsTitle:
@@ -1250,8 +1259,33 @@ void OnReloadClicked(GtkButton*, gpointer user_data) {
   ReloadWebPage(WEBKIT_WEB_VIEW(user_data));
 }
 
+void GoBack(WebKitWebView* web_view) {
+  auto* surface = static_cast<SurfaceState*>(
+      g_object_get_data(G_OBJECT(web_view), "mocktail-surface-state"));
+  if (surface == nullptr || surface->app->back_navigation_disabled) {
+    return;
+  }
+  if (webkit_web_view_can_go_back(web_view)) {
+    webkit_web_view_go_back(web_view);
+    return;
+  }
+  auto* window_object = static_cast<GObject*>(g_weak_ref_get(&surface->window));
+  if (window_object != nullptr) {
+    gtk_window_close(GTK_WINDOW(window_object));
+    g_object_unref(window_object);
+  }
+}
+
+void OnBackClicked(GtkButton*, gpointer user_data) {
+  GoBack(WEBKIT_WEB_VIEW(user_data));
+}
+
 gboolean OnReloadKeyPressed(GtkEventControllerKey*, guint keyval, guint,
                             GdkModifierType state, gpointer user_data) {
+  if ((state & GDK_ALT_MASK) != 0 && keyval == GDK_KEY_Left) {
+    GoBack(WEBKIT_WEB_VIEW(user_data));
+    return TRUE;
+  }
   if (keyval == GDK_KEY_F5 ||
       ((state & GDK_CONTROL_MASK) != 0 &&
        (keyval == GDK_KEY_r || keyval == GDK_KEY_R))) {
@@ -1306,6 +1340,16 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
   GtkWidget* window = gtk_application_window_new(app->application);
   gtk_window_set_title(GTK_WINDOW(window), "Roblox");
   GtkWidget* header = gtk_header_bar_new();
+  GtkWidget* back = gtk_button_new_from_icon_name("go-previous-symbolic");
+  gtk_widget_set_tooltip_text(back, "Back (Alt+Left)");
+  gtk_accessible_update_property(GTK_ACCESSIBLE(back),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Back", -1);
+  gtk_widget_set_visible(back, !app->back_navigation_disabled);
+  gtk_header_bar_pack_start(GTK_HEADER_BAR(header), back);
+  g_signal_connect_object(back, "clicked", G_CALLBACK(OnBackClicked),
+                          G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  g_object_set_data_full(G_OBJECT(web_view), "mocktail-back-button",
+                         g_object_ref(back), g_object_unref);
   GtkWidget* reload = gtk_button_new_from_icon_name("view-refresh-symbolic");
   gtk_widget_set_tooltip_text(reload, "Reload page (Ctrl+R or F5)");
   gtk_accessible_update_property(GTK_ACCESSIBLE(reload),
