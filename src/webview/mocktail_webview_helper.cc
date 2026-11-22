@@ -1312,7 +1312,22 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
                                   GTK_ACCESSIBLE_PROPERTY_LABEL,
                                   "Reload page", -1);
   gtk_header_bar_pack_start(GTK_HEADER_BAR(header), reload);
-  gtk_window_set_titlebar(GTK_WINDOW(window), header);
+  const bool primary = related_view == nullptr;
+  if (primary) {
+    GtkWidget* close = gtk_button_new_from_icon_name("window-close-symbolic");
+    gtk_widget_set_tooltip_text(close, "Back to Roblox");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(close),
+                                    GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                    "Back to Roblox", -1);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), close);
+    gtk_header_bar_set_show_title_buttons(GTK_HEADER_BAR(header), FALSE);
+    g_signal_connect_swapped(close, "clicked", G_CALLBACK(gtk_window_close),
+                             window);
+    gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+    gtk_window_fullscreen(GTK_WINDOW(window));
+  } else {
+    gtk_window_set_titlebar(GTK_WINDOW(window), header);
+  }
   g_signal_connect_object(reload, "clicked", G_CALLBACK(OnReloadClicked),
                            G_OBJECT(web_view), G_CONNECT_DEFAULT);
   GtkEventController* keys = gtk_event_controller_key_new();
@@ -1337,6 +1352,9 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
     }
   }
   GtkWidget* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  if (primary) {
+    gtk_box_append(GTK_BOX(content), header);
+  }
   GtkWidget* error_banner = gtk_revealer_new();
   GtkWidget* error_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_set_margin_start(error_content, 12);
