@@ -73,6 +73,15 @@ struct WindowViewportSnapshot {
 // Keep logical input and pixel surface extents separate on high-DPI displays.
 WindowViewportSnapshot GetWindowViewportSnapshot();
 
+struct WindowPlacementSnapshot {
+  bool valid = false;
+  bool fullscreen = false;
+  int display_x = 0;
+  int display_y = 0;
+};
+
+WindowPlacementSnapshot GetWindowPlacementSnapshot();
+
 platform::DisplayRefreshCapabilities GetDisplayRefreshCapabilities();
 
 // Registers the sole consumer of converted input and focus events.

@@ -40,6 +40,7 @@ enum class WebViewHelperControlOperation : unsigned char {
   kSetRobloxCookie = 8,
   kClearRobloxCookie = 9,
   kRetainPersistentRobloxCookie = 10,
+  kSetPlacement = 11,
 };
 
 struct WebViewHelperControlCommand {
@@ -66,6 +67,8 @@ bool NormalizeWebViewUrl(std::string_view url, std::string *normalized_url,
                          std::string *error = nullptr);
 bool DecodeWebViewRequest(std::string_view request, std::string *url,
                           std::string *error = nullptr);
+bool ParseWebViewPlacement(std::string_view payload, bool* fullscreen,
+                           int* x, int* y);
 bool DecodeWebViewHelperControlPacket(std::string_view packet,
                                       WebViewHelperControlCommand* command,
                                       std::string* error = nullptr);
@@ -91,6 +94,7 @@ class WebViewHelperProcess final {
   bool EvaluateJavaScript(std::string_view script) const;
   bool SetBackNavigationDisabled(bool disabled) const;
   bool SetShowDomainAsTitle(bool enabled) const;
+  bool SetPlacement(bool fullscreen, int x, int y) const;
   // A non-empty value replaces the WebKit credential for the current runtime.
   // An empty value leaves WebKit's persistent cookie store authoritative so a
   // browser login survives a process restart.

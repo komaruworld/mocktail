@@ -645,6 +645,29 @@ bool DecodeWebViewRequest(std::string_view request, std::string *url,
   return true;
 }
 
+bool ParseWebViewPlacement(std::string_view payload, bool* fullscreen,
+                           int* x, int* y) {
+  if (payload.size() < 5 || payload.size() > 32 ||
+      (payload[0] != 'F' && payload[0] != 'M') || payload[1] != ' ') {
+    return false;
+  }
+  const char* end = payload.data() + payload.size();
+  int parsed_x = 0;
+  int parsed_y = 0;
+  const auto first = std::from_chars(payload.data() + 2, end, parsed_x);
+  if (first.ec != std::errc() || first.ptr == end || *first.ptr != ' ') {
+    return false;
+  }
+  const auto second = std::from_chars(first.ptr + 1, end, parsed_y);
+  if (second.ec != std::errc() || second.ptr != end) {
+    return false;
+  }
+  if (fullscreen != nullptr) *fullscreen = payload[0] == 'F';
+  if (x != nullptr) *x = parsed_x;
+  if (y != nullptr) *y = parsed_y;
+  return true;
+}
+
 bool DecodeWebViewHelperControlPacket(std::string_view packet,
                                       WebViewHelperControlCommand* command,
                                       std::string* error) {
@@ -739,6 +762,11 @@ bool DecodeWebViewHelperControlPacket(std::string_view packet,
     case WebViewHelperControlOperation::kClose:
       if (!payload.empty()) {
         return fail("webview control close payload must be empty");
+      }
+      break;
+    case WebViewHelperControlOperation::kSetPlacement:
+      if (!ParseWebViewPlacement(payload, nullptr, nullptr, nullptr)) {
+        return fail("webview control placement is invalid");
       }
       break;
     default:
@@ -870,6 +898,13 @@ bool WebViewHelperProcess::SetBackNavigationDisabled(bool disabled) const {
   return SendControlCommand(
       state_, WebViewHelperControlOperation::kSetBackNavigationDisabled,
       std::string_view(&encoded, 1));
+}
+
+bool WebViewHelperProcess::SetPlacement(bool fullscreen, int x, int y) const {
+  const std::string payload = std::string(fullscreen ? "F " : "M ") +
+                              std::to_string(x) + ' ' + std::to_string(y);
+  return SendControlCommand(
+      state_, WebViewHelperControlOperation::kSetPlacement, payload);
 }
 
 bool WebViewHelperProcess::SetShowDomainAsTitle(bool enabled) const {

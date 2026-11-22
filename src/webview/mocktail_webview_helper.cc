@@ -804,6 +804,14 @@ void SetLoadErrorVisible(WebKitWebView* web_view, bool visible) {
   }
 }
 
+void SetBackButtonVisible(WebKitWebView* web_view, bool visible) {
+  auto* button = static_cast<GtkWidget*>(
+      g_object_get_data(G_OBJECT(web_view), "mocktail-back-button"));
+  if (button != nullptr) {
+    gtk_widget_set_visible(button, visible);
+  }
+}
+
 bool ScheduleResourceRetry(WebKitWebView* web_view, const char* uri,
                             const GError* error) {
   // Retry an interrupted verification resource load once, before Roblox's
@@ -1008,6 +1016,21 @@ void FinishControlledJavaScript(GObject* source_object, GAsyncResult* result,
   }
 }
 
+GdkMonitor* FindMonitorAt(GdkDisplay* display, int x, int y) {
+  GListModel* monitors = gdk_display_get_monitors(display);
+  for (guint index = 0; index < g_list_model_get_n_items(monitors); ++index) {
+    auto* monitor =
+        static_cast<GdkMonitor*>(g_list_model_get_item(monitors, index));
+    GdkRectangle geometry{};
+    gdk_monitor_get_geometry(monitor, &geometry);
+    if (geometry.x == x && geometry.y == y) {
+      return monitor;
+    }
+    g_object_unref(monitor);
+  }
+  return nullptr;
+}
+
 bool ApplyControlCommand(
     AppState* state, mocktail::runtime::WebViewHelperControlCommand* command) {
   using mocktail::runtime::WebViewHelperControlOperation;
@@ -1071,8 +1094,42 @@ bool ApplyControlCommand(
       if (web_view != nullptr) {
         webkit_settings_set_enable_back_forward_navigation_gestures(
             webkit_web_view_get_settings(web_view), !command->visible);
+        SetBackButtonVisible(web_view, !command->visible);
       }
       break;
+    case WebViewHelperControlOperation::kSetPlacement: {
+      bool fullscreen = false;
+      int x = 0;
+      int y = 0;
+      if (window == nullptr || !mocktail::runtime::ParseWebViewPlacement(
+                                   command->payload, &fullscreen, &x, &y)) {
+        std::cerr << "[webview] rejected placement control without a valid "
+                     "surface\n";
+      } else if (!fullscreen) {
+        gtk_window_unfullscreen(window);
+        gtk_window_maximize(window);
+      } else if (GdkMonitor* monitor = FindMonitorAt(
+                     gtk_widget_get_display(GTK_WIDGET(window)), x, y)) {
+        GdkSurface* surface = gtk_native_get_surface(GTK_NATIVE(window));
+        const bool remap =
+            gtk_widget_get_visible(GTK_WIDGET(window)) &&
+            (surface == nullptr ||
+             gdk_display_get_monitor_at_surface(
+                 gtk_widget_get_display(GTK_WIDGET(window)), surface) !=
+                 monitor);
+        if (remap) {
+          gtk_widget_set_visible(GTK_WIDGET(window), FALSE);
+        }
+        gtk_window_fullscreen_on_monitor(window, monitor);
+        if (remap) {
+          gtk_window_present(window);
+        }
+        g_object_unref(monitor);
+      } else {
+        gtk_window_fullscreen(window);
+      }
+      break;
+    }
     case WebViewHelperControlOperation::kSetShowDomainAsTitle:
       state->show_domain_as_title = command->visible;
       if (web_view != nullptr) {
@@ -1250,8 +1307,33 @@ void OnReloadClicked(GtkButton*, gpointer user_data) {
   ReloadWebPage(WEBKIT_WEB_VIEW(user_data));
 }
 
+void GoBack(WebKitWebView* web_view) {
+  auto* surface = static_cast<SurfaceState*>(
+      g_object_get_data(G_OBJECT(web_view), "mocktail-surface-state"));
+  if (surface == nullptr || surface->app->back_navigation_disabled) {
+    return;
+  }
+  if (webkit_web_view_can_go_back(web_view)) {
+    webkit_web_view_go_back(web_view);
+    return;
+  }
+  auto* window_object = static_cast<GObject*>(g_weak_ref_get(&surface->window));
+  if (window_object != nullptr) {
+    gtk_window_close(GTK_WINDOW(window_object));
+    g_object_unref(window_object);
+  }
+}
+
+void OnBackClicked(GtkButton*, gpointer user_data) {
+  GoBack(WEBKIT_WEB_VIEW(user_data));
+}
+
 gboolean OnReloadKeyPressed(GtkEventControllerKey*, guint keyval, guint,
                             GdkModifierType state, gpointer user_data) {
+  if ((state & GDK_ALT_MASK) != 0 && keyval == GDK_KEY_Left) {
+    GoBack(WEBKIT_WEB_VIEW(user_data));
+    return TRUE;
+  }
   if (keyval == GDK_KEY_F5 ||
       ((state & GDK_CONTROL_MASK) != 0 &&
        (keyval == GDK_KEY_r || keyval == GDK_KEY_R))) {
@@ -1306,13 +1388,38 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
   GtkWidget* window = gtk_application_window_new(app->application);
   gtk_window_set_title(GTK_WINDOW(window), "Roblox");
   GtkWidget* header = gtk_header_bar_new();
+  GtkWidget* back = gtk_button_new_from_icon_name("go-previous-symbolic");
+  gtk_widget_set_tooltip_text(back, "Back (Alt+Left)");
+  gtk_accessible_update_property(GTK_ACCESSIBLE(back),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, "Back", -1);
+  gtk_widget_set_visible(back, !app->back_navigation_disabled);
+  gtk_header_bar_pack_start(GTK_HEADER_BAR(header), back);
+  g_signal_connect_object(back, "clicked", G_CALLBACK(OnBackClicked),
+                          G_OBJECT(web_view), G_CONNECT_DEFAULT);
+  g_object_set_data_full(G_OBJECT(web_view), "mocktail-back-button",
+                         g_object_ref(back), g_object_unref);
   GtkWidget* reload = gtk_button_new_from_icon_name("view-refresh-symbolic");
   gtk_widget_set_tooltip_text(reload, "Reload page (Ctrl+R or F5)");
   gtk_accessible_update_property(GTK_ACCESSIBLE(reload),
                                   GTK_ACCESSIBLE_PROPERTY_LABEL,
                                   "Reload page", -1);
   gtk_header_bar_pack_start(GTK_HEADER_BAR(header), reload);
-  gtk_window_set_titlebar(GTK_WINDOW(window), header);
+  const bool primary = related_view == nullptr;
+  if (primary) {
+    GtkWidget* close = gtk_button_new_from_icon_name("window-close-symbolic");
+    gtk_widget_set_tooltip_text(close, "Back to Roblox");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(close),
+                                    GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                    "Back to Roblox", -1);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), close);
+    gtk_header_bar_set_show_title_buttons(GTK_HEADER_BAR(header), FALSE);
+    g_signal_connect_swapped(close, "clicked", G_CALLBACK(gtk_window_close),
+                             window);
+    gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+    gtk_window_fullscreen(GTK_WINDOW(window));
+  } else {
+    gtk_window_set_titlebar(GTK_WINDOW(window), header);
+  }
   g_signal_connect_object(reload, "clicked", G_CALLBACK(OnReloadClicked),
                            G_OBJECT(web_view), G_CONNECT_DEFAULT);
   GtkEventController* keys = gtk_event_controller_key_new();
@@ -1337,6 +1444,9 @@ WebKitWebView* CreateSurface(AppState* app, WebKitWebView* related_view) {
     }
   }
   GtkWidget* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  if (primary) {
+    gtk_box_append(GTK_BOX(content), header);
+  }
   GtkWidget* error_banner = gtk_revealer_new();
   GtkWidget* error_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_set_margin_start(error_content, 12);

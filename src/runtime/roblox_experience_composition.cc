@@ -604,7 +604,12 @@ Status RobloxExperienceComposition::OpenWebSurface(
   const bool cookie_synchronized =
       clear_persisted_cookie ? current->ClearRobloxCookie()
                              : current->SetRobloxCookie(cookie.value());
+  const window::WindowPlacementSnapshot placement =
+      window::GetWindowPlacementSnapshot();
   if (!current->SetTitle(presentation.title) ||
+      (placement.valid &&
+       !current->SetPlacement(placement.fullscreen, placement.display_x,
+                              placement.display_y)) ||
       !current->SetVisible(presentation.visible) ||
       !current->SetBackNavigationDisabled(
           presentation.back_navigation_disabled) ||
