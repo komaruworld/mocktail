@@ -182,12 +182,6 @@ make build
 ./build/mocktail
 ```
 
-## Known limitations
-
-Mocktail does not currently work with `hardened_malloc`. Using
-`hardened_malloc` may cause Mocktail to fail to start or crash during runtime.
-Run Mocktail without `hardened_malloc` enabled.
-
 ## License
 
 [Apache License 2.0](LICENSE). Third-party components keep their own licenses.
