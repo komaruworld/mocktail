@@ -749,8 +749,10 @@ void VulkanTextOverlayCompositor::DestroyDevice(VkDevice device) {
   if (iterator == impl_->devices.end()) {
     return;
   }
-  std::lock_guard<std::mutex> overlay_lock((*iterator)->overlay_mutex);
-  impl_->DestroyDeviceResources(iterator->get());
+  {
+    std::lock_guard<std::mutex> overlay_lock((*iterator)->overlay_mutex);
+    impl_->DestroyDeviceResources(iterator->get());
+  }
   impl_->devices.erase(iterator);
 }
 
